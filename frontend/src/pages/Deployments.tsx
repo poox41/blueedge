@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -69,8 +69,21 @@ import {
 } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { deploymentsData, namespaces } from "@/data/mockData";
+import { formatMemory, listPodMetrics, type PodMetric } from "@/api/services/metrics";
+import { getDeployment, listDeployments, listPods } from "@/api/services/resources";
+import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
+import type { WorkloadView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+
+interface PodSummary {
+  name: string;
+  status: string;
+  node: string;
+  images: string[];
+  restartCount: number;
+  cpuMillicores: number;
+  memoryBytes: number;
+}
 
 interface Deployment {
   namespace: string;
@@ -96,6 +109,129 @@ interface Deployment {
   annotations: Record<string, string>;
   restartCount: number;
   ports: Array<{ name: string; containerPort: number; protocol: string }>;
+  podItems: PodSummary[];
+}
+
+function getPodName(pod: any): string {
+  return pod?.metadata?.name || pod?.name || "-";
+}
+
+function getPodNamespace(pod: any): string {
+  return pod?.metadata?.namespace || pod?.namespace || "default";
+}
+
+function getPodLabels(pod: any): Record<string, string> {
+  return pod?.metadata?.labels || pod?.labels || {};
+}
+
+function getPodImages(pod: any): string[] {
+  const containers = pod?.spec?.containers || pod?.containers || [];
+  const statuses = pod?.status?.containerStatuses || pod?.containerStatuses || [];
+  const images = [
+    ...(Array.isArray(containers) ? containers.map((container: any) => container.image) : []),
+    ...(Array.isArray(statuses) ? statuses.map((status: any) => status.image) : []),
+  ].filter(Boolean);
+  return Array.from(new Set(images));
+}
+
+function getPodRestartCount(pod: any): number {
+  const statuses = pod?.status?.containerStatuses || pod?.containerStatuses || [];
+  return Array.isArray(statuses)
+    ? statuses.reduce((sum: number, status: any) => sum + Number(status?.restartCount || 0), 0)
+    : Number(pod?.restartCount || 0);
+}
+
+function getPodStatus(pod: any): string {
+  return pod?.status?.phase || pod?.phase || pod?.status || "-";
+}
+
+function getPodNode(pod: any): string {
+  return pod?.spec?.nodeName || pod?.nodeName || pod?.node || "-";
+}
+
+function podMatchesDeployment(pod: any, deployment: WorkloadView, selector: Record<string, string>): boolean {
+  if (getPodNamespace(pod) !== deployment.namespace) return false;
+
+  const labels = getPodLabels(pod);
+  const selectorEntries = Object.entries(selector || {});
+  if (selectorEntries.length > 0 && selectorEntries.every(([key, value]) => labels[key] === value)) {
+    return true;
+  }
+
+  const podName = getPodName(pod);
+  const owners = pod?.metadata?.ownerReferences || pod?.ownerReferences || [];
+  return (
+    podName.startsWith(`${deployment.name}-`) ||
+    (Array.isArray(owners) && owners.some((owner: any) => String(owner?.name || "").startsWith(deployment.name)))
+  );
+}
+
+function toDeploymentRow(item: WorkloadView, pods: any[] = [], metricsByPod: Map<string, PodMetric> = new Map()): Deployment {
+  const raw = item.raw as Record<string, any>;
+  const containers = raw.spec?.template?.spec?.containers || raw.containers || [];
+  const rawImages = raw.images || raw.image || raw.containerImages;
+  const images = Array.isArray(containers)
+    ? containers.map((container: any) => container.image).filter(Boolean)
+    : Array.isArray(rawImages)
+      ? rawImages
+      : typeof rawImages === "string"
+        ? [rawImages]
+        : [];
+  const labels = raw.metadata?.labels || raw.labels || {};
+  const selector = raw.spec?.selector?.matchLabels || raw.selector || labels;
+  const ports = Array.isArray(containers) ? containers.flatMap((container: any) => container.ports || []) : [];
+  const matchedPods = pods.filter((pod) => podMatchesDeployment(pod, item, selector));
+  const runningPods = matchedPods.filter((pod) => getPodStatus(pod) === "Running").length;
+  const podImages = Array.from(new Set(matchedPods.flatMap(getPodImages)));
+  const podNodes = Array.from(new Set(matchedPods.map(getPodNode).filter((node) => node && node !== "-")));
+  const podSummaries = matchedPods.map((pod) => {
+    const name = getPodName(pod);
+    const metric = metricsByPod.get(`${getPodNamespace(pod)}/${name}`);
+    return {
+    name,
+    status: getPodStatus(pod),
+    node: getPodNode(pod),
+    images: getPodImages(pod),
+    restartCount: getPodRestartCount(pod),
+    cpuMillicores: metric?.cpuMillicores || 0,
+    memoryBytes: metric?.memoryBytes || 0,
+  };
+  });
+  const cpuMillicores = podSummaries.reduce((sum, pod) => sum + pod.cpuMillicores, 0);
+  const memoryBytes = podSummaries.reduce((sum, pod) => sum + pod.memoryBytes, 0);
+  const rawStatus = typeof raw.status === "string" ? raw.status : typeof raw.phase === "string" ? raw.phase : "";
+  const desiredReplicas = item.replicas || matchedPods.length;
+  const availableReplicas = item.availableReplicas || runningPods;
+  const isReady =
+    desiredReplicas > 0 && availableReplicas >= desiredReplicas ||
+    ["Running", "Available", "Ready", "运行中"].includes(rawStatus);
+
+  return {
+    namespace: item.namespace,
+    name: item.name,
+    status: isReady ? "运行中" : desiredReplicas === 0 ? "已停止" : "未就绪",
+    statusColor: isReady ? "success" : desiredReplicas === 0 ? "default" : "warning",
+    pods: `${availableReplicas}/${desiredReplicas}`,
+    desiredReplicas,
+    availableReplicas,
+    updatedReplicas: item.updatedReplicas,
+    cpu: cpuMillicores ? String(cpuMillicores) : "-",
+    memory: formatMemory(memoryBytes),
+    cpuLimit: "-",
+    memoryLimit: "-",
+    cpuRequest: "-",
+    memoryRequest: "-",
+    createdAt: item.createdAt,
+    node: podNodes.length > 0 ? podNodes.join(", ") : "-",
+    images: images.length > 0 ? images : podImages.length > 0 ? podImages : ["-"],
+    strategy: raw.spec?.strategy?.type || "-",
+    selector,
+    labels,
+    annotations: raw.metadata?.annotations || {},
+    restartCount: podSummaries.reduce((sum, pod) => sum + pod.restartCount, 0),
+    ports,
+    podItems: podSummaries,
+  };
 }
 
 function yamlTemplate(d: Deployment) {
@@ -133,7 +269,10 @@ ${d.ports.map(p => `        - containerPort: ${p.containerPort}`).join("\n") || 
 }
 
 export function Deployments() {
-  const [data, setData] = useState<Deployment[]>(deploymentsData as unknown as Deployment[]);
+  const namespaces = useNamespaceOptions();
+  const [data, setData] = useState<Deployment[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [namespace, setNamespace] = useState("all");
   const [currentPage, setCurrentPage] = useState(1);
@@ -159,11 +298,38 @@ export function Deployments() {
 
   const pageSize = 10;
 
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const ns = namespace === "all" ? undefined : namespace;
+      const [rows, pods, metrics] = await Promise.all([listDeployments(ns), listPods(ns), listPodMetrics(ns)]);
+      const metricsByPod = new Map(metrics.map((item) => [`${item.namespace}/${item.name}`, item]));
+      const detailRows = await Promise.all(
+        rows.map(async (row) => {
+          try {
+            return await getDeployment(row.namespace, row.name);
+          } catch {
+            return row;
+          }
+        }),
+      );
+      setData(detailRows.map((row) => toDeploymentRow(row, pods, metricsByPod)));
+      setCurrentPage(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "部署数据加载失败");
+      setData([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [namespace]);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+
   const filtered = useMemo(() => {
     let result = data;
-    if (namespace !== "all") {
-      result = result.filter((d) => d.namespace === namespace);
-    }
     if (search.trim()) {
       const s = search.toLowerCase();
       result = result.filter(
@@ -251,6 +417,7 @@ export function Deployments() {
       annotations: { "deployment.kubernetes.io/revision": "1" },
       restartCount: 0,
       ports: form.port ? [{ name: "http", containerPort: form.port, protocol: "TCP" }] : [],
+      podItems: [],
     };
     setData((prev) => [newItem, ...prev]);
     setCreateOpen(false);
@@ -277,9 +444,10 @@ export function Deployments() {
             variant="outline"
             size="sm"
             className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]"
-            onClick={() => setData(deploymentsData as unknown as Deployment[])}
+            onClick={loadData}
+            disabled={isLoading}
           >
-            <RefreshCw className="w-3.5 h-3.5 mr-1" />
+            <RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />
             刷新
           </Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -419,6 +587,12 @@ export function Deployments() {
         </div>
       </div>
 
+      {error && (
+        <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">
+          {error}
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table>
@@ -436,7 +610,13 @@ export function Deployments() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {paginated.length === 0 ? (
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">
+                  正在加载部署数据...
+                </TableCell>
+              </TableRow>
+            ) : paginated.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">
                   暂无部署数据
@@ -609,16 +789,24 @@ export function Deployments() {
               </TabsContent>
               <TabsContent value="pods" className="mt-3">
                 <div className="space-y-2">
-                  <div className="bg-[#F7F8FA] rounded-lg p-3 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="w-2 h-2 rounded-full bg-[#00B42A]" />
-                      <span className="text-sm font-medium">{selected.name}-{Math.random().toString(36).slice(2, 8)}</span>
+                  {selected.podItems.length === 0 ? (
+                    <div className="bg-[#F7F8FA] rounded-lg p-4 text-center text-sm text-[#86909C]">暂无关联 Pod</div>
+                  ) : selected.podItems.map((pod) => (
+                    <div key={pod.name} className="bg-[#F7F8FA] rounded-lg p-3 flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <div className={cn("w-2 h-2 rounded-full", pod.status === "Running" ? "bg-[#00B42A]" : "bg-[#FF7D00]")} />
+                        <div>
+                          <span className="text-sm font-medium">{pod.name}</span>
+                          <p className="text-xs text-[#86909C] truncate max-w-[320px]">{pod.images.join(", ") || "-"}</p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-xs font-normal">{pod.status}</Badge>
+                        <span className="text-xs text-[#86909C]">{pod.node}</span>
+                        <Button variant="ghost" size="sm" className="h-6 text-xs"><Terminal className="w-3 h-3 mr-1" />日志</Button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-[#86909C]">{selected.node}</span>
-                      <Button variant="ghost" size="sm" className="h-6 text-xs"><Terminal className="w-3 h-3 mr-1" />日志</Button>
-                    </div>
-                  </div>
+                  ))}
                 </div>
               </TabsContent>
               <TabsContent value="yaml" className="mt-3">

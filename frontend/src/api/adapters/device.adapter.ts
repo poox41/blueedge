@@ -5,9 +5,18 @@ export function normalizeDevice(raw: KubeResource): DeviceView {
   return {
     name: getName(raw),
     namespace: getNamespace(raw),
-    model: getNestedString(raw, ["spec", "deviceModelRef", "name"]),
-    nodeName: getNestedString(raw, ["spec", "nodeName"]),
-    status: getNestedString(raw, ["status", "state"], "Unknown"),
+    model:
+      typeof raw.model === "string"
+        ? raw.model
+        : getNestedString(raw, ["spec", "deviceModelRef", "name"]),
+    nodeName:
+      typeof raw.nodeName === "string"
+        ? raw.nodeName
+        : getNestedString(raw, ["spec", "nodeName"]),
+    status:
+      typeof (raw as Record<string, unknown>).status === "string"
+        ? String((raw as Record<string, unknown>).status)
+        : getNestedString(raw, ["status", "state"], "Unknown"),
     createdAt: getCreatedAt(raw),
     raw,
   };

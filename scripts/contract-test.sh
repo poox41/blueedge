@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BFF_BASE_URL="${BFF_BASE_URL:-http://127.0.0.1:8080/api}"
+BFF_BASE_URL="${BFF_BASE_URL:-http://127.0.0.1:8080/api/v1}"
 TOKEN="${TOKEN:-}"
 AUTH_HEADER=()
 

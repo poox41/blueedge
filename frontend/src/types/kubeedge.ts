@@ -65,6 +65,28 @@ export interface RuleView {
   namespace: string;
   source: string;
   target: string;
+  sourceResource?: string;
+  targetResource?: string;
+  createdAt: string;
+  raw: KubeResource;
+}
+
+export interface RuleEndpointView {
+  name: string;
+  namespace: string;
+  type: string;
+  targetResource: string;
+  createdAt: string;
+  raw: KubeResource;
+}
+
+export interface ServiceView {
+  name: string;
+  namespace: string;
+  type: string;
+  clusterIP: string;
+  externalIP: string;
+  ports: string;
   createdAt: string;
   raw: KubeResource;
 }

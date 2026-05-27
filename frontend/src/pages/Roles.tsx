@@ -1,5 +1,5 @@
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,12 +11,22 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { rolesData, namespaces } from "@/data/mockData";
+import { formatLabels, getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
+import { listRoles } from "@/api/services/resources";
+import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import { cn } from "@/lib/utils";
 
 interface Role { namespace: string; name: string; labels: string; createdAt: string; rules?: Array<{ apiGroups: string[]; resources: string[]; verbs: string[] }>; }
 
-const fullData: Role[] = (rolesData as any[]).map(r => ({ ...r, rules: [{ apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] }] }));
+function toRole(item: any): Role {
+  return {
+    namespace: getResourceNamespace(item),
+    name: getResourceName(item),
+    labels: formatLabels(item?.metadata?.labels),
+    createdAt: getResourceCreatedAt(item),
+    rules: Array.isArray(item?.rules) ? item.rules : [],
+  };
+}
 
 function yaml(n: Role) {
   return `apiVersion: rbac.authorization.k8s.io/v1
@@ -31,7 +41,10 @@ ${(n.rules || []).map(rule => `  - apiGroups: ["${rule.apiGroups.join('", "')}"]
 }
 
 export function Roles() {
-  const [data, setData] = useState<Role[]>(fullData);
+  const namespaces = useNamespaceOptions();
+  const [data, setData] = useState<Role[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [ns, setNs] = useState("all");
   const [page, setPage] = useState(1);
@@ -42,6 +55,23 @@ export function Roles() {
   const [delItem, setDelItem] = useState<Role | null>(null);
   const [form, setForm] = useState({ name: "", namespace: "default", resources: "pods", verbs: "get,list" });
   const pageSize = 10;
+
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const items = await listRoles(ns === "all" ? undefined : ns);
+      setData(items.map(toRole));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载角色失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [ns]);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const filtered = useMemo(() => { let r = data; if (ns !== "all") r = r.filter(d => d.namespace === ns); if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase())); return r; }, [data, ns, search]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -61,7 +91,7 @@ export function Roles() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-[#1D2129]">角色</h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={() => setData(fullData)}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
+          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild><Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建角色</Button></DialogTrigger>
             <DialogContent className="max-w-lg">
@@ -85,6 +115,7 @@ export function Roles() {
         <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
         <div className="flex items-center gap-3"><NamespaceSelector value={ns} onChange={v => { setNs(v); setPage(1); }} /><span className="text-sm text-[#86909C]">共 {filtered.length} 条</span></div>
       </div>
+      {error && <div className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-700">{error}</div>}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">命名空间</TableHead>
@@ -93,7 +124,7 @@ export function Roles() {
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[140px]">操作</TableHead>
         </TableRow></TableHeader>
-        <TableBody>{paginated.length === 0 ? (<TableRow><TableCell colSpan={5} className="text-center py-16 text-[#86909C] text-sm">暂无角色数据</TableCell></TableRow>) : paginated.map(row => (
+        <TableBody>{isLoading ? (<TableRow><TableCell colSpan={5} className="text-center py-16 text-[#86909C] text-sm">加载中...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={5} className="text-center py-16 text-[#86909C] text-sm">暂无角色数据</TableCell></TableRow>) : paginated.map(row => (
           <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>

@@ -14,7 +14,7 @@ export function asItems<T = KubeResource>(payload: unknown): T[] {
 }
 
 export function getName(raw: KubeResource): string {
-  return raw.metadata?.name || "-";
+  return raw.metadata?.name || (typeof raw.name === "string" ? raw.name : "-");
 }
 
 export function getNamespace(raw: KubeResource): string {
@@ -22,7 +22,7 @@ export function getNamespace(raw: KubeResource): string {
 }
 
 export function getCreatedAt(raw: KubeResource): string {
-  return raw.metadata?.creationTimestamp || "-";
+  return raw.metadata?.creationTimestamp || (typeof raw.creationTimestamp === "string" ? raw.creationTimestamp : "-");
 }
 
 export function getNestedString(obj: unknown, path: string[], fallback = "-"): string {

@@ -14,7 +14,7 @@ export interface ApiEnvelope<T = unknown> {
   ok: boolean;
 }
 
-const BFF_BASE_URL = import.meta.env.VITE_BFF_BASE_URL || "/api";
+const BFF_BASE_URL = import.meta.env.VITE_BFF_BASE_URL || "/api/v1";
 const GATEWAY_BASE_URL = import.meta.env.VITE_GATEWAY_BASE_URL || "/product-api";
 
 function getToken(): string | null {

@@ -1,5 +1,5 @@
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,15 +12,28 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { namespaces } from "@/data/mockData";
+import { listDevices } from "@/api/services/resources";
+import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
+import type { DeviceView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface DI { namespace: string; name: string; model: string; node: string; status: string; statusColor: string; twins: number; createdAt: string; protocol?: string; }
 
-const initialData: DI[] = [
-  { namespace: "default", name: "sensor-01", model: "test-model", node: "edge-node", status: "在线", statusColor: "success", twins: 3, createdAt: "2026年4月20日 10:00:00", protocol: "MQTT" },
-  { namespace: "default", name: "actuator-01", model: "test-model", node: "edge-node", status: "离线", statusColor: "error", twins: 2, createdAt: "2026年4月18日 14:30:00", protocol: "Modbus" },
-];
+function toDeviceRow(item: DeviceView): DI {
+  const raw = item.raw as Record<string, any>;
+  const status = item.status === "Online" || item.status === "online" ? "在线" : item.status === "Unknown" ? "未知" : item.status;
+  return {
+    namespace: item.namespace,
+    name: item.name,
+    model: item.model,
+    node: item.nodeName,
+    status,
+    statusColor: status === "在线" ? "success" : status === "未知" ? "default" : "error",
+    twins: Array.isArray(raw.status?.twins) ? raw.status.twins.length : Array.isArray(raw.spec?.properties) ? raw.spec.properties.length : 0,
+    createdAt: item.createdAt,
+    protocol: raw.spec?.protocol?.protocolName || raw.protocol || "-",
+  };
+}
 
 function yaml(n: DI) {
   return `apiVersion: devices.kubeedge.io/v1alpha2
@@ -44,7 +57,10 @@ spec:
 }
 
 export function DeviceInstances() {
-  const [data, setData] = useState<DI[]>(initialData);
+  const namespaces = useNamespaceOptions();
+  const [data, setData] = useState<DI[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [ns, setNs] = useState("all");
   const [page, setPage] = useState(1);
@@ -56,9 +72,27 @@ export function DeviceInstances() {
   const [form, setForm] = useState({ name: "", namespace: "default", model: "test-model", node: "edge-node", protocol: "MQTT" });
   const pageSize = 10;
 
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const rows = await listDevices(ns === "all" ? undefined : ns);
+      setData(rows.map(toDeviceRow));
+      setPage(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "设备实例数据加载失败");
+      setData([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [ns]);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+
   const filtered = useMemo(() => {
     let r = data;
-    if (ns !== "all") r = r.filter(d => d.namespace === ns);
     if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
     return r;
   }, [data, ns, search]);
@@ -79,7 +113,7 @@ export function DeviceInstances() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-[#1D2129]">设备实例</h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={() => setData(initialData)}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
+          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />刷新</Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild><Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建设备实例</Button></DialogTrigger>
             <DialogContent className="max-w-lg">
@@ -108,6 +142,7 @@ export function DeviceInstances() {
         <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
         <div className="flex items-center gap-3"><NamespaceSelector value={ns} onChange={v => { setNs(v); setPage(1); }} /><span className="text-sm text-[#86909C]">共 {filtered.length} 条</span></div>
       </div>
+      {error && <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">命名空间</TableHead>
@@ -120,7 +155,7 @@ export function DeviceInstances() {
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[140px]">操作</TableHead>
         </TableRow></TableHeader>
-        <TableBody>{paginated.length === 0 ? (<TableRow><TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">暂无设备实例数据</TableCell></TableRow>) : paginated.map(row => (
+        <TableBody>{isLoading ? (<TableRow><TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">正在加载设备实例数据...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">暂无设备实例数据</TableCell></TableRow>) : paginated.map(row => (
           <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>

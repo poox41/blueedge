@@ -1,5 +1,5 @@
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -7,12 +7,27 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, RefreshCw, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
-import { crdsData } from "@/data/mockData";
+import { listCRDs } from "@/api/services/resources";
 import { cn } from "@/lib/utils";
 
 interface CRD { name: string; group: string; type: string; scope: string; createdAt: string; versions?: string[]; }
 
-const fullData: CRD[] = (crdsData as any[]).map(c => ({ ...c, versions: ["v1"] }));
+function toCRD(item: any): CRD {
+  const name = item?.metadata?.name || item?.name || "-";
+  const versions = Array.isArray(item?.spec?.versions)
+    ? item.spec.versions.map((version: any) => version.name).filter(Boolean)
+    : item?.version
+      ? [item.version]
+      : ["v1"];
+  return {
+    name,
+    group: item?.spec?.group || item?.group || "-",
+    type: item?.spec?.names?.kind || item?.type || "-",
+    scope: item?.spec?.scope || item?.scope || "-",
+    createdAt: item?.metadata?.creationTimestamp || item?.createdAt || "-",
+    versions,
+  };
+}
 
 function yaml(n: CRD) {
   return `apiVersion: apiextensions.k8s.io/v1
@@ -31,12 +46,33 @@ spec:
 }
 
 export function CustomResourceDefinitions() {
-  const [data, setData] = useState<CRD[]>(fullData);
+  const [data, setData] = useState<CRD[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<CRD | null>(null);
   const pageSize = 10;
+
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const rows = await listCRDs();
+      setData(rows.map(toCRD));
+      setPage(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "CRD 数据加载失败");
+      setData([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const filtered = useMemo(() => { let r = data; if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase())); return r; }, [data, search]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -49,12 +85,13 @@ export function CustomResourceDefinitions() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-[#1D2129]">自定义资源定义</h1>
-        <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={() => setData(fullData)}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
+        <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />刷新</Button>
       </div>
       <div className="flex items-center justify-between gap-4">
         <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
         <span className="text-sm text-[#86909C]">共 {filtered.length} 条</span>
       </div>
+      {error && <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">名称</TableHead>
@@ -65,7 +102,7 @@ export function CustomResourceDefinitions() {
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[100px]">操作</TableHead>
         </TableRow></TableHeader>
-        <TableBody>{paginated.length === 0 ? (<TableRow><TableCell colSpan={7} className="text-center py-16 text-[#86909C] text-sm">暂无自定义资源定义数据</TableCell></TableRow>) : paginated.map(row => (
+        <TableBody>{isLoading ? (<TableRow><TableCell colSpan={7} className="text-center py-16 text-[#86909C] text-sm">正在加载自定义资源定义数据...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={7} className="text-center py-16 text-[#86909C] text-sm">暂无自定义资源定义数据</TableCell></TableRow>) : paginated.map(row => (
           <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.group}</TableCell>

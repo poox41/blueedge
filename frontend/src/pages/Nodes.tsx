@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,7 +11,9 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
 import { Search, Plus, RefreshCw, Trash2, ChevronLeft, ChevronRight, Eye, Copy } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { nodesData } from "@/data/mockData";
+import { formatMemory, listNodeMetrics } from "@/api/services/metrics";
+import { listNodes } from "@/api/services/resources";
+import type { EdgeNodeView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface Node {
@@ -22,17 +24,48 @@ interface Node {
   conditions?: Array<{ type: string; status: string; message: string }>;
 }
 
-const fullNodes: Node[] = (nodesData as any[]).map(n => ({
-  ...n, os: "Linux 5.15.0", kernel: "5.15.0-105-generic", kubelet: "v1.28.0",
-  containerRuntime: "containerd://1.7.0", architecture: "amd64",
-  capacity: { cpu: "4", memory: "8Gi", storage: "100Gi" },
-  conditions: [
-    { type: "Ready", status: "True", message: "kubelet is posting ready status" },
-    { type: "MemoryPressure", status: "False", message: "kubelet has sufficient memory available" },
-    { type: "DiskPressure", status: "False", message: "kubelet has no disk pressure" },
-    { type: "PIDPressure", status: "False", message: "kubelet has sufficient PID available" },
-  ],
-}));
+function statusText(status: EdgeNodeView["status"]) {
+  if (status === "Ready") return "就绪";
+  if (status === "NotReady") return "未就绪";
+  return "未知";
+}
+
+function statusColor(status: EdgeNodeView["status"]) {
+  if (status === "Ready") return "success";
+  if (status === "NotReady") return "warning";
+  return "default";
+}
+
+function toPageNode(node: EdgeNodeView, metricsByName: Map<string, { cpuMillicores: number; memoryBytes: number }>): Node {
+  const raw = node.raw as Record<string, any>;
+  const metrics = metricsByName.get(node.name);
+  return {
+    name: node.name,
+    role: node.role === "unknown" ? "cloud" : node.role,
+    status: statusText(node.status),
+    statusColor: statusColor(node.status),
+    labels: Object.keys(raw.metadata?.labels || {}).length,
+    cpu: metrics ? `${metrics.cpuMillicores}m` : "-",
+    memory: metrics ? formatMemory(metrics.memoryBytes) : "-",
+    ip: node.internalIP,
+    taints: Array.isArray(raw.spec?.taints) ? raw.spec.taints.length : 0,
+    pods: Number(raw.podCount || raw.pods || 0),
+    createdAt: node.createdAt,
+    os: node.osImage,
+    kernel: "-",
+    kubelet: node.kubeletVersion,
+    containerRuntime: "-",
+    architecture: "-",
+    capacity: { cpu: "-", memory: "-", storage: "-" },
+    conditions: [
+      {
+        type: "Ready",
+        status: node.status === "Ready" ? "True" : "False",
+        message: node.status === "Ready" ? "节点已就绪" : "节点未就绪",
+      },
+    ],
+  };
+}
 
 function yamlNode(n: Node) {
   return `apiVersion: v1
@@ -56,7 +89,9 @@ ${(n.conditions || []).map(c => `  - type: ${c.type}\n    status: "${c.status}"`
 }
 
 export function Nodes() {
-  const [data, setData] = useState<Node[]>(fullNodes);
+  const [data, setData] = useState<Node[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -66,6 +101,28 @@ export function Nodes() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [form, setForm] = useState({ name: "", role: "edge", ip: "", cpu: "2", memory: "4Gi" });
   const pageSize = 10;
+
+  const loadNodes = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const [nodes, metrics] = await Promise.allSettled([listNodes(), listNodeMetrics()]);
+      const nodeRows = nodes.status === "fulfilled" ? nodes.value : [];
+      const metricsRows = metrics.status === "fulfilled" ? metrics.value : [];
+      const metricsByName = new Map(metricsRows.map((item) => [item.name, item]));
+      setData(nodeRows.map((node) => toPageNode(node, metricsByName)));
+      setCurrentPage(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "节点数据加载失败");
+      setData([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadNodes();
+  }, [loadNodes]);
 
   const filtered = useMemo(() => {
     let result = data;
@@ -103,8 +160,8 @@ export function Nodes() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-[#1D2129]">节点</h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={() => setData(fullNodes)}>
-            <RefreshCw className="w-3.5 h-3.5 mr-1" />刷新
+          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadNodes} disabled={isLoading}>
+            <RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />刷新
           </Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild>
@@ -142,6 +199,11 @@ export function Nodes() {
         </div>
         <span className="text-sm text-[#86909C]">共 {filtered.length} 条</span>
       </div>
+      {error && (
+        <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">
+          {error}
+        </div>
+      )}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table>
           <TableHeader>
@@ -158,7 +220,9 @@ export function Nodes() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {paginated.length === 0 ? (
+            {isLoading ? (
+              <TableRow><TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">正在加载节点数据...</TableCell></TableRow>
+            ) : paginated.length === 0 ? (
               <TableRow><TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">暂无节点数据</TableCell></TableRow>
             ) : paginated.map(row => (
               <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">

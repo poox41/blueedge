@@ -1,5 +1,5 @@
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,12 +11,27 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { servicesData, namespaces } from "@/data/mockData";
+import { listServices } from "@/api/services/resources";
+import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
+import type { ServiceView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface Svc { namespace: string; name: string; type: string; clusterIP: string; externalIP: string; ports: string; createdAt: string; selector?: Record<string, string>; sessionAffinity?: string; }
 
-const fullData: Svc[] = (servicesData as any[]).map(s => ({ ...s, selector: { app: s.name }, sessionAffinity: "None" }));
+function toServiceRow(item: ServiceView): Svc {
+  const raw = item.raw as Record<string, any>;
+  return {
+    namespace: item.namespace,
+    name: item.name,
+    type: item.type,
+    clusterIP: item.clusterIP,
+    externalIP: item.externalIP,
+    ports: item.ports,
+    createdAt: item.createdAt,
+    selector: raw.spec?.selector || raw.selector || {},
+    sessionAffinity: raw.spec?.sessionAffinity || "None",
+  };
+}
 
 function yaml(n: Svc) {
   return `apiVersion: v1
@@ -33,7 +48,10 @@ ${Object.entries(n.selector || {}).map(([k, v]) => `    ${k}: ${v}`).join("\n")}
 }
 
 export function Services() {
-  const [data, setData] = useState<Svc[]>(fullData);
+  const namespaces = useNamespaceOptions();
+  const [data, setData] = useState<Svc[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [ns, setNs] = useState("all");
   const [page, setPage] = useState(1);
@@ -45,9 +63,27 @@ export function Services() {
   const [form, setForm] = useState({ name: "", namespace: "default", type: "ClusterIP", port: 80, targetPort: 80 });
   const pageSize = 10;
 
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const rows = await listServices(ns === "all" ? undefined : ns);
+      setData(rows.map(toServiceRow));
+      setPage(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "服务数据加载失败");
+      setData([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [ns]);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
+
   const filtered = useMemo(() => {
     let r = data;
-    if (ns !== "all") r = r.filter(d => d.namespace === ns);
     if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
     return r;
   }, [data, ns, search]);
@@ -68,7 +104,7 @@ export function Services() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-[#1D2129]">服务</h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={() => setData(fullData)}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
+          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />刷新</Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild><Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建服务</Button></DialogTrigger>
             <DialogContent className="max-w-lg">
@@ -97,6 +133,7 @@ export function Services() {
         <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
         <div className="flex items-center gap-3"><NamespaceSelector value={ns} onChange={v => { setNs(v); setPage(1); }} /><span className="text-sm text-[#86909C]">共 {filtered.length} 条</span></div>
       </div>
+      {error && <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">命名空间</TableHead>
@@ -108,7 +145,7 @@ export function Services() {
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[140px]">操作</TableHead>
         </TableRow></TableHeader>
-        <TableBody>{paginated.length === 0 ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[#86909C] text-sm">暂无服务数据</TableCell></TableRow>) : paginated.map(row => (
+        <TableBody>{isLoading ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[#86909C] text-sm">正在加载服务数据...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[#86909C] text-sm">暂无服务数据</TableCell></TableRow>) : paginated.map(row => (
           <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>

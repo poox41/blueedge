@@ -15,10 +15,10 @@
 ## P1：核心页面真实数据化
 
 - [ ] 首页概览接入 `/product-api/overview`
-- [ ] 节点页面接入 `/api/node`
-- [ ] Deployment 页面接入 `/api/deployment/{namespace}`
-- [ ] DeviceModel 页面接入 `/api/devicemodel/{namespace}`
-- [ ] Device 页面接入 `/api/device/{namespace}`
+- [ ] 节点页面接入 `/api/v1/node`
+- [ ] Deployment 页面接入 `/api/v1/deployment/{namespace}`
+- [ ] DeviceModel 页面接入 `/api/v1/devicemodel/{namespace}`
+- [ ] Device 页面接入 `/api/v1/device/{namespace}`
 - [ ] Rule / RuleEndpoint 页面接入真实接口
 - [ ] 统一 loading / error / empty 状态
 
@@ -40,4 +40,3 @@
 - [ ] 离线边缘节点诊断
 - [ ] 云边同步状态追踪
 - [ ] 多集群支持
-

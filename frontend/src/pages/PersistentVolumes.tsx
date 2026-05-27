@@ -1,5 +1,5 @@
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +10,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { persistentVolumesData } from "@/data/mockData";
+import { getResourceCreatedAt, getResourceName } from "@/api/adapters/kube-resource.adapter";
+import { listPersistentVolumes } from "@/api/services/storage";
 import { cn } from "@/lib/utils";
 
 interface PV {
@@ -20,10 +21,23 @@ interface PV {
   nodeAffinity?: string; phase?: string;
 }
 
-const fullData: PV[] = (persistentVolumesData as any[]).map(n => ({
-  ...n, volumeMode: "Filesystem", persistentVolumeReclaimPolicy: n.reclaimPolicy,
-  nodeAffinity: "Required", phase: n.status === "已绑定" ? "Bound" : "Available",
-}));
+function toPersistentVolume(item: any): PV {
+  const phase = item?.status?.phase || "-";
+  return {
+    name: getResourceName(item),
+    status: phase === "Bound" ? "已绑定" : phase === "Available" ? "可用" : phase,
+    statusColor: phase === "Bound" ? "success" : phase === "Available" ? "warning" : "default",
+    capacity: item?.spec?.capacity?.storage || "-",
+    accessModes: Array.isArray(item?.spec?.accessModes) ? item.spec.accessModes.join(", ") : "-",
+    reclaimPolicy: item?.spec?.persistentVolumeReclaimPolicy || "-",
+    storageClass: item?.spec?.storageClassName || "-",
+    createdAt: getResourceCreatedAt(item),
+    volumeMode: item?.spec?.volumeMode || "-",
+    persistentVolumeReclaimPolicy: item?.spec?.persistentVolumeReclaimPolicy || "-",
+    nodeAffinity: item?.spec?.nodeAffinity ? "Required" : "-",
+    phase,
+  };
+}
 
 function yaml(n: PV) {
   return `apiVersion: v1
@@ -43,7 +57,9 @@ status:
 }
 
 export function PersistentVolumes() {
-  const [data, setData] = useState<PV[]>(fullData);
+  const [data, setData] = useState<PV[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -53,6 +69,25 @@ export function PersistentVolumes() {
   const [delItem, setDelItem] = useState<PV | null>(null);
   const [form, setForm] = useState({ name: "", capacity: "10Gi", accessMode: "ReadWriteOnce", reclaim: "Retain", storageClass: "local-path" });
   const pageSize = 10;
+
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const items = await listPersistentVolumes();
+      setData(items.map(toPersistentVolume));
+      setPage(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载持久卷失败");
+      setData([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const filtered = useMemo(() => {
     let r = data;
@@ -76,7 +111,7 @@ export function PersistentVolumes() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-[#1D2129]">持久卷</h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={() => setData(fullData)}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
+          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild><Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建持久卷</Button></DialogTrigger>
             <DialogContent className="max-w-lg">
@@ -105,6 +140,7 @@ export function PersistentVolumes() {
         <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
         <span className="text-sm text-[#86909C]">共 {filtered.length} 条</span>
       </div>
+      {error && <div className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-700">{error}</div>}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">名称</TableHead>
@@ -116,7 +152,7 @@ export function PersistentVolumes() {
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[140px]">操作</TableHead>
         </TableRow></TableHeader>
-        <TableBody>{paginated.length === 0 ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[#86909C] text-sm">暂无持久卷数据</TableCell></TableRow>) : paginated.map(row => (
+        <TableBody>{isLoading ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[#86909C] text-sm">加载中...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[#86909C] text-sm">暂无持久卷数据</TableCell></TableRow>) : paginated.map(row => (
           <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
             <TableCell className="px-4 py-3"><StatusBadge status={row.status} color={row.statusColor} /></TableCell>

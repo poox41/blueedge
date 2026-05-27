@@ -6,7 +6,12 @@ export function normalizeDeviceModel(raw: KubeResource): DeviceModelView {
   return {
     name: getName(raw),
     namespace: getNamespace(raw),
-    propertiesCount: Array.isArray(properties) ? properties.length : 0,
+    propertiesCount:
+      typeof raw.properties === "number"
+        ? raw.properties
+        : Array.isArray(properties)
+          ? properties.length
+          : 0,
     createdAt: getCreatedAt(raw),
     raw,
   };

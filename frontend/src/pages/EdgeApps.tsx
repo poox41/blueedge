@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -73,7 +73,9 @@ import {
 } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { edgeAppsData, namespaces } from "@/data/mockData";
+import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
+import { listEdgeApplications } from "@/api/services/resources";
+import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import { cn } from "@/lib/utils";
 
 interface EdgeApp {
@@ -121,6 +123,53 @@ const typeIcons: Record<string, React.ElementType> = {
   DaemonSet: MemoryStick,
 };
 
+function getFirstContainer(item: any): any {
+  const containers =
+    item?.spec?.template?.spec?.containers ||
+    item?.spec?.workloadTemplate?.spec?.template?.spec?.containers ||
+    item?.spec?.containers;
+  return Array.isArray(containers) ? containers[0] : undefined;
+}
+
+function toEdgeApp(item: any): EdgeApp {
+  const labels = item?.metadata?.labels || item?.spec?.selector?.matchLabels || {};
+  const container = getFirstContainer(item) || {};
+  const replicas = item?.spec?.replicas ?? item?.spec?.workloadTemplate?.spec?.replicas ?? 1;
+  const availableReplicas = item?.status?.availableReplicas ?? item?.status?.readyReplicas ?? 0;
+  const kind = item?.kind || item?.spec?.workloadTemplate?.kind || "Deployment";
+  const phase = item?.status?.phase;
+  const status = phase || (availableReplicas >= replicas ? "运行中" : "未就绪");
+
+  return {
+    namespace: getResourceNamespace(item),
+    name: getResourceName(item),
+    type: kind,
+    status,
+    statusColor: status === "运行中" || status === "Running" || status === "Succeeded" ? "success" : "warning",
+    node: item?.spec?.nodeName || item?.spec?.nodeSelector?.["kubernetes.io/hostname"] || "-",
+    nodeRole: "edge",
+    images: [container?.image || "-"],
+    cpu: "0",
+    memory: "0Mi",
+    cpuLimit: container?.resources?.limits?.cpu || "-",
+    memoryLimit: container?.resources?.limits?.memory || "-",
+    restartCount: 0,
+    pods: `${availableReplicas}/${replicas}`,
+    ports: Array.isArray(container?.ports) ? container.ports.map((p: any) => `${p.containerPort}/${p.protocol || "TCP"}`) : [],
+    createdAt: getResourceCreatedAt(item),
+    age: getResourceCreatedAt(item),
+    labels,
+    selector: item?.spec?.selector?.matchLabels,
+    strategy: item?.spec?.strategy?.type,
+    desiredReplicas: replicas,
+    availableReplicas,
+    desired: item?.status?.desiredNumberScheduled,
+    current: item?.status?.currentNumberScheduled,
+    ready: item?.status?.numberReady,
+    ip: item?.status?.podIP,
+  };
+}
+
 function yamlTemplateEdge(a: EdgeApp) {
   const kind = a.type;
   let spec = "";
@@ -162,7 +211,10 @@ ${spec}`;
 }
 
 export function EdgeApps() {
-  const [data, setData] = useState<EdgeApp[]>(edgeAppsData as unknown as EdgeApp[]);
+  const namespaces = useNamespaceOptions();
+  const [data, setData] = useState<EdgeApp[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [namespace, setNamespace] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -184,6 +236,23 @@ export function EdgeApps() {
   });
 
   const pageSize = 10;
+
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const items = await listEdgeApplications(namespace === "all" ? undefined : namespace);
+      setData(items.map(toEdgeApp));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载边缘应用失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [namespace]);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const filtered = useMemo(() => {
     let result = data;
@@ -289,7 +358,8 @@ export function EdgeApps() {
             variant="outline"
             size="sm"
             className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]"
-            onClick={() => setData(edgeAppsData as unknown as EdgeApp[])}
+            onClick={loadData}
+            disabled={isLoading}
           >
             <RefreshCw className="w-3.5 h-3.5 mr-1" />
             刷新
@@ -401,6 +471,8 @@ export function EdgeApps() {
         </div>
       </div>
 
+      {error && <div className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-700">{error}</div>}
+
       {/* Table */}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table>
@@ -418,7 +490,13 @@ export function EdgeApps() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {paginated.length === 0 ? (
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">
+                  加载中...
+                </TableCell>
+              </TableRow>
+            ) : paginated.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">
                   暂无边缘应用数据

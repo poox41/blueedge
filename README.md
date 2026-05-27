@@ -41,6 +41,38 @@ docs/development-plan.md          # 开发计划
 
 ## 第一次启动
 
+### 一键启动本地联调栈
+
+当前本地联调可以直接运行：
+
+```bash
+./scripts/run-dev-stack.sh start
+```
+
+脚本会启动：
+
+```text
+SSH 隧道：127.0.0.1:16443 -> 192.168.16.52:6443
+官方 BFF：http://127.0.0.1:8080/api/v1
+api-gateway：http://127.0.0.1:7001
+frontend：http://localhost:3000
+```
+
+查看状态或停止：
+
+```bash
+./scripts/run-dev-stack.sh status
+./scripts/run-dev-stack.sh stop
+```
+
+Kubernetes token 仍需手动写入浏览器：
+
+```js
+localStorage.setItem("token", JSON.stringify("<your-token>"))
+localStorage.setItem("kubeedge_auth", "true")
+location.reload()
+```
+
 ### 1. 初始化官方 BFF
 
 ```bash
@@ -84,7 +116,7 @@ export APISERVER_SKIP_TLS_VERIFY=true
 默认假设 BFF 运行在：
 
 ```text
-http://127.0.0.1:8080/api
+http://127.0.0.1:8080/api/v1
 ```
 
 ### 4. 启动产品增强层
@@ -122,13 +154,13 @@ http://127.0.0.1:3000
 先打通这些接口，不急着扩页面：
 
 ```text
-/node
-/deployment
-/service
-/devicemodel
-/device
-/ruleendpoint
-/rule
+/api/v1/node
+/api/v1/deployment
+/api/v1/service
+/api/v1/devicemodel
+/api/v1/device
+/api/v1/ruleendpoint
+/api/v1/rule
 ```
 
 对应前端封装：
@@ -148,4 +180,3 @@ frontend/src/types/kubeedge.ts
 ```
 
 同步后先检查 BFF 接口是否仍然可用，再改前端 adapter。
-

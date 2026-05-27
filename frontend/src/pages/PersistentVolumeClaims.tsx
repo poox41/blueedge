@@ -1,5 +1,5 @@
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -12,12 +12,29 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { persistentVolumeClaimsData, namespaces } from "@/data/mockData";
+import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
+import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
+import { listPersistentVolumeClaims } from "@/api/services/storage";
 import { cn } from "@/lib/utils";
 
 interface PVC {
   namespace: string; name: string; status: string; statusColor: string;
   capacity: string; accessModes: string; storageClass: string; volume: string; createdAt: string;
+}
+
+function toPersistentVolumeClaim(item: any): PVC {
+  const phase = item?.status?.phase || "-";
+  return {
+    namespace: getResourceNamespace(item),
+    name: getResourceName(item),
+    status: phase === "Bound" ? "已绑定" : phase === "Pending" ? "待处理" : phase,
+    statusColor: phase === "Bound" ? "success" : phase === "Pending" ? "warning" : "default",
+    capacity: item?.status?.capacity?.storage || item?.spec?.resources?.requests?.storage || "-",
+    accessModes: Array.isArray(item?.spec?.accessModes) ? item.spec.accessModes.join(", ") : "-",
+    storageClass: item?.spec?.storageClassName || "-",
+    volume: item?.spec?.volumeName || "-",
+    createdAt: getResourceCreatedAt(item),
+  };
 }
 
 function yaml(n: PVC) {
@@ -39,7 +56,10 @@ status:
 }
 
 export function PersistentVolumeClaims() {
-  const [data, setData] = useState<PVC[]>(persistentVolumeClaimsData as PVC[]);
+  const namespaces = useNamespaceOptions();
+  const [data, setData] = useState<PVC[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [ns, setNs] = useState("all");
   const [page, setPage] = useState(1);
@@ -50,6 +70,25 @@ export function PersistentVolumeClaims() {
   const [delItem, setDelItem] = useState<PVC | null>(null);
   const [form, setForm] = useState({ name: "", namespace: "default", capacity: "10Gi", accessMode: "ReadWriteOnce", storageClass: "local-path" });
   const pageSize = 10;
+
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const items = await listPersistentVolumeClaims(ns === "all" ? undefined : ns);
+      setData(items.map(toPersistentVolumeClaim));
+      setPage(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载持久卷声明失败");
+      setData([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [ns]);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const filtered = useMemo(() => {
     let r = data;
@@ -74,7 +113,7 @@ export function PersistentVolumeClaims() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-[#1D2129]">持久卷声明</h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={() => setData(persistentVolumeClaimsData as PVC[])}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
+          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild><Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建声明</Button></DialogTrigger>
             <DialogContent className="max-w-lg">
@@ -103,6 +142,7 @@ export function PersistentVolumeClaims() {
         <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
         <div className="flex items-center gap-3"><NamespaceSelector value={ns} onChange={v => { setNs(v); setPage(1); }} /><span className="text-sm text-[#86909C]">共 {filtered.length} 条</span></div>
       </div>
+      {error && <div className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-700">{error}</div>}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">命名空间</TableHead>
@@ -115,7 +155,7 @@ export function PersistentVolumeClaims() {
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[140px]">操作</TableHead>
         </TableRow></TableHeader>
-        <TableBody>{paginated.length === 0 ? (<TableRow><TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">暂无持久卷声明数据</TableCell></TableRow>) : paginated.map(row => (
+        <TableBody>{isLoading ? (<TableRow><TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">加载中...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">暂无持久卷声明数据</TableCell></TableRow>) : paginated.map(row => (
           <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>

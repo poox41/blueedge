@@ -1,5 +1,5 @@
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -13,7 +13,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { nodeGroupsData, namespaces } from "@/data/mockData";
+import { getNodeGroup, listNodeGroups, listNodes } from "@/api/services/resources";
+import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
+import type { EdgeNodeView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface NodeGroup {
@@ -22,9 +24,73 @@ interface NodeGroup {
   allocationPolicy?: string; spreadConstraints?: boolean;
 }
 
-const fullData: NodeGroup[] = (nodeGroupsData as any[]).map(n => ({
-  ...n, allocationPolicy: "Spread", spreadConstraints: true,
-}));
+function compactObject(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => item !== undefined && item !== null && item !== "")
+      .map(([key, item]) => [key, String(item)]),
+  );
+}
+
+function extractSelector(item: any): Record<string, string> {
+  return compactObject(
+    item?.spec?.nodeSelector ||
+    item?.spec?.selector?.matchLabels ||
+    item?.spec?.selector ||
+    item?.spec?.matchLabels ||
+    item?.nodeSelector ||
+    item?.selector ||
+    item?.matchLabels,
+  );
+}
+
+function extractNodes(item: any): string[] {
+  const rawNodes =
+    item?.status?.nodes ||
+    item?.status?.nodeNames ||
+    item?.spec?.nodes ||
+    item?.spec?.nodeNames ||
+    item?.nodes ||
+    item?.nodeNames;
+
+  if (!Array.isArray(rawNodes)) return [];
+  return rawNodes
+    .map((node: any) => typeof node === "string" ? node : node?.name || node?.nodeName)
+    .filter(Boolean);
+}
+
+function selectorMatchesNode(selector: Record<string, string>, node: EdgeNodeView): boolean {
+  const labels = node.raw?.metadata?.labels || {};
+  const entries = Object.entries(selector);
+  if (entries.length === 0) return false;
+
+  return entries.every(([key, value]) => {
+    if (labels[key] === value) return true;
+    if (key === "nodeType" && value === node.role) return true;
+    if (key === "role" && value === node.role) return true;
+    if (key === "kubeedge" && value === node.role) return true;
+    return false;
+  });
+}
+
+function toNodeGroup(item: any, allNodes: EdgeNodeView[] = []): NodeGroup {
+  const selector = extractSelector(item);
+  const rawNodes = extractNodes(item);
+  const matchedNodes = rawNodes.length > 0 ? rawNodes : allNodes.filter((node) => selectorMatchesNode(selector, node)).map((node) => node.name);
+  const statusValue = typeof item?.status === "string" ? item.status : item?.status?.phase || item?.phase || "Ready";
+  return {
+    name: item?.metadata?.name || item?.name || "-",
+    namespace: item?.metadata?.namespace || item?.namespace || "default",
+    nodes: matchedNodes,
+    nodeSelector: selector,
+    status: statusValue === "Ready" || statusValue === "就绪" ? "就绪" : String(statusValue),
+    statusColor: statusValue === "Ready" || statusValue === "就绪" ? "success" : "warning",
+    createdAt: item?.metadata?.creationTimestamp || item?.creationTimestamp || item?.createdAt || "-",
+    allocationPolicy: item?.spec?.allocationPolicy || item?.spec?.type || item?.allocationPolicy || "Spread",
+    spreadConstraints: item?.spec?.spreadConstraints ?? item?.spreadConstraints ?? true,
+  };
+}
 
 function yamlNg(n: NodeGroup) {
   return `apiVersion: edgeclusters.kubeedge.io/v1
@@ -40,7 +106,10 @@ ${Object.entries(n.nodeSelector).map(([k, v]) => `    ${k}: ${v}`).join("\n")}
 }
 
 export function NodeGroups() {
-  const [data, setData] = useState<NodeGroup[]>(fullData);
+  const namespaces = useNamespaceOptions();
+  const [data, setData] = useState<NodeGroup[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [ns, setNs] = useState("all");
   const [page, setPage] = useState(1);
@@ -51,6 +120,36 @@ export function NodeGroups() {
   const [delItem, setDelItem] = useState<NodeGroup | null>(null);
   const [form, setForm] = useState({ name: "", namespace: "default", nodeType: "edge", policy: "Spread" });
   const pageSize = 10;
+
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const [rows, allNodes] = await Promise.all([listNodeGroups(), listNodes()]);
+      const details = await Promise.all(
+        rows.map(async (row) => {
+          const name = row?.metadata?.name || row?.name;
+          if (!name) return row;
+          try {
+            return await getNodeGroup(name);
+          } catch {
+            return row;
+          }
+        }),
+      );
+      setData(details.map((row) => toNodeGroup(row, allNodes)));
+      setPage(1);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "节点组数据加载失败");
+      setData([]);
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const filtered = useMemo(() => {
     let r = data;
@@ -75,7 +174,7 @@ export function NodeGroups() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-[#1D2129]">节点组</h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={() => setData(fullData)}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
+          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />刷新</Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild><Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建节点组</Button></DialogTrigger>
             <DialogContent className="max-w-lg">
@@ -103,6 +202,7 @@ export function NodeGroups() {
         <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
         <div className="flex items-center gap-3"><NamespaceSelector value={ns} onChange={v => { setNs(v); setPage(1); }} /><span className="text-sm text-[#86909C]">共 {filtered.length} 条</span></div>
       </div>
+      {error && <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">命名空间</TableHead>
@@ -114,7 +214,7 @@ export function NodeGroups() {
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[140px]">操作</TableHead>
         </TableRow></TableHeader>
-        <TableBody>{paginated.length === 0 ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[#86909C] text-sm">暂无节点组数据</TableCell></TableRow>) : paginated.map(row => (
+        <TableBody>{isLoading ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[#86909C] text-sm">正在加载节点组数据...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[#86909C] text-sm">暂无节点组数据</TableCell></TableRow>) : paginated.map(row => (
           <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>

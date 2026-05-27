@@ -1,11 +1,9 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import {
-  systemInfo,
-  dashboardStats,
-  nodesData,
-  deploymentsData,
-} from "@/data/mockData";
+import { getClusterMetrics, type ClusterMetrics } from "@/api/services/product";
+import { listDeployments, listNodes } from "@/api/services/resources";
+import type { EdgeNodeView, WorkloadView } from "@/types/kubeedge";
+import { useEffect, useState } from "react";
 import {
   Server,
   Boxes,
@@ -29,8 +27,76 @@ import {
   Tooltip,
 } from "recharts";
 
+const emptyTrendData = [
+  { name: "00:00", usage: 0 },
+  { name: "04:00", usage: 0 },
+  { name: "08:00", usage: 0 },
+  { name: "12:00", usage: 0 },
+  { name: "16:00", usage: 0 },
+  { name: "20:00", usage: 0 },
+];
+
 export function Dashboard() {
-  const { cpuData, memoryData, nodeStatus, deploymentStatus, recentEvents } = dashboardStats;
+  const [nodes, setNodes] = useState<EdgeNodeView[]>([]);
+  const [deployments, setDeployments] = useState<WorkloadView[]>([]);
+  const [metrics, setMetrics] = useState<ClusterMetrics | null>(null);
+  const [metricsError, setMetricsError] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let mounted = true;
+    async function loadDashboard() {
+      setError("");
+      try {
+        const [nodeList, deploymentList, metricsResult] = await Promise.allSettled([
+          listNodes(),
+          listDeployments(),
+          getClusterMetrics(),
+        ]);
+        if (!mounted) return;
+        if (nodeList.status === "fulfilled") setNodes(nodeList.value);
+        if (deploymentList.status === "fulfilled") setDeployments(deploymentList.value);
+        if (metricsResult.status === "fulfilled") {
+          setMetrics(metricsResult.value);
+          setMetricsError("");
+        } else {
+          setMetrics(null);
+          setMetricsError(metricsResult.reason instanceof Error ? metricsResult.reason.message : "metrics 未接入");
+        }
+      } catch (err) {
+        if (mounted) setError(err instanceof Error ? err.message : "加载仪表板数据失败");
+      }
+    }
+
+    void loadDashboard();
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  const readyNodes = nodes.filter((node) => node.status === "Ready").length;
+  const notReadyNodes = Math.max(0, nodes.length - readyNodes);
+  const runningDeployments = deployments.filter((item) => item.availableReplicas > 0).length;
+  const inactiveDeployments = Math.max(0, deployments.length - runningDeployments);
+  const edgeNodes = nodes.filter((node) => node.role === "edge").length;
+  const cloudNodes = nodes.filter((node) => node.role === "cloud").length;
+  const unknownNodes = Math.max(0, nodes.length - edgeNodes - cloudNodes);
+  const nodeStatus = [
+    { name: "云端节点", value: cloudNodes, color: "#165DFF" },
+    { name: "边缘节点", value: edgeNodes, color: "#00B42A" },
+    { name: "未知角色", value: unknownNodes, color: "#86909C" },
+  ].filter((item) => item.value > 0);
+  const deploymentStatus = [
+    { name: "运行中", value: runningDeployments, color: "#00B42A" },
+    { name: "未就绪", value: inactiveDeployments, color: "#FF7D00" },
+  ].filter((item) => item.value > 0);
+  const recentEvents: Array<{ type: string; message: string; time: string }> = [];
+  const cpuPercent = metrics?.cpu.percent ?? 0;
+  const memoryPercent = metrics?.memory.percent ?? 0;
+  const cpuTrendData = emptyTrendData.map((item) => ({ ...item, usage: cpuPercent }));
+  const memoryTrendData = emptyTrendData.map((item) => ({ ...item, usage: memoryPercent }));
+  const memoryUsedGi = metrics ? (metrics.memory.usedBytes / 1024 ** 3).toFixed(1) : "-";
+  const memoryCapacityGi = metrics ? (metrics.memory.capacityBytes / 1024 ** 3).toFixed(1) : "-";
 
   const eventIcon = (type: string) => {
     switch (type) {
@@ -47,6 +113,7 @@ export function Dashboard() {
 
   return (
     <div className="space-y-5">
+      {error && <div className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-700">{error}</div>}
       {/* Status Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="border-[#E5E6EB] shadow-sm hover:shadow-md transition-shadow">
@@ -55,11 +122,11 @@ export function Dashboard() {
               <div>
                 <p className="text-sm text-[#86909C] mb-1">节点状态</p>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold text-[#1D2129]">{systemInfo.readyNodes}</span>
+                  <span className="text-2xl font-bold text-[#1D2129]">{readyNodes}</span>
                   <span className="text-sm text-[#00B42A]">就绪</span>
                 </div>
-                {systemInfo.notReadyNodes > 0 && (
-                  <p className="text-xs text-[#F53F3F] mt-1">{systemInfo.notReadyNodes} 未就绪</p>
+                {notReadyNodes > 0 && (
+                  <p className="text-xs text-[#F53F3F] mt-1">{notReadyNodes} 未就绪</p>
                 )}
               </div>
               <div className="w-10 h-10 rounded-lg bg-[#E8FFEA] flex items-center justify-center">
@@ -75,11 +142,11 @@ export function Dashboard() {
               <div>
                 <p className="text-sm text-[#86909C] mb-1">部署状态</p>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold text-[#1D2129]">{systemInfo.runningDeployments}</span>
+                  <span className="text-2xl font-bold text-[#1D2129]">{runningDeployments}</span>
                   <span className="text-sm text-[#00B42A]">运行中</span>
                 </div>
-                {systemInfo.inactiveDeployments > 0 && (
-                  <p className="text-xs text-[#FF7D00] mt-1">{systemInfo.inactiveDeployments} 不活跃</p>
+                {inactiveDeployments > 0 && (
+                  <p className="text-xs text-[#FF7D00] mt-1">{inactiveDeployments} 不活跃</p>
                 )}
               </div>
               <div className="w-10 h-10 rounded-lg bg-[#E8F3FF] flex items-center justify-center">
@@ -95,13 +162,14 @@ export function Dashboard() {
               <div>
                 <p className="text-sm text-[#86909C] mb-1">处理器使用率</p>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold text-[#1D2129]">{systemInfo.cpuUsage.percent}%</span>
-                  <span className="text-sm text-[#4E5969]">{systemInfo.cpuUsage.value}{systemInfo.cpuUsage.unit}</span>
+                  <span className="text-2xl font-bold text-[#1D2129]">{metrics ? `${cpuPercent}%` : "-"}</span>
+                  <span className="text-sm text-[#4E5969]">{metrics ? `${metrics.cpu.usedMillicores}m / ${metrics.cpu.capacityMillicores}m` : "metrics 未接入"}</span>
                 </div>
+                {metricsError && <p className="text-xs text-[#FF7D00] mt-1">{metricsError}</p>}
                 <div className="w-full h-1.5 bg-[#F2F3F5] rounded-full mt-2">
                   <div
                     className="h-full rounded-full bg-[#165DFF]"
-                    style={{ width: `${systemInfo.cpuUsage.percent}%` }}
+                    style={{ width: `${Math.min(100, cpuPercent)}%` }}
                   />
                 </div>
               </div>
@@ -118,13 +186,13 @@ export function Dashboard() {
               <div>
                 <p className="text-sm text-[#86909C] mb-1">内存使用率</p>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-2xl font-bold text-[#1D2129]">{systemInfo.memoryUsage.percent}%</span>
-                  <span className="text-sm text-[#4E5969]">{systemInfo.memoryUsage.value}{systemInfo.memoryUsage.unit}</span>
+                  <span className="text-2xl font-bold text-[#1D2129]">{metrics ? `${memoryPercent}%` : "-"}</span>
+                  <span className="text-sm text-[#4E5969]">{metrics ? `${memoryUsedGi}Gi / ${memoryCapacityGi}Gi` : "metrics 未接入"}</span>
                 </div>
                 <div className="w-full h-1.5 bg-[#F2F3F5] rounded-full mt-2">
                   <div
                     className="h-full rounded-full bg-[#00B42A]"
-                    style={{ width: `${systemInfo.memoryUsage.percent}%` }}
+                    style={{ width: `${Math.min(100, memoryPercent)}%` }}
                   />
                 </div>
               </div>
@@ -145,7 +213,7 @@ export function Dashboard() {
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={200}>
-              <AreaChart data={cpuData}>
+              <AreaChart data={cpuTrendData}>
                 <defs>
                   <linearGradient id="cpuGradient" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#165DFF" stopOpacity={0.2} />
@@ -177,7 +245,7 @@ export function Dashboard() {
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={200}>
-              <AreaChart data={memoryData}>
+              <AreaChart data={memoryTrendData}>
                 <defs>
                   <linearGradient id="memGradient" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="#00B42A" stopOpacity={0.2} />
@@ -209,7 +277,9 @@ export function Dashboard() {
           </CardHeader>
           <CardContent>
             <div className="space-y-3 max-h-[200px] overflow-y-auto">
-              {recentEvents.map((event, i) => (
+              {recentEvents.length === 0 ? (
+                <div className="text-sm text-[#86909C] py-8 text-center">暂无事件数据</div>
+              ) : recentEvents.map((event, i) => (
                 <div key={i} className="flex items-start gap-2.5">
                   {eventIcon(event.type)}
                   <div className="flex-1 min-w-0">
@@ -251,7 +321,9 @@ export function Dashboard() {
               </ResponsiveContainer>
             </div>
             <div className="ml-6 space-y-2">
-              {nodeStatus.map((item, i) => (
+              {nodeStatus.length === 0 ? (
+                <span className="text-sm text-[#86909C]">暂无节点数据</span>
+              ) : nodeStatus.map((item, i) => (
                 <div key={i} className="flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: item.color }} />
                   <span className="text-sm text-[#4E5969]">{item.name}</span>
@@ -288,7 +360,9 @@ export function Dashboard() {
               </ResponsiveContainer>
             </div>
             <div className="ml-6 space-y-2">
-              {deploymentStatus.map((item, i) => (
+              {deploymentStatus.length === 0 ? (
+                <span className="text-sm text-[#86909C]">暂无部署数据</span>
+              ) : deploymentStatus.map((item, i) => (
                 <div key={i} className="flex items-center gap-2">
                   <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: item.color }} />
                   <span className="text-sm text-[#4E5969]">{item.name}</span>
@@ -308,7 +382,7 @@ export function Dashboard() {
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {nodesData.slice(0, 2).map((node) => (
+              {nodes.slice(0, 3).map((node) => (
                 <div key={node.name} className="flex items-center justify-between p-3 rounded-lg bg-[#F7F8FA]">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-md bg-[#E8F3FF] flex items-center justify-center">
@@ -316,10 +390,10 @@ export function Dashboard() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-[#1D2129]">{node.name}</p>
-                      <p className="text-xs text-[#86909C]">{node.role === "cloud" ? "云端" : "边缘"} · {node.ip}</p>
+                      <p className="text-xs text-[#86909C]">{node.role === "cloud" ? "云端" : "边缘"} · {node.internalIP}</p>
                     </div>
                   </div>
-                  <StatusBadge status={node.status} color="success" />
+                  <StatusBadge status={node.status} color={node.status === "Ready" ? "success" : "warning"} />
                 </div>
               ))}
             </div>
@@ -332,7 +406,7 @@ export function Dashboard() {
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
-              {deploymentsData.slice(0, 3).map((dep) => (
+              {deployments.slice(0, 3).map((dep) => (
                 <div key={dep.name} className="flex items-center justify-between p-3 rounded-lg bg-[#F7F8FA]">
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 rounded-md bg-[#E8FFEA] flex items-center justify-center">
@@ -340,10 +414,10 @@ export function Dashboard() {
                     </div>
                     <div>
                       <p className="text-sm font-medium text-[#1D2129]">{dep.name}</p>
-                      <p className="text-xs text-[#86909C]">{dep.namespace} · {dep.pods} Pods</p>
+                      <p className="text-xs text-[#86909C]">{dep.namespace} · {dep.ready} Pods</p>
                     </div>
                   </div>
-                  <StatusBadge status={dep.status} color="success" />
+                  <StatusBadge status={dep.availableReplicas > 0 ? "运行中" : "未就绪"} color={dep.availableReplicas > 0 ? "success" : "warning"} />
                 </div>
               ))}
             </div>

@@ -1,5 +1,5 @@
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,12 +10,20 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
-import { clusterRolesData } from "@/data/mockData";
+import { formatLabels, getResourceCreatedAt, getResourceName } from "@/api/adapters/kube-resource.adapter";
+import { listClusterRoles } from "@/api/services/resources";
 import { cn } from "@/lib/utils";
 
 interface CR { name: string; labels: string; createdAt: string; rules?: Array<{ apiGroups: string[]; resources: string[]; verbs: string[] }>; }
 
-const fullData: CR[] = (clusterRolesData as any[]).map(r => ({ ...r, rules: [{ apiGroups: [""], resources: ["pods"], verbs: ["get", "list", "watch"] }] }));
+function toClusterRole(item: any): CR {
+  return {
+    name: getResourceName(item),
+    labels: formatLabels(item?.metadata?.labels),
+    createdAt: getResourceCreatedAt(item),
+    rules: Array.isArray(item?.rules) ? item.rules : [],
+  };
+}
 
 function yaml(n: CR) {
   return `apiVersion: rbac.authorization.k8s.io/v1
@@ -29,7 +37,9 @@ ${(n.rules || []).map(rule => `  - apiGroups: ["${rule.apiGroups.join('", "')}"]
 }
 
 export function ClusterRoles() {
-  const [data, setData] = useState<CR[]>(fullData);
+  const [data, setData] = useState<CR[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -39,6 +49,23 @@ export function ClusterRoles() {
   const [delItem, setDelItem] = useState<CR | null>(null);
   const [form, setForm] = useState({ name: "", resources: "pods,nodes", verbs: "get,list,watch" });
   const pageSize = 10;
+
+  const loadData = useCallback(async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const items = await listClusterRoles();
+      setData(items.map(toClusterRole));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载集群角色失败");
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadData();
+  }, [loadData]);
 
   const filtered = useMemo(() => { let r = data; if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase())); return r; }, [data, search]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -58,7 +85,7 @@ export function ClusterRoles() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-[#1D2129]">集群角色</h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={() => setData(fullData)}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
+          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className="w-3.5 h-3.5 mr-1" />刷新</Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild><Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建集群角色</Button></DialogTrigger>
             <DialogContent className="max-w-lg">
@@ -77,6 +104,7 @@ export function ClusterRoles() {
         <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
         <span className="text-sm text-[#86909C]">共 {filtered.length} 条</span>
       </div>
+      {error && <div className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-700">{error}</div>}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">名称</TableHead>
@@ -84,7 +112,7 @@ export function ClusterRoles() {
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[140px]">操作</TableHead>
         </TableRow></TableHeader>
-        <TableBody>{paginated.length === 0 ? (<TableRow><TableCell colSpan={4} className="text-center py-16 text-[#86909C] text-sm">暂无集群角色数据</TableCell></TableRow>) : paginated.map(row => (
+        <TableBody>{isLoading ? (<TableRow><TableCell colSpan={4} className="text-center py-16 text-[#86909C] text-sm">加载中...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={4} className="text-center py-16 text-[#86909C] text-sm">暂无集群角色数据</TableCell></TableRow>) : paginated.map(row => (
           <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.labels}</TableCell>
