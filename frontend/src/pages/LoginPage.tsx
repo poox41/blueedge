@@ -170,20 +170,21 @@ export function LoginPage() {
     };
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setIsLoading(true);
 
-    setTimeout(() => {
-      const success = login(username, password);
+    try {
+      const success = await login(username, password);
       if (success) {
         navigate("/");
       } else {
         setError("账号或密码错误，请重新输入");
       }
+    } finally {
       setIsLoading(false);
-    }, 500);
+    }
   };
 
   return (
@@ -391,13 +392,6 @@ export function LoginPage() {
               </Button>
             </form>
 
-            {/* Hint */}
-            <div className="mt-5 pt-5 border-t border-[#1D3555]">
-              <p className="text-xs text-[#4E5969] text-center">
-                测试账号密码均为：
-                <span className="text-[#86909C] font-mono ml-1">2026@bluedot</span>
-              </p>
-            </div>
           </div>
 
           {/* Footer */}

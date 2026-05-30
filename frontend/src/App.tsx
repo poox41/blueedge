@@ -6,6 +6,7 @@ import { Dashboard } from "@/pages/Dashboard";
 import { Nodes } from "@/pages/Nodes";
 import { NodeGroups } from "@/pages/NodeGroups";
 import { Deployments } from "@/pages/Deployments";
+import { Pods } from "@/pages/Pods";
 import { EdgeApps } from "@/pages/EdgeApps";
 import { PersistentVolumes } from "@/pages/PersistentVolumes";
 import { PersistentVolumeClaims } from "@/pages/PersistentVolumeClaims";
@@ -14,6 +15,8 @@ import { DeviceInstances } from "@/pages/DeviceInstances";
 import { RuleEndpoints } from "@/pages/RuleEndpoints";
 import { Rules } from "@/pages/Rules";
 import { Services } from "@/pages/Services";
+import { ConfigMaps } from "@/pages/ConfigMaps";
+import { Secrets } from "@/pages/Secrets";
 import { ServiceAccounts } from "@/pages/ServiceAccounts";
 import { Roles } from "@/pages/Roles";
 import { RoleBindings } from "@/pages/RoleBindings";
@@ -41,6 +44,7 @@ function AppRoutes() {
         <Route path="/nodes" element={<Nodes />} />
         <Route path="/nodegroups" element={<NodeGroups />} />
         <Route path="/deployments" element={<Deployments />} />
+        <Route path="/pods" element={<Pods />} />
         <Route path="/edgeapps" element={<EdgeApps />} />
         <Route path="/persistentvolumes" element={<PersistentVolumes />} />
         <Route path="/persistentvolumeclaims" element={<PersistentVolumeClaims />} />
@@ -49,6 +53,8 @@ function AppRoutes() {
         <Route path="/ruleendpoints" element={<RuleEndpoints />} />
         <Route path="/rules" element={<Rules />} />
         <Route path="/services" element={<Services />} />
+        <Route path="/configmaps" element={<ConfigMaps />} />
+        <Route path="/secrets" element={<Secrets />} />
         <Route path="/serviceaccounts" element={<ServiceAccounts />} />
         <Route path="/roles" element={<Roles />} />
         <Route path="/rolebindings" element={<RoleBindings />} />

@@ -13,6 +13,10 @@ LOCAL_APISERVER_PORT="${LOCAL_APISERVER_PORT:-16443}"
 BFF_PORT="${BFF_PORT:-8080}"
 GATEWAY_PORT="${GATEWAY_PORT:-7001}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
+ADMIN_USERNAME="${ADMIN_USERNAME:-2026@bluedot}"
+ADMIN_PASSWORD="${ADMIN_PASSWORD:-2026@bluedot}"
+JWT_SECRET="${JWT_SECRET:-blueedge-dev-secret}"
+K8S_TOKEN="${K8S_TOKEN:-}"
 
 BFF_BASE_URL="http://127.0.0.1:${BFF_PORT}/api/v1"
 KUBE_APISERVER="https://127.0.0.1:${LOCAL_APISERVER_PORT}"
@@ -114,9 +118,13 @@ start_gateway() {
     cd "$ROOT_DIR/server/api-gateway"
     nohup env \
       PORT="$GATEWAY_PORT" \
+      ADMIN_USERNAME="$ADMIN_USERNAME" \
+      ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+      JWT_SECRET="$JWT_SECRET" \
       BFF_BASE_URL="$BFF_BASE_URL" \
       K8S_API_SERVER="$KUBE_APISERVER" \
       K8S_SKIP_TLS_VERIFY="true" \
+      K8S_TOKEN="$K8S_TOKEN" \
       npm run dev \
       </dev/null \
       >"$(log_file gateway)" 2>&1 &
@@ -138,9 +146,8 @@ start_frontend() {
   (
     cd "$ROOT_DIR/frontend"
     nohup env \
-      VITE_BFF_BASE_URL="/api/v1" \
+      VITE_BFF_BASE_URL="/product-api/bff" \
       VITE_GATEWAY_BASE_URL="/product-api" \
-      VITE_BFF_PROXY_TARGET="http://127.0.0.1:$BFF_PORT" \
       VITE_GATEWAY_PROXY_TARGET="http://127.0.0.1:$GATEWAY_PORT" \
       npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" \
       </dev/null \
@@ -195,10 +202,9 @@ start_all() {
   echo "Kube API:    $KUBE_APISERVER -> $REMOTE_APISERVER_HOST:$REMOTE_APISERVER_PORT"
   echo "Logs:        $RUNTIME_DIR"
   echo
-  echo "Browser token setup:"
-  echo "  localStorage.setItem(\"token\", JSON.stringify(\"<your-token>\"));"
-  echo "  localStorage.setItem(\"kubeedge_auth\", \"true\");"
-  echo "  location.reload();"
+  echo "Login:"
+  echo "  username: $ADMIN_USERNAME"
+  echo "  password: $ADMIN_PASSWORD"
 }
 
 stop_all() {

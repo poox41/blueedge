@@ -65,13 +65,7 @@ frontend：http://localhost:3000
 ./scripts/run-dev-stack.sh stop
 ```
 
-Kubernetes token 仍需手动写入浏览器：
-
-```js
-localStorage.setItem("token", JSON.stringify("<your-token>"))
-localStorage.setItem("kubeedge_auth", "true")
-location.reload()
-```
+打开前端后使用 BlueEdge 平台账号密码登录。浏览器只保存 BlueEdge 平台 JWT，不再保存或暴露 Kubernetes token。
 
 ### 1. 初始化官方 BFF
 
@@ -87,7 +81,7 @@ upstream/kubeedge-dashboard
 
 官方 Dashboard README 说明该项目由 backend 和 frontend 两个模块组成，backend 给 frontend 提供 API，frontend 负责 UI 渲染。官方当前目录下也有 `modules/api`、`modules/common`、`modules/web` 三个核心模块。
 
-### 2. 准备 Kubernetes token
+### 2. 准备服务端 Kubernetes 凭证
 
 Kubernetes 1.24+ 可以参考：
 
@@ -99,10 +93,10 @@ kubectl create clusterrolebinding curl-user-binding \
 kubectl create token curl-user -n kube-system
 ```
 
-前端登录后会把 token 写到 localStorage。开发联调时也可以手动写入：
+把生成的 token 配到 api-gateway 进程环境变量，或让 gateway/BFF 通过服务端 kubeconfig、ServiceAccount 等方式访问集群：
 
-```js
-localStorage.setItem('token', JSON.stringify('<your-token>'))
+```bash
+export K8S_TOKEN="<your-kubernetes-token>"
 ```
 
 ### 3. 启动官方 BFF
@@ -128,6 +122,18 @@ npm install
 npm run dev
 ```
 
+关键环境变量：
+
+```text
+ADMIN_USERNAME=BlueEdge 登录账号
+ADMIN_PASSWORD=BlueEdge 登录密码
+JWT_SECRET=用于签发平台 JWT 的长随机密钥
+JWT_EXPIRES_IN=24h
+BFF_BASE_URL=http://127.0.0.1:8080/api/v1
+K8S_API_SERVER=https://127.0.0.1:16443
+K8S_TOKEN=<服务器端 Kubernetes token>
+```
+
 默认运行在：
 
 ```text
@@ -149,18 +155,34 @@ npm run dev
 http://127.0.0.1:3000
 ```
 
+## 登录与接口验证
+
+```bash
+curl -i http://127.0.0.1:7001/overview
+
+TOKEN="$(curl -s http://127.0.0.1:7001/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"2026@bluedot","password":"2026@bluedot"}' \
+  | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
+
+curl -i http://127.0.0.1:7001/overview \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+第一条应返回 `401`，登录成功后第二条业务请求应返回真实数据或集群/BFF 侧错误。
+
 ## 第一阶段开发重点
 
 先打通这些接口，不急着扩页面：
 
 ```text
-/api/v1/node
-/api/v1/deployment
-/api/v1/service
-/api/v1/devicemodel
-/api/v1/device
-/api/v1/ruleendpoint
-/api/v1/rule
+/product-api/bff/node
+/product-api/bff/deployment
+/product-api/bff/service
+/product-api/bff/devicemodel
+/product-api/bff/device
+/product-api/bff/ruleendpoint
+/product-api/bff/rule
 ```
 
 对应前端封装：

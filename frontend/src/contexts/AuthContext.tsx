@@ -1,33 +1,34 @@
 import { createContext, useContext, useState, useCallback } from "react";
+import { clearBlueEdgeToken, getBlueEdgeToken, loginRequest, setBlueEdgeToken } from "@/api/request";
 
 interface AuthContextType {
   isAuthenticated: boolean;
-  login: (username: string, password: string) => boolean;
+  login: (username: string, password: string) => Promise<boolean>;
   logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-const CORRECT_USERNAME = "2026@bluedot";
-const CORRECT_PASSWORD = "2026@bluedot";
-const AUTH_KEY = "kubeedge_auth";
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
-    return localStorage.getItem(AUTH_KEY) === "true";
+    return Boolean(getBlueEdgeToken());
   });
 
-  const login = useCallback((username: string, password: string) => {
-    if (username === CORRECT_USERNAME && password === CORRECT_PASSWORD) {
-      localStorage.setItem(AUTH_KEY, "true");
+  const login = useCallback(async (username: string, password: string) => {
+    try {
+      const token = await loginRequest(username, password);
+      setBlueEdgeToken(token);
       setIsAuthenticated(true);
       return true;
+    } catch {
+      clearBlueEdgeToken();
+      setIsAuthenticated(false);
+      return false;
     }
-    return false;
   }, []);
 
   const logout = useCallback(() => {
-    localStorage.removeItem(AUTH_KEY);
+    clearBlueEdgeToken();
     setIsAuthenticated(false);
   }, []);
 

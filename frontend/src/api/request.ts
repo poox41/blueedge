@@ -14,19 +14,20 @@ export interface ApiEnvelope<T = unknown> {
   ok: boolean;
 }
 
-const BFF_BASE_URL = import.meta.env.VITE_BFF_BASE_URL || "/api/v1";
+const TOKEN_KEY = "blueedge_token";
+const BFF_BASE_URL = import.meta.env.VITE_BFF_BASE_URL || "/product-api/bff";
 const GATEWAY_BASE_URL = import.meta.env.VITE_GATEWAY_BASE_URL || "/product-api";
 
-function getToken(): string | null {
-  const raw = localStorage.getItem("token") || localStorage.getItem("blueedge.token");
-  if (!raw) return null;
+export function getBlueEdgeToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
 
-  try {
-    const parsed = JSON.parse(raw);
-    return typeof parsed === "string" ? parsed : parsed?.token || raw;
-  } catch {
-    return raw;
-  }
+export function setBlueEdgeToken(token: string) {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearBlueEdgeToken() {
+  localStorage.removeItem(TOKEN_KEY);
 }
 
 function buildUrl(baseUrl: string, path: string, params?: RequestOptions["params"]): string {
@@ -65,7 +66,7 @@ async function parseResponse<T>(response: Response): Promise<ApiEnvelope<T>> {
 }
 
 async function http<T, TBody = unknown>(baseUrl: string, path: string, options: RequestOptions<TBody> = {}) {
-  const token = getToken();
+  const token = getBlueEdgeToken();
   const headers: HeadersInit = {
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -79,6 +80,11 @@ async function http<T, TBody = unknown>(baseUrl: string, path: string, options: 
     signal: options.signal,
   });
 
+  if (response.status === 401 && window.location.hash !== "#/login") {
+    clearBlueEdgeToken();
+    window.location.hash = "/login";
+  }
+
   return parseResponse<T>(response);
 }
 
@@ -88,4 +94,12 @@ export function bffRequest<T, TBody = unknown>(path: string, options?: RequestOp
 
 export function gatewayRequest<T, TBody = unknown>(path: string, options?: RequestOptions<TBody>) {
   return http<T, TBody>(GATEWAY_BASE_URL, path, options);
+}
+
+export async function loginRequest(username: string, password: string): Promise<string> {
+  const res = await http<{ token: string }, { username: string; password: string }>(GATEWAY_BASE_URL, "/auth/login", {
+    method: "POST",
+    body: { username, password },
+  });
+  return res.data.token;
 }

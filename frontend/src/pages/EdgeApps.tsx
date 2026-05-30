@@ -126,6 +126,7 @@ const typeIcons: Record<string, React.ElementType> = {
   DaemonSet: MemoryStick,
 };
 
+const defaultTargetNodeGroups = [{ name: "edge-group" }];
 const k8sNamePattern = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
 function isValidK8sName(name: string): boolean {
@@ -179,7 +180,9 @@ function toEdgeApp(item: any): EdgeApp {
     statusColor: status === "运行中" || status === "Running" || status === "Succeeded" ? "success" : "warning",
     node:
       item?.nodeGroups ||
-      (Array.isArray(targetNodeGroups) && targetNodeGroups.length ? targetNodeGroups.map((g: any) => g?.name).filter(Boolean).join(", ") : "") ||
+      (Array.isArray(targetNodeGroups) && targetNodeGroups.length
+        ? targetNodeGroups.map((group: any) => typeof group === "string" ? group : group?.name).filter(Boolean).join(", ")
+        : "") ||
       (Array.isArray(targetNodeLabels) && targetNodeLabels.length ? "按节点标签" : "-"),
     nodeRole: "edge",
     images: [container?.image || "-"],
@@ -420,7 +423,7 @@ function buildEdgeApplicationResource(form: {
     },
     spec: {
       workloadScope: {
-        targetNodeLabels: [{ labelSelector: { matchLabels: {} } }],
+        targetNodeGroups: defaultTargetNodeGroups,
       },
       workloadTemplate: {
         manifests: [manifest],

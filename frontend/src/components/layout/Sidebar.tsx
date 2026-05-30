@@ -10,11 +10,14 @@ import {
   Network,
   Globe,
   ShieldCheck,
+  KeyRound,
   FileCode,
   ChevronDown,
   ChevronLeft,
   ChevronRight as ChevronRightIcon,
   Layers,
+  Box,
+  FileText,
 } from "lucide-react";
 
 interface MenuItem {
@@ -42,6 +45,7 @@ const menuItems: MenuItem[] = [
     icon: Briefcase,
     children: [
       { key: "deployments", label: "部署", icon: Briefcase, path: "/deployments" },
+      { key: "pods", label: "Pods", icon: Box, path: "/pods" },
       { key: "edgeapps", label: "边缘应用", icon: Briefcase, path: "/edgeapps" },
     ],
   },
@@ -79,6 +83,15 @@ const menuItems: MenuItem[] = [
     path: "/services",
   },
   {
+    key: "config",
+    label: "配置",
+    icon: FileText,
+    children: [
+      { key: "configmaps", label: "配置字典", icon: FileText, path: "/configmaps" },
+      { key: "secrets", label: "Secrets", icon: KeyRound, path: "/secrets" },
+    ],
+  },
+  {
     key: "security",
     label: "安全",
     icon: ShieldCheck,
@@ -105,7 +118,7 @@ interface SidebarProps {
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const location = useLocation();
-  const [expandedKeys, setExpandedKeys] = useState<string[]>(["edge", "workloads", "storage", "devices", "network", "security"]);
+  const [expandedKeys, setExpandedKeys] = useState<string[]>(["edge", "workloads", "storage", "devices", "network", "config", "security"]);
 
   const toggleExpand = (key: string) => {
     setExpandedKeys((prev) =>

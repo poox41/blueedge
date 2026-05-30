@@ -20,6 +20,9 @@ import type {
 
 type NamespacedResourceKind =
   | "deployment"
+  | "pod"
+  | "configmap"
+  | "secret"
   | "service"
   | "device"
   | "devicemodel"
@@ -162,15 +165,65 @@ export async function deleteNodeResource(name: string): Promise<void> {
 
 export async function listPods(namespace?: string): Promise<any[]> {
   try {
+    const path = namespace ? `/pod/${namespace}` : "/pod";
+    const res = await bffRequest<unknown>(path);
+    return asItems(res.data);
+  } catch {
     const res = await gatewayRequest<unknown>("/workloads/pods", {
       params: { namespace },
     });
     return asItems(res.data);
-  } catch {
-    const path = namespace ? `/pod/${namespace}` : "/pod";
-    const res = await bffRequest<unknown>(path);
-    return asItems(res.data);
   }
+}
+
+export async function deletePodResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("pod", namespace, name);
+}
+
+export async function listConfigMaps(namespace?: string): Promise<any[]> {
+  const path = namespace ? `/configmap/${namespace}` : "/configmap";
+  const res = await bffRequest<unknown>(path);
+  return Array.isArray((res.data as any)?.items) ? (res.data as any).items : [];
+}
+
+export async function getConfigMap(namespace: string, name: string): Promise<any> {
+  const res = await bffRequest<unknown>(`/configmap/${encodePathPart(namespace)}/${encodePathPart(name)}`);
+  return res.data;
+}
+
+export async function createConfigMapResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("configmap", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateConfigMapResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("configmap", namespace, resource);
+}
+
+export async function deleteConfigMapResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("configmap", namespace, name);
+}
+
+export async function listSecrets(namespace?: string): Promise<any[]> {
+  const path = namespace ? `/secret/${namespace}` : "/secret";
+  const res = await bffRequest<unknown>(path);
+  return Array.isArray((res.data as any)?.items) ? (res.data as any).items : [];
+}
+
+export async function getSecret(namespace: string, name: string): Promise<any> {
+  const res = await bffRequest<unknown>(`/secret/${encodePathPart(namespace)}/${encodePathPart(name)}`);
+  return res.data;
+}
+
+export async function createSecretResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("secret", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateSecretResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("secret", namespace, resource);
+}
+
+export async function deleteSecretResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("secret", namespace, name);
 }
 
 export async function listDeviceModels(namespace?: string): Promise<DeviceModelView[]> {
