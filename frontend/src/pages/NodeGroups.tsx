@@ -12,9 +12,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { createNodeGroupResource, deleteNodeGroupResource, getNodeGroup, listNodeGroups, listNodes, updateNodeGroupResource } from "@/api/services/resources";
-import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { EdgeNodeView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
@@ -99,7 +97,6 @@ function yamlNg(n: NodeGroup) {
 kind: NodeGroup
 metadata:
   name: ${n.name}
-  namespace: ${n.namespace}
 spec:
   matchLabels:
 ${Object.entries(n.nodeSelector).map(([k, v]) => `    ${k}: ${v}`).join("\n")}
@@ -107,13 +104,12 @@ ${Object.entries(n.nodeSelector).map(([k, v]) => `    ${k}: ${v}`).join("\n")}
 ${n.nodes.map((node) => `  - ${node}`).join("\n") || "  []"}`;
 }
 
-function buildNodeGroupResource(form: { name: string; namespace: string; nodeType: string; policy: string }): KubeResource {
+function buildNodeGroupResource(form: { name: string; nodeType: string; policy: string }): KubeResource {
   return {
     apiVersion: "apps.kubeedge.io/v1alpha1",
     kind: "NodeGroup",
     metadata: {
       name: form.name,
-      namespace: form.namespace,
     },
     spec: {
       matchLabels: {
@@ -124,12 +120,10 @@ function buildNodeGroupResource(form: { name: string; namespace: string; nodeTyp
 }
 
 export function NodeGroups() {
-  const namespaces = useNamespaceOptions();
   const [data, setData] = useState<NodeGroup[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [ns, setNs] = useState("all");
   const [page, setPage] = useState(1);
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<NodeGroup | null>(null);
@@ -137,7 +131,7 @@ export function NodeGroups() {
   const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<NodeGroup | null>(null);
-  const [form, setForm] = useState({ name: "", namespace: "default", nodeType: "edge", policy: "Spread" });
+  const [form, setForm] = useState({ name: "", nodeType: "edge", policy: "Spread" });
   const [editItem, setEditItem] = useState<NodeGroup | null>(null);
   const [editForm, setEditForm] = useState({ nodeType: "edge", policy: "Spread", spreadConstraints: true });
   const pageSize = 10;
@@ -174,10 +168,9 @@ export function NodeGroups() {
 
   const filtered = useMemo(() => {
     let r = data;
-    if (ns !== "all") r = r.filter(d => d.namespace === ns);
     if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
     return r;
-  }, [data, ns, search]);
+  }, [data, search]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
@@ -231,9 +224,14 @@ export function NodeGroups() {
     setIsLoading(true);
     setError("");
     try {
-      await createNodeGroupResource(buildNodeGroupResource(form));
+      const name = form.name.trim();
+      if (data.some((item) => item.name === name)) {
+        setError(`节点组 ${name} 已存在。NodeGroup 是集群级资源，不能通过选择不同命名空间创建同名节点组。`);
+        return;
+      }
+      await createNodeGroupResource(buildNodeGroupResource({ ...form, name }));
       setCreateOpen(false);
-      setForm({ name: "", namespace: "default", nodeType: "edge", policy: "Spread" });
+      setForm({ name: "", nodeType: "edge", policy: "Spread" });
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建节点组失败");
@@ -277,9 +275,7 @@ export function NodeGroups() {
               <div className="space-y-4 py-2">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input placeholder="如 workergroup" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">命名空间</Label>
-                    <Select value={form.namespace} onValueChange={v => setForm({ ...form, namespace: v })}><SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger><SelectContent>{namespaces.filter(n=>n.value!=="all").map(ns => (<SelectItem key={ns.value} value={ns.value} className="text-sm">{ns.label}</SelectItem>))}</SelectContent></Select>
-                  </div>
+                  <Info label="作用域" value="集群级" />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">节点选择器类型</Label><Input value={form.nodeType} onChange={e => setForm({ ...form, nodeType: e.target.value })} className="h-9 text-sm" /></div>
@@ -295,7 +291,7 @@ export function NodeGroups() {
             <DialogContent className="max-w-lg">
               <DialogHeader><DialogTitle className="text-base">编辑节点组</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
-                <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="命名空间" value={editItem?.namespace || "-"} /></div>
+                <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="作用域" value="集群级" /></div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">节点选择器类型</Label><Input value={editForm.nodeType} onChange={e => setEditForm({ ...editForm, nodeType: e.target.value })} className="h-9 text-sm" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">分配策略</Label>
@@ -311,12 +307,12 @@ export function NodeGroups() {
       </div>
       <div className="flex items-center justify-between gap-4">
         <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
-        <div className="flex items-center gap-3"><NamespaceSelector value={ns} onChange={v => { setNs(v); setPage(1); }} /><span className="text-sm text-[#86909C]">共 {filtered.length} 条</span></div>
+        <div className="flex items-center gap-3"><span className="text-sm text-[#86909C]">共 {filtered.length} 条</span></div>
       </div>
       {error && <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
       <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
         <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">命名空间</TableHead>
+          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">作用域</TableHead>
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">名称</TableHead>
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">节点</TableHead>
           <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">节点选择器</TableHead>
@@ -327,7 +323,7 @@ export function NodeGroups() {
         </TableRow></TableHeader>
         <TableBody>{isLoading ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[#86909C] text-sm">正在加载节点组数据...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[#86909C] text-sm">暂无节点组数据</TableCell></TableRow>) : paginated.map(row => (
           <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
-            <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
+            <TableCell className="text-sm text-[#4E5969] px-4 py-3">集群级</TableCell>
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.nodes.join(", ") || "-"}</TableCell>
             <TableCell className="px-4 py-3">
@@ -357,11 +353,11 @@ export function NodeGroups() {
       )}
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
         <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
-          <SheetHeader className="pb-4 border-b border-[#E5E6EB]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle><div className="flex items-center gap-2 mt-2"><StatusBadge status={selected?.status || ""} color={selected?.statusColor || "default"} /><Badge variant="outline" className="text-xs font-normal">{selected?.namespace}</Badge></div></SheetHeader>
+          <SheetHeader className="pb-4 border-b border-[#E5E6EB]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle><div className="flex items-center gap-2 mt-2"><StatusBadge status={selected?.status || ""} color={selected?.statusColor || "default"} /><Badge variant="outline" className="text-xs font-normal">集群级</Badge></div></SheetHeader>
           {selected && (<Tabs defaultValue="overview" className="mt-4"><TabsList className="bg-[#F7F8FA] h-9"><TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger><TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger></TabsList>
             <TabsContent value="overview" className="mt-3 space-y-4">
               <div className="grid grid-cols-2 gap-3">
-                <Info label="名称" value={selected.name} /><Info label="命名空间" value={selected.namespace} />
+                <Info label="名称" value={selected.name} /><Info label="作用域" value="集群级" />
                 <Info label="节点数" value={String(selected.nodes.length)} /><Info label="分配策略" value={selected.allocationPolicy || "-"} />
                 <Info label="分散约束" value={selected.spreadConstraints ? "开启" : "关闭"} /><Info label="状态" value={selected.status} />
               </div>

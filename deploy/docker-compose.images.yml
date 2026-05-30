@@ -1,0 +1,36 @@
+services:
+  blueedge-frontend:
+    image: blueedge-frontend:${BLUEEDGE_IMAGE_TAG:-latest}
+    container_name: blueedge-frontend
+    depends_on:
+      - blueedge-api-gateway
+    ports:
+      - "${BLUEEDGE_HTTP_PORT:-3000}:80"
+    restart: unless-stopped
+
+  blueedge-api-gateway:
+    image: blueedge-api-gateway:${BLUEEDGE_IMAGE_TAG:-latest}
+    container_name: blueedge-api-gateway
+    environment:
+      PORT: 7001
+      ADMIN_USERNAME: ${ADMIN_USERNAME:?ADMIN_USERNAME is required}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?ADMIN_PASSWORD is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-30d}
+      BFF_BASE_URL: http://blueedge-bff:8080/api/v1
+      K8S_API_SERVER: ${K8S_API_SERVER:?K8S_API_SERVER is required}
+      K8S_SKIP_TLS_VERIFY: ${K8S_SKIP_TLS_VERIFY:-true}
+      K8S_TOKEN: ${K8S_TOKEN:?K8S_TOKEN is required}
+    depends_on:
+      - blueedge-bff
+    restart: unless-stopped
+
+  blueedge-bff:
+    image: blueedge-bff:${BLUEEDGE_IMAGE_TAG:-latest}
+    container_name: blueedge-bff
+    command:
+      - --apiserver-host=${K8S_API_SERVER:?K8S_API_SERVER is required}
+      - --apiserver-skip-tls-verify=${K8S_SKIP_TLS_VERIFY:-true}
+      - --insecure-bind-address=0.0.0.0
+      - --insecure-port=8080
+    restart: unless-stopped

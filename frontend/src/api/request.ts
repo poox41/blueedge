@@ -54,6 +54,10 @@ async function parseResponse<T>(response: Response): Promise<ApiEnvelope<T>> {
     const message =
       typeof data === "object" && data && "message" in data
         ? String((data as { message?: unknown }).message)
+        : typeof data === "object" && data && "error" in data
+          ? String((data as { error?: unknown }).error)
+          : typeof data === "string" && data.trim()
+            ? data.trim()
         : `Request failed with status ${response.status}`;
     throw new Error(message);
   }

@@ -42,7 +42,30 @@ spec:
   targetResource: ${n.targetResource || '""'}`;
 }
 
+function normalizeRuleEndpointType(type: string): "eventbus" | "rest" | "servicebus" {
+  const normalized = type.toLowerCase();
+  if (normalized === "rest") return "rest";
+  if (normalized === "servicebus") return "servicebus";
+  return "eventbus";
+}
+
+function propertyKeyForType(type: string): "topic" | "resource" | "path" {
+  const normalized = normalizeRuleEndpointType(type);
+  if (normalized === "rest") return "resource";
+  if (normalized === "servicebus") return "path";
+  return "topic";
+}
+
+function displayRuleEndpointType(type: string): string {
+  const normalized = normalizeRuleEndpointType(type);
+  if (normalized === "rest") return "Rest";
+  if (normalized === "servicebus") return "ServiceBus";
+  return "EventBus";
+}
+
 function buildRuleEndpointResource(form: { name: string; namespace: string; type: string; targetResource: string }): KubeResource {
+  const type = normalizeRuleEndpointType(form.type);
+  const targetResource = form.targetResource.trim();
   return {
     apiVersion: "rules.kubeedge.io/v1",
     kind: "RuleEndpoint",
@@ -51,8 +74,8 @@ function buildRuleEndpointResource(form: { name: string; namespace: string; type
       namespace: form.namespace,
     },
     spec: {
-      ruleEndpointType: form.type,
-      properties: form.targetResource ? { targetResource: form.targetResource } : {},
+      ruleEndpointType: type,
+      properties: targetResource ? { [propertyKeyForType(type)]: targetResource } : {},
     },
   };
 }
@@ -71,9 +94,9 @@ export function RuleEndpoints() {
   const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<RE | null>(null);
-  const [form, setForm] = useState({ name: "", namespace: "default", type: "EventBus", targetResource: "" });
+  const [form, setForm] = useState({ name: "", namespace: "default", type: "eventbus", targetResource: "" });
   const [editItem, setEditItem] = useState<RE | null>(null);
-  const [editForm, setEditForm] = useState({ type: "EventBus", targetResource: "", description: "" });
+  const [editForm, setEditForm] = useState({ type: "eventbus", targetResource: "", description: "" });
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -119,7 +142,7 @@ export function RuleEndpoints() {
     try {
       const detail = toRuleEndpointRow(await getRuleEndpoint(d.namespace, d.name));
       setEditItem(detail);
-      setEditForm({ type: detail.ruleEndpointType, targetResource: detail.targetResource || "", description: detail.description || "" });
+      setEditForm({ type: normalizeRuleEndpointType(detail.ruleEndpointType), targetResource: detail.targetResource || "", description: detail.description || "" });
       setEditOpen(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载规则端点详情失败");
@@ -149,7 +172,7 @@ export function RuleEndpoints() {
     try {
       await createRuleEndpointResource(buildRuleEndpointResource(form));
       setCreateOpen(false);
-      setForm({ name: "", namespace: "default", type: "EventBus", targetResource: "" });
+      setForm({ name: "", namespace: "default", type: "eventbus", targetResource: "" });
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建规则端点失败");
@@ -167,10 +190,11 @@ export function RuleEndpoints() {
         spec: {
           ...(editItem.raw.spec || {}),
           description: editForm.description,
-          ruleEndpointType: editForm.type,
+          ruleEndpointType: normalizeRuleEndpointType(editForm.type),
           properties: {
-            ...((editItem.raw.spec?.properties || {}) as Record<string, unknown>),
-            ...(editForm.targetResource ? { targetResource: editForm.targetResource } : {}),
+            ...(editForm.targetResource.trim()
+              ? { [propertyKeyForType(editForm.type)]: editForm.targetResource.trim() }
+              : {}),
           },
         },
       };
@@ -204,9 +228,9 @@ export function RuleEndpoints() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">端点类型</Label>
-                    <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option>EventBus</option><option>Rest</option><option>ServiceBus</option></select>
+                    <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option value="eventbus">EventBus</option><option value="rest">Rest</option><option value="servicebus">ServiceBus</option></select>
                   </div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标资源</Label><Input placeholder="如 topic-name" value={form.targetResource} onChange={e => setForm({ ...form, targetResource: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标资源</Label><Input placeholder={form.type === "eventbus" ? "如 topic-name" : form.type === "rest" ? "如 https://example.com" : "如 /request_path"} value={form.targetResource} onChange={e => setForm({ ...form, targetResource: e.target.value })} className="h-9 text-sm" /></div>
                 </div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
@@ -219,7 +243,7 @@ export function RuleEndpoints() {
                 <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="命名空间" value={editItem?.namespace || "-"} /></div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">端点类型</Label>
-                    <select value={editForm.type} onChange={e => setEditForm({ ...editForm, type: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option>EventBus</option><option>Rest</option><option>ServiceBus</option></select>
+                    <select value={editForm.type} onChange={e => setEditForm({ ...editForm, type: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option value="eventbus">EventBus</option><option value="rest">Rest</option><option value="servicebus">ServiceBus</option></select>
                   </div>
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标资源</Label><Input value={editForm.targetResource} onChange={e => setEditForm({ ...editForm, targetResource: e.target.value })} className="h-9 text-sm" /></div>
                 </div>
@@ -248,7 +272,7 @@ export function RuleEndpoints() {
           <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
-            <TableCell className="px-4 py-3"><Badge variant="outline" className={cn("text-xs font-normal", row.ruleEndpointType === "EventBus" ? "border-[#E8FFEA] text-[#00B42A] bg-[#E8FFEA]" : "border-[#E8F3FF] text-[#165DFF] bg-[#E8F3FF]")}>{row.ruleEndpointType}</Badge></TableCell>
+            <TableCell className="px-4 py-3"><Badge variant="outline" className={cn("text-xs font-normal", normalizeRuleEndpointType(row.ruleEndpointType) === "eventbus" ? "border-[#E8FFEA] text-[#00B42A] bg-[#E8FFEA]" : "border-[#E8F3FF] text-[#165DFF] bg-[#E8F3FF]")}>{displayRuleEndpointType(row.ruleEndpointType)}</Badge></TableCell>
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.targetResource || "-"}</TableCell>
             <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
             <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
@@ -270,7 +294,7 @@ export function RuleEndpoints() {
           <SheetHeader className="pb-4 border-b border-[#E5E6EB]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle><Badge variant="outline" className="text-xs font-normal w-fit mt-2">{selected?.namespace}</Badge></SheetHeader>
           {selected && (<Tabs defaultValue="overview" className="mt-4"><TabsList className="bg-[#F7F8FA] h-9"><TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger><TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger></TabsList>
             <TabsContent value="overview" className="mt-3 space-y-4">
-              <div className="grid grid-cols-2 gap-3"><Info label="名称" value={selected.name} /><Info label="命名空间" value={selected.namespace} /><Info label="类型" value={selected.ruleEndpointType} /><Info label="目标资源" value={selected.targetResource || "-"} /></div>
+              <div className="grid grid-cols-2 gap-3"><Info label="名称" value={selected.name} /><Info label="命名空间" value={selected.namespace} /><Info label="类型" value={displayRuleEndpointType(selected.ruleEndpointType)} /><Info label="目标资源" value={selected.targetResource || "-"} /></div>
             </TabsContent>
             <TabsContent value="yaml" className="mt-3"><div className="relative"><pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-x-auto">{yaml(selected)}</pre><Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(yaml(selected))}><Copy className="w-3.5 h-3.5" /></Button></div></TabsContent>
           </Tabs>)}
