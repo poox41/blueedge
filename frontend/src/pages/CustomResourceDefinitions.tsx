@@ -7,10 +7,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Search, RefreshCw, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
-import { listCRDs } from "@/api/services/resources";
+import { getCRD, listCRDs } from "@/api/services/resources";
 import { cn } from "@/lib/utils";
 
-interface CRD { name: string; group: string; type: string; scope: string; createdAt: string; versions?: string[]; }
+interface CRD { name: string; group: string; type: string; scope: string; createdAt: string; versions?: string[]; plural?: string; singular?: string; raw?: any; }
 
 function toCRD(item: any): CRD {
   const name = item?.metadata?.name || item?.name || "-";
@@ -26,6 +26,9 @@ function toCRD(item: any): CRD {
     scope: item?.spec?.scope || item?.scope || "-",
     createdAt: item?.metadata?.creationTimestamp || item?.createdAt || "-",
     versions,
+    plural: item?.spec?.names?.plural || item?.plural || "-",
+    singular: item?.spec?.names?.singular || item?.singular || "-",
+    raw: item,
   };
 }
 
@@ -79,7 +82,15 @@ export function CustomResourceDefinitions() {
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
-  const openDetail = (d: CRD) => { setSelected(d); setDetailOpen(true); };
+  const openDetail = async (d: CRD) => {
+    setSelected(d);
+    setDetailOpen(true);
+    try {
+      setSelected(toCRD(await getCRD(d.name)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "CRD 详情加载失败");
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -129,7 +140,7 @@ export function CustomResourceDefinitions() {
           <SheetHeader className="pb-4 border-b border-[#E5E6EB]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle></SheetHeader>
           {selected && (<Tabs defaultValue="overview" className="mt-4"><TabsList className="bg-[#F7F8FA] h-9"><TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger><TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger></TabsList>
             <TabsContent value="overview" className="mt-3 space-y-4">
-              <div className="grid grid-cols-2 gap-3"><Info label="名称" value={selected.name} /><Info label="组" value={selected.group} /><Info label="类型" value={selected.type} /><Info label="范围" value={selected.scope} /><Info label="版本" value={(selected.versions || []).join(", ")} /></div>
+              <div className="grid grid-cols-2 gap-3"><Info label="名称" value={selected.name} /><Info label="组" value={selected.group} /><Info label="类型" value={selected.type} /><Info label="复数名" value={selected.plural || "-"} /><Info label="单数名" value={selected.singular || "-"} /><Info label="范围" value={selected.scope} /><Info label="版本" value={(selected.versions || []).join(", ")} /></div>
             </TabsContent>
             <TabsContent value="yaml" className="mt-3"><div className="relative"><pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-x-auto">{yaml(selected)}</pre><Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(yaml(selected))}><Copy className="w-3.5 h-3.5" /></Button></div></TabsContent>
           </Tabs>)}

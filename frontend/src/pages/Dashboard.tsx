@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { getClusterMetrics, type ClusterMetrics } from "@/api/services/product";
+import { getClusterMetrics, getClusterMetricsHistory, listClusterEvents, type ClusterEvent, type ClusterMetrics } from "@/api/services/product";
 import { listDeployments, listNodes } from "@/api/services/resources";
 import type { EdgeNodeView, WorkloadView } from "@/types/kubeedge";
 import { useEffect, useState } from "react";
@@ -28,18 +28,22 @@ import {
 } from "recharts";
 
 const emptyTrendData = [
-  { name: "00:00", usage: 0 },
-  { name: "04:00", usage: 0 },
-  { name: "08:00", usage: 0 },
-  { name: "12:00", usage: 0 },
-  { name: "16:00", usage: 0 },
-  { name: "20:00", usage: 0 },
+  { name: "-", usage: 0 },
 ];
+
+function formatTrendTime(timestamp?: string): string {
+  if (!timestamp) return "-";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "-";
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
 
 export function Dashboard() {
   const [nodes, setNodes] = useState<EdgeNodeView[]>([]);
   const [deployments, setDeployments] = useState<WorkloadView[]>([]);
   const [metrics, setMetrics] = useState<ClusterMetrics | null>(null);
+  const [metricsHistory, setMetricsHistory] = useState<ClusterMetrics[]>([]);
+  const [events, setEvents] = useState<ClusterEvent[]>([]);
   const [metricsError, setMetricsError] = useState("");
   const [error, setError] = useState("");
 
@@ -48,14 +52,18 @@ export function Dashboard() {
     async function loadDashboard() {
       setError("");
       try {
-        const [nodeList, deploymentList, metricsResult] = await Promise.allSettled([
+        const [nodeList, deploymentList, metricsResult, metricsHistoryResult, eventList] = await Promise.allSettled([
           listNodes(),
           listDeployments(),
           getClusterMetrics(),
+          getClusterMetricsHistory(),
+          listClusterEvents(),
         ]);
         if (!mounted) return;
         if (nodeList.status === "fulfilled") setNodes(nodeList.value);
         if (deploymentList.status === "fulfilled") setDeployments(deploymentList.value);
+        if (metricsHistoryResult.status === "fulfilled") setMetricsHistory(metricsHistoryResult.value.items);
+        if (eventList.status === "fulfilled") setEvents(eventList.value);
         if (metricsResult.status === "fulfilled") {
           setMetrics(metricsResult.value);
           setMetricsError("");
@@ -69,8 +77,12 @@ export function Dashboard() {
     }
 
     void loadDashboard();
+    const timer = window.setInterval(() => {
+      void loadDashboard();
+    }, 60_000);
     return () => {
       mounted = false;
+      window.clearInterval(timer);
     };
   }, []);
 
@@ -90,11 +102,19 @@ export function Dashboard() {
     { name: "运行中", value: runningDeployments, color: "#00B42A" },
     { name: "未就绪", value: inactiveDeployments, color: "#FF7D00" },
   ].filter((item) => item.value > 0);
-  const recentEvents: Array<{ type: string; message: string; time: string }> = [];
+  const recentEvents = events.map((event) => ({
+    type: event.type === "Warning" ? "warning" : "success",
+    message: `${event.involvedObject.kind}/${event.involvedObject.name} ${event.reason}: ${event.message}`,
+    time: event.lastTimestamp || "-",
+  }));
   const cpuPercent = metrics?.cpu.percent ?? 0;
   const memoryPercent = metrics?.memory.percent ?? 0;
-  const cpuTrendData = emptyTrendData.map((item) => ({ ...item, usage: cpuPercent }));
-  const memoryTrendData = emptyTrendData.map((item) => ({ ...item, usage: memoryPercent }));
+  const cpuTrendData = metricsHistory.length > 0
+    ? metricsHistory.map((item) => ({ name: formatTrendTime(item.timestamp), usage: item.cpu.percent }))
+    : emptyTrendData;
+  const memoryTrendData = metricsHistory.length > 0
+    ? metricsHistory.map((item) => ({ name: formatTrendTime(item.timestamp), usage: item.memory.percent }))
+    : emptyTrendData;
   const memoryUsedGi = metrics ? (metrics.memory.usedBytes / 1024 ** 3).toFixed(1) : "-";
   const memoryCapacityGi = metrics ? (metrics.memory.capacityBytes / 1024 ** 3).toFixed(1) : "-";
 

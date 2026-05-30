@@ -70,6 +70,7 @@ import {
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { formatMemory, listPodMetrics, type PodMetric } from "@/api/services/metrics";
+import { getPodLogs, listClusterEvents, type ClusterEvent } from "@/api/services/product";
 import {
   createDeploymentResource,
   deleteDeploymentResource,
@@ -117,6 +118,14 @@ interface Deployment {
   restartCount: number;
   ports: Array<{ name: string; containerPort: number; protocol: string }>;
   podItems: PodSummary[];
+}
+
+function eventMatchesDeployment(event: ClusterEvent, deployment: Deployment): boolean {
+  if (event.namespace !== deployment.namespace) return false;
+  const objectName = event.involvedObject?.name || "";
+  return objectName === deployment.name ||
+    objectName.startsWith(`${deployment.name}-`) ||
+    deployment.podItems.some((pod) => pod.name === objectName);
 }
 
 function getPodName(pod: any): string {
@@ -362,6 +371,9 @@ export function Deployments() {
   const [currentPage, setCurrentPage] = useState(1);
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<Deployment | null>(null);
+  const [selectedEvents, setSelectedEvents] = useState<ClusterEvent[]>([]);
+  const [selectedLogPod, setSelectedLogPod] = useState("");
+  const [podLogs, setPodLogs] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [scaleOpen, setScaleOpen] = useState(false);
   const [scaleValue, setScaleValue] = useState(1);
@@ -430,9 +442,29 @@ export function Deployments() {
   const start = (currentPage - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
-  const openDetail = (d: Deployment) => {
+  const openDetail = async (d: Deployment) => {
     setSelected(d);
+    setSelectedEvents([]);
+    setSelectedLogPod("");
+    setPodLogs("");
     setDetailOpen(true);
+    try {
+      const events = await listClusterEvents(d.namespace);
+      setSelectedEvents(events.filter((event) => eventMatchesDeployment(event, d)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载部署事件失败");
+    }
+  };
+
+  const loadLogs = async (pod: PodSummary) => {
+    if (!selected) return;
+    setSelectedLogPod(pod.name);
+    setPodLogs("正在加载日志...");
+    try {
+      setPodLogs(await getPodLogs(selected.namespace, pod.name, 200));
+    } catch (err) {
+      setPodLogs(err instanceof Error ? err.message : "加载 Pod 日志失败");
+    }
   };
 
   const openDelete = (d: Deployment) => {
@@ -818,6 +850,7 @@ export function Deployments() {
               <TabsList className="bg-[#F7F8FA] h-9">
                 <TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger>
                 <TabsTrigger value="pods" className="text-xs h-7">Pods</TabsTrigger>
+                <TabsTrigger value="logs" className="text-xs h-7">日志</TabsTrigger>
                 <TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger>
                 <TabsTrigger value="events" className="text-xs h-7">事件</TabsTrigger>
               </TabsList>
@@ -895,11 +928,23 @@ export function Deployments() {
                       <div className="flex items-center gap-2">
                         <Badge variant="outline" className="text-xs font-normal">{pod.status}</Badge>
                         <span className="text-xs text-[#86909C]">{pod.node}</span>
-                        <Button variant="ghost" size="sm" className="h-6 text-xs"><Terminal className="w-3 h-3 mr-1" />日志</Button>
+                        <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => loadLogs(pod)}><Terminal className="w-3 h-3 mr-1" />日志</Button>
                       </div>
                     </div>
                   ))}
                 </div>
+              </TabsContent>
+              <TabsContent value="logs" className="mt-3">
+                <div className="mb-2 flex flex-wrap gap-2">
+                  {selected.podItems.map((pod) => (
+                    <Button key={pod.name} variant={selectedLogPod === pod.name ? "default" : "outline"} size="sm" className="h-7 text-xs" onClick={() => loadLogs(pod)}>
+                      {pod.name}
+                    </Button>
+                  ))}
+                </div>
+                <pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-auto min-h-[260px] max-h-[420px] whitespace-pre-wrap">
+                  {podLogs || (selected.podItems.length === 0 ? "暂无关联 Pod" : "请选择一个 Pod 查看日志")}
+                </pre>
               </TabsContent>
               <TabsContent value="yaml" className="mt-3">
                 <div className="relative">
@@ -910,17 +955,15 @@ export function Deployments() {
                 </div>
               </TabsContent>
               <TabsContent value="events" className="mt-3 space-y-2">
-                {[
-                  { time: "2026/4/23 16:35", type: "Normal", reason: "Created", message: `Created pod: ${selected.name}-xxxxxx` },
-                  { time: "2026/4/23 16:34", type: "Normal", reason: "Scaling", message: `Scaled up replica set ${selected.name}-xxxxxx to ${selected.desiredReplicas}` },
-                  { time: "2026/4/20 16:55", type: "Normal", reason: "SuccessfulCreate", message: `Created pod: ${selected.name}-xxxxxx` },
-                ].map((e, i) => (
+                {selectedEvents.length === 0 ? (
+                  <div className="bg-[#F7F8FA] rounded-lg p-4 text-center text-sm text-[#86909C]">暂无关联事件</div>
+                ) : selectedEvents.map((e, i) => (
                   <div key={i} className="flex items-start gap-3 p-3 rounded-md bg-[#F7F8FA]">
                     <Badge className={cn("text-xs font-normal flex-shrink-0", e.type === "Normal" ? "bg-[#E8FFEA] text-[#00B42A]" : "bg-[#FFECE8] text-[#F53F3F]")}>{e.type}</Badge>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-[#1D2129] font-medium">{e.reason}</p>
                       <p className="text-xs text-[#4E5969] mt-0.5">{e.message}</p>
-                      <p className="text-xs text-[#86909C] mt-1">{e.time}</p>
+                      <p className="text-xs text-[#86909C] mt-1">{e.lastTimestamp || "-"}</p>
                     </div>
                   </div>
                 ))}

@@ -11,7 +11,8 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { getResourceCreatedAt, getResourceName } from "@/api/adapters/kube-resource.adapter";
-import { listPersistentVolumes } from "@/api/services/storage";
+import { createPersistentVolume, deletePersistentVolume, listPersistentVolumes } from "@/api/services/storage";
+import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface PV {
@@ -54,6 +55,35 @@ spec:
   volumeMode: ${n.volumeMode}
 status:
   phase: ${n.phase}`;
+}
+
+function buildPersistentVolumeResource(form: {
+  name: string;
+  capacity: string;
+  accessMode: string;
+  reclaim: string;
+  storageClass: string;
+}): KubeResource {
+  return {
+    apiVersion: "v1",
+    kind: "PersistentVolume",
+    metadata: {
+      name: form.name,
+    },
+    spec: {
+      capacity: {
+        storage: form.capacity,
+      },
+      accessModes: [form.accessMode],
+      persistentVolumeReclaimPolicy: form.reclaim,
+      storageClassName: form.storageClass,
+      volumeMode: "Filesystem",
+      hostPath: {
+        path: `/tmp/blueedge-pv/${form.name}`,
+        type: "DirectoryOrCreate",
+      },
+    },
+  };
 }
 
 export function PersistentVolumes() {
@@ -100,10 +130,34 @@ export function PersistentVolumes() {
 
   const openDetail = (n: PV) => { setSelected(n); setDetailOpen(true); };
   const openDel = (n: PV) => { setDelItem(n); setDelOpen(true); };
-  const confirmDel = () => { if (delItem) { setData(p => p.filter(d => d.name !== delItem.name)); setDelOpen(false); } };
-  const handleCreate = () => {
-    const pv: PV = { name: form.name, status: "可用", statusColor: "warning", capacity: form.capacity, accessModes: form.accessMode, reclaimPolicy: form.reclaim, storageClass: form.storageClass, createdAt: new Date().toLocaleString("zh-CN"), volumeMode: "Filesystem", phase: "Available" };
-    setData(p => [pv, ...p]); setCreateOpen(false); setForm({ name: "", capacity: "10Gi", accessMode: "ReadWriteOnce", reclaim: "Retain", storageClass: "local-path" });
+  const confirmDel = async () => {
+    if (!delItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deletePersistentVolume(delItem.name);
+      setDelOpen(false);
+      setDelItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除持久卷失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createPersistentVolume(buildPersistentVolumeResource(form));
+      setCreateOpen(false);
+      setForm({ name: "", capacity: "10Gi", accessMode: "ReadWriteOnce", reclaim: "Retain", storageClass: "local-path" });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建持久卷失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

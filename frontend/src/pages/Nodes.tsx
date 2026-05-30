@@ -1,7 +1,6 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
@@ -12,7 +11,7 @@ import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/p
 import { Search, Plus, RefreshCw, Trash2, ChevronLeft, ChevronRight, Eye, Copy, Ban, CheckCircle2 } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { formatMemory, listNodeMetrics } from "@/api/services/metrics";
-import { deleteNodeResource, getNode, listNodes, updateNodeResource } from "@/api/services/resources";
+import { deleteNodeResource, getNode, listNodes, listPods, updateNodeResource } from "@/api/services/resources";
 import type { EdgeNodeView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
@@ -37,10 +36,38 @@ function statusColor(status: EdgeNodeView["status"]) {
   return "default";
 }
 
-function toPageNode(node: EdgeNodeView, metricsByName: Map<string, { cpuMillicores: number; memoryBytes: number }>): Node {
+function getPodNodeName(pod: any): string {
+  return pod?.spec?.nodeName || pod?.nodeName || pod?.node || "-";
+}
+
+function formatCapacityCpu(value: unknown): string {
+  if (typeof value !== "string" || !value) return "-";
+  return value.endsWith("m") ? value : `${value}核`;
+}
+
+function formatCapacityMemory(value: unknown): string {
+  if (typeof value !== "string" || !value) return "-";
+  const match = value.match(/^(\d+)(Ki|Mi|Gi|Ti)?$/);
+  if (!match) return value;
+  const amount = Number(match[1]);
+  const unit = match[2] || "";
+  if (!Number.isFinite(amount)) return value;
+  if (unit === "Ki") return formatMemory(amount * 1024);
+  if (unit === "Mi") return formatMemory(amount * 1024 ** 2);
+  if (unit === "Gi") return `${amount}Gi`;
+  if (unit === "Ti") return `${amount}Ti`;
+  return formatMemory(amount);
+}
+
+function toPageNode(
+  node: EdgeNodeView,
+  metricsByName: Map<string, { cpuMillicores: number; memoryBytes: number }>,
+  podCountByNode: Map<string, number> = new Map(),
+): Node {
   const raw = node.raw as Record<string, any>;
   const nodeInfo = raw.status?.nodeInfo || {};
   const capacity = raw.status?.capacity || {};
+  const allocatable = raw.status?.allocatable || {};
   const conditions = Array.isArray(raw.status?.conditions) ? raw.status.conditions : [];
   const metrics = metricsByName.get(node.name);
   return {
@@ -49,11 +76,11 @@ function toPageNode(node: EdgeNodeView, metricsByName: Map<string, { cpuMillicor
     status: statusText(node.status),
     statusColor: statusColor(node.status),
     labels: Object.keys(raw.metadata?.labels || {}).length,
-    cpu: metrics ? `${metrics.cpuMillicores}m` : "-",
-    memory: metrics ? formatMemory(metrics.memoryBytes) : "-",
+    cpu: metrics ? `${metrics.cpuMillicores}m` : formatCapacityCpu(allocatable.cpu || capacity.cpu),
+    memory: metrics ? formatMemory(metrics.memoryBytes) : formatCapacityMemory(allocatable.memory || capacity.memory),
     ip: node.internalIP,
     taints: Array.isArray(raw.spec?.taints) ? raw.spec.taints.length : 0,
-    pods: Number(raw.podCount || raw.pods || 0),
+    pods: podCountByNode.get(node.name) ?? Number(raw.podCount || raw.pods || 0),
     createdAt: node.createdAt,
     raw: node.raw,
     unschedulable: Boolean(raw.spec?.unschedulable),
@@ -111,18 +138,25 @@ export function Nodes() {
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteItem, setDeleteItem] = useState<Node | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [form, setForm] = useState({ name: "", role: "edge", ip: "", cpu: "2", memory: "4Gi" });
   const pageSize = 10;
 
   const loadNodes = useCallback(async () => {
     setIsLoading(true);
     setError("");
     try {
-      const [nodes, metrics] = await Promise.allSettled([listNodes(), listNodeMetrics()]);
+      const [nodes, metrics, pods] = await Promise.allSettled([listNodes(), listNodeMetrics(), listPods()]);
       const nodeRows = nodes.status === "fulfilled" ? nodes.value : [];
       const metricsRows = metrics.status === "fulfilled" ? metrics.value : [];
+      const podRows = pods.status === "fulfilled" ? pods.value : [];
       const metricsByName = new Map(metricsRows.map((item) => [item.name, item]));
-      setData(nodeRows.map((node) => toPageNode(node, metricsByName)));
+      const podCountByNode = podRows.reduce((acc, pod) => {
+        const nodeName = getPodNodeName(pod);
+        if (nodeName && nodeName !== "-") {
+          acc.set(nodeName, (acc.get(nodeName) || 0) + 1);
+        }
+        return acc;
+      }, new Map<string, number>());
+      setData(nodeRows.map((node) => toPageNode(node, metricsByName, podCountByNode)));
       setCurrentPage(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "节点数据加载失败");
@@ -155,7 +189,7 @@ export function Nodes() {
     setDetailOpen(true);
     try {
       const detail = await getNode(n.name);
-      setSelected({ ...toPageNode(detail, new Map()), cpu: n.cpu, memory: n.memory });
+      setSelected({ ...toPageNode(detail, new Map()), cpu: n.cpu, memory: n.memory, pods: n.pods });
     } catch {
       setSelected(n);
     }
@@ -193,18 +227,12 @@ export function Nodes() {
       await updateNodeResource(resource);
       await loadNodes();
       const refreshed = await getNode(node.name);
-      setSelected({ ...toPageNode(refreshed, new Map()), cpu: node.cpu, memory: node.memory });
+      setSelected({ ...toPageNode(refreshed, new Map()), cpu: node.cpu, memory: node.memory, pods: node.pods });
     } catch (err) {
       setError(err instanceof Error ? err.message : "更新节点调度状态失败");
     } finally {
       setIsLoading(false);
     }
-  };
-
-  const handleCreate = () => {
-    setError("当前 BFF 不支持创建 Node；节点需要由 kubelet/edgecore 注册后自动出现在列表中。");
-    setCreateOpen(false);
-    setForm({ name: "", role: "edge", ip: "", cpu: "2", memory: "4Gi" });
   };
 
   return (
@@ -217,28 +245,25 @@ export function Nodes() {
           </Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />添加节点</Button>
+              <Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />接入节点</Button>
             </DialogTrigger>
             <DialogContent className="max-w-lg">
-              <DialogHeader><DialogTitle className="text-base">添加节点</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-2">
-                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">节点名称</Label><Input placeholder="如 edge-node-02" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">角色</Label>
-                    <select value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">
-                      <option value="cloud">cloud</option><option value="edge">edge</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">IP 地址</Label><Input placeholder="192.168.1.100" value={form.ip} onChange={e => setForm({ ...form, ip: e.target.value })} className="h-9 text-sm" /></div>
+              <DialogHeader><DialogTitle className="text-base">接入节点</DialogTitle></DialogHeader>
+              <div className="space-y-3 py-2 text-sm text-[#4E5969]">
+                <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3">
+                  当前 API 不支持通过表单创建真实 Node。节点需要在目标机器上运行 kubelet 或 edgecore，向集群注册成功后自动出现在列表中。
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">CPU 核数</Label><Input value={form.cpu} onChange={e => setForm({ ...form, cpu: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">内存</Label><Input value={form.memory} onChange={e => setForm({ ...form, memory: e.target.value })} className="h-9 text-sm" /></div>
+                <div className="space-y-1">
+                  <p className="font-medium text-[#1D2129]">边缘节点</p>
+                  <p>在目标机器安装 KubeEdge edgecore，并使用 cloudcore 生成的 token 执行 keadm join。</p>
+                </div>
+                <div className="space-y-1">
+                  <p className="font-medium text-[#1D2129]">云端/工作节点</p>
+                  <p>使用 Kubernetes 标准 kubeadm join 接入集群。</p>
                 </div>
               </div>
               <DialogFooter>
-                <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
-                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>添加</Button>
+                <Button size="sm" className="bg-[#165DFF] text-white" onClick={() => setCreateOpen(false)}>知道了</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>

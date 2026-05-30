@@ -70,11 +70,12 @@ import {
   MemoryStick,
   Activity,
   Filter,
+  Pencil,
 } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
-import { createEdgeApplicationResource, deleteEdgeApplicationResource, listEdgeApplications } from "@/api/services/resources";
+import { createEdgeApplicationResource, deleteEdgeApplicationResource, getEdgeApplication, listEdgeApplications, updateEdgeApplicationResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
@@ -108,6 +109,7 @@ interface EdgeApp {
   current?: number;
   ready?: number;
   ip?: string;
+  raw: KubeResource;
 }
 
 const typeColors: Record<string, string> = {
@@ -124,22 +126,50 @@ const typeIcons: Record<string, React.ElementType> = {
   DaemonSet: MemoryStick,
 };
 
+const k8sNamePattern = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
+
+function isValidK8sName(name: string): boolean {
+  return k8sNamePattern.test(name) && name.length <= 63;
+}
+
+function getWorkloadManifest(item: any): any {
+  const manifest = item?.spec?.workloadTemplate?.manifests?.[0];
+  if (manifest) return manifest;
+
+  const legacyTemplate = item?.spec?.workloadTemplate;
+  if (legacyTemplate?.kind || legacyTemplate?.spec) {
+    return {
+      apiVersion: legacyTemplate.apiVersion,
+      kind: legacyTemplate.kind,
+      metadata: item?.metadata,
+      spec: legacyTemplate.spec,
+    };
+  }
+
+  return item;
+}
+
 function getFirstContainer(item: any): any {
+  const workload = getWorkloadManifest(item);
   const containers =
-    item?.spec?.template?.spec?.containers ||
-    item?.spec?.workloadTemplate?.spec?.template?.spec?.containers ||
-    item?.spec?.containers;
+    workload?.spec?.template?.spec?.containers ||
+    workload?.spec?.containers;
   return Array.isArray(containers) ? containers[0] : undefined;
 }
 
 function toEdgeApp(item: any): EdgeApp {
-  const labels = item?.metadata?.labels || item?.spec?.selector?.matchLabels || {};
+  const workload = getWorkloadManifest(item);
+  const labels = workload?.metadata?.labels || workload?.spec?.selector?.matchLabels || item?.metadata?.labels || {};
   const container = getFirstContainer(item) || {};
-  const replicas = item?.spec?.replicas ?? item?.spec?.workloadTemplate?.spec?.replicas ?? 1;
-  const availableReplicas = item?.status?.availableReplicas ?? item?.status?.readyReplicas ?? 0;
-  const kind = item?.kind || item?.spec?.workloadTemplate?.kind || "Deployment";
-  const phase = item?.status?.phase;
-  const status = phase || (availableReplicas >= replicas ? "运行中" : "未就绪");
+  const replicas = workload?.spec?.replicas ?? item?.spec?.replicas ?? 1;
+  const workloadStatus = Array.isArray(item?.status?.workloadStatus) ? item.status.workloadStatus : [];
+  const isAvailable = workloadStatus.some((s: any) => s?.conditions === "Available");
+  const availableReplicas = item?.status?.availableReplicas ?? item?.status?.readyReplicas ?? (isAvailable ? replicas : 0);
+  const kind = workload?.kind || item?.spec?.workloadTemplate?.kind || item?.kind || "Deployment";
+  const phase = item?.status?.phase || (workloadStatus.length ? (isAvailable ? "运行中" : "处理中") : undefined);
+  const status = item?.spec?.paused ? "已暂停" : phase || (availableReplicas >= replicas ? "运行中" : "未就绪");
+  const targetNodeGroups = item?.spec?.workloadScope?.targetNodeGroups;
+  const targetNodeLabels = item?.spec?.workloadScope?.targetNodeLabels;
 
   return {
     namespace: getResourceNamespace(item),
@@ -147,7 +177,10 @@ function toEdgeApp(item: any): EdgeApp {
     type: kind,
     status,
     statusColor: status === "运行中" || status === "Running" || status === "Succeeded" ? "success" : "warning",
-    node: item?.spec?.nodeName || item?.spec?.nodeSelector?.["kubernetes.io/hostname"] || "-",
+    node:
+      item?.nodeGroups ||
+      (Array.isArray(targetNodeGroups) && targetNodeGroups.length ? targetNodeGroups.map((g: any) => g?.name).filter(Boolean).join(", ") : "") ||
+      (Array.isArray(targetNodeLabels) && targetNodeLabels.length ? "按节点标签" : "-"),
     nodeRole: "edge",
     images: [container?.image || "-"],
     cpu: "0",
@@ -160,15 +193,135 @@ function toEdgeApp(item: any): EdgeApp {
     createdAt: getResourceCreatedAt(item),
     age: getResourceCreatedAt(item),
     labels,
-    selector: item?.spec?.selector?.matchLabels,
-    strategy: item?.spec?.strategy?.type,
+    selector: workload?.spec?.selector?.matchLabels,
+    strategy: workload?.spec?.strategy?.type,
     desiredReplicas: replicas,
     availableReplicas,
     desired: item?.status?.desiredNumberScheduled,
     current: item?.status?.currentNumberScheduled,
     ready: item?.status?.numberReady,
     ip: item?.status?.podIP,
+    raw: item,
   };
+}
+
+function updateFirstContainer(raw: KubeResource, updates: Record<string, unknown>): KubeResource {
+  const spec = { ...(raw.spec || {}) } as Record<string, any>;
+  const manifests = Array.isArray(spec.workloadTemplate?.manifests) ? [...spec.workloadTemplate.manifests] : [];
+  const manifest = manifests[0];
+  const template = manifest?.spec?.template || spec.template || spec;
+  const podSpec = template?.spec || spec;
+  const containers = Array.isArray(podSpec?.containers) ? [...podSpec.containers] : [];
+  containers[0] = { ...(containers[0] || {}), ...updates };
+
+  if (manifest?.spec?.template?.spec) {
+    manifests[0] = {
+      ...manifest,
+      spec: {
+        ...manifest.spec,
+        template: {
+          ...manifest.spec.template,
+          spec: {
+            ...manifest.spec.template.spec,
+            containers,
+          },
+        },
+      },
+    };
+    spec.workloadTemplate = {
+      ...spec.workloadTemplate,
+      manifests,
+    };
+  } else if (spec.workloadTemplate?.spec?.template?.spec) {
+    spec.workloadTemplate = {
+      ...spec.workloadTemplate,
+      spec: {
+        ...spec.workloadTemplate.spec,
+        template: {
+          ...spec.workloadTemplate.spec.template,
+          spec: {
+            ...spec.workloadTemplate.spec.template.spec,
+            containers,
+          },
+        },
+      },
+    };
+  } else if (spec.template?.spec) {
+    spec.template = {
+      ...spec.template,
+      spec: {
+        ...spec.template.spec,
+        containers,
+      },
+    };
+  } else {
+    spec.containers = containers;
+  }
+
+  return { ...raw, spec };
+}
+
+function updateWorkloadTemplateMetadata(raw: KubeResource, annotations: Record<string, string>): KubeResource {
+  const spec = { ...(raw.spec || {}) } as Record<string, any>;
+  const manifests = Array.isArray(spec.workloadTemplate?.manifests) ? [...spec.workloadTemplate.manifests] : [];
+  const manifest = manifests[0];
+  if (manifest?.spec?.template) {
+    const template = manifest.spec.template;
+    manifests[0] = {
+      ...manifest,
+      spec: {
+        ...manifest.spec,
+        template: {
+          ...template,
+          metadata: {
+            ...(template.metadata || {}),
+            annotations: {
+              ...(template.metadata?.annotations || {}),
+              ...annotations,
+            },
+          },
+        },
+      },
+    };
+    spec.workloadTemplate = {
+      ...spec.workloadTemplate,
+      manifests,
+    };
+  } else if (spec.workloadTemplate?.spec?.template) {
+    const template = spec.workloadTemplate.spec.template;
+    spec.workloadTemplate = {
+      ...spec.workloadTemplate,
+      spec: {
+        ...spec.workloadTemplate.spec,
+        template: {
+          ...template,
+          metadata: {
+            ...(template.metadata || {}),
+            annotations: {
+              ...(template.metadata?.annotations || {}),
+              ...annotations,
+            },
+          },
+        },
+      },
+    };
+  } else if (spec.template) {
+    spec.template = {
+      ...spec.template,
+      metadata: {
+        ...(spec.template.metadata || {}),
+        annotations: {
+          ...(spec.template.metadata?.annotations || {}),
+          ...annotations,
+        },
+      },
+    };
+  } else {
+    spec.template = {
+      metadata: { annotations },
+    };
+  }
+  return { ...raw, spec };
 }
 
 function yamlTemplateEdge(a: EdgeApp) {
@@ -221,6 +374,42 @@ function buildEdgeApplicationResource(form: {
   replicas: number;
 }): KubeResource {
   const labels = { app: form.name };
+  const podSpec = {
+    containers: [
+      {
+        name: form.name,
+        image: form.image,
+        resources: {
+          limits: {
+            cpu: form.cpuLimit,
+            memory: form.memoryLimit,
+          },
+        },
+      },
+    ],
+    restartPolicy: form.type === "Job" ? "OnFailure" : undefined,
+  };
+  const manifest: KubeResource = {
+    apiVersion: form.type === "Job" ? "batch/v1" : form.type === "Pod" ? "v1" : "apps/v1",
+    kind: form.type,
+    metadata: {
+      name: form.name,
+      namespace: form.namespace,
+      labels,
+    },
+    spec:
+      form.type === "Pod"
+        ? podSpec
+        : {
+            replicas: form.type === "Deployment" ? form.replicas : undefined,
+            selector: form.type === "Deployment" || form.type === "DaemonSet" ? { matchLabels: labels } : undefined,
+            template: {
+              metadata: { labels },
+              spec: podSpec,
+            },
+          },
+  };
+
   return {
     apiVersion: "apps.kubeedge.io/v1alpha1",
     kind: "EdgeApplication",
@@ -231,32 +420,10 @@ function buildEdgeApplicationResource(form: {
     },
     spec: {
       workloadScope: {
-        targetNodeGroups: [],
+        targetNodeLabels: [{ labelSelector: { matchLabels: {} } }],
       },
       workloadTemplate: {
-        kind: form.type,
-        spec: {
-          replicas: form.type === "Deployment" ? form.replicas : undefined,
-          selector: form.type === "Deployment" || form.type === "DaemonSet" ? { matchLabels: labels } : undefined,
-          template: {
-            metadata: { labels },
-            spec: {
-              containers: [
-                {
-                  name: form.name,
-                  image: form.image,
-                  resources: {
-                    limits: {
-                      cpu: form.cpuLimit,
-                      memory: form.memoryLimit,
-                    },
-                  },
-                },
-              ],
-              restartPolicy: form.type === "Job" ? "OnFailure" : undefined,
-            },
-          },
-        },
+        manifests: [manifest],
       },
     },
   };
@@ -274,8 +441,11 @@ export function EdgeApps() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<EdgeApp | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [deleteItem, setDeleteItem] = useState<EdgeApp | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [editItem, setEditItem] = useState<EdgeApp | null>(null);
+  const [editForm, setEditForm] = useState({ image: "", cpuLimit: "", memoryLimit: "", replicas: 1 });
 
   const [form, setForm] = useState({
     name: "",
@@ -294,7 +464,18 @@ export function EdgeApps() {
     setError("");
     try {
       const items = await listEdgeApplications(namespace === "all" ? undefined : namespace);
-      setData(items.map(toEdgeApp));
+      const rows = items.map(toEdgeApp);
+      const detailedRows = await Promise.all(
+        rows.map(async (row) => {
+          if (!row.name || row.name === "-") return row;
+          try {
+            return toEdgeApp(await getEdgeApplication(row.namespace, row.name));
+          } catch {
+            return row;
+          }
+        }),
+      );
+      setData(detailedRows);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载边缘应用失败");
     } finally {
@@ -330,10 +511,40 @@ export function EdgeApps() {
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (currentPage - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
+  const createName = form.name.trim();
+  const createImage = form.image.trim();
+  const createNameError = createName && !isValidK8sName(createName)
+    ? "名称只能包含小写字母、数字和中划线，且首尾必须是字母或数字"
+    : "";
 
-  const openDetail = (a: EdgeApp) => {
+  const openDetail = async (a: EdgeApp) => {
     setSelected(a);
     setDetailOpen(true);
+    try {
+      setSelected(toEdgeApp(await getEdgeApplication(a.namespace, a.name)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载边缘应用详情失败");
+    }
+  };
+
+  const openEdit = async (a: EdgeApp) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const detail = toEdgeApp(await getEdgeApplication(a.namespace, a.name));
+      setEditItem(detail);
+      setEditForm({
+        image: detail.images[0] || "",
+        cpuLimit: detail.cpuLimit || "100m",
+        memoryLimit: detail.memoryLimit || "128Mi",
+        replicas: detail.desiredReplicas || 1,
+      });
+      setEditOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载边缘应用详情失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const openDelete = (a: EdgeApp) => {
@@ -343,6 +554,11 @@ export function EdgeApps() {
 
   const confirmDelete = async () => {
     if (!deleteItem) return;
+    if (!deleteItem.name || deleteItem.name === "-") {
+      setError("边缘应用名称无效，请刷新列表后重试");
+      setDeleteOpen(false);
+      return;
+    }
     setIsLoading(true);
     setError("");
     try {
@@ -357,24 +573,121 @@ export function EdgeApps() {
     }
   };
 
-  const togglePause = (a: EdgeApp) => {
-    setError(`边缘应用 ${a.name} 的暂停/恢复需要确认 EdgeApplication 更新语义，当前暂未启用真实写入。`);
-  };
-
-  const handleRestart = (a: EdgeApp) => {
-    setError(`边缘应用 ${a.name} 的重启需要后端事件或滚动更新语义，当前暂未启用真实写入。`);
-  };
-
-  const handleCreate = async () => {
+  const togglePause = async (a: EdgeApp) => {
     setIsLoading(true);
     setError("");
     try {
-      await createEdgeApplicationResource(buildEdgeApplicationResource(form));
+      const detail = await getEdgeApplication(a.namespace, a.name);
+      await updateEdgeApplicationResource(a.namespace, {
+        ...detail,
+        spec: {
+          ...(detail.spec || {}),
+          paused: !Boolean(detail.spec?.paused),
+        },
+      });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新边缘应用暂停状态失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRestart = async (a: EdgeApp) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const detail = await getEdgeApplication(a.namespace, a.name);
+      await updateEdgeApplicationResource(
+        a.namespace,
+        updateWorkloadTemplateMetadata(detail, { "blueedge.io/restartedAt": new Date().toISOString() }),
+      );
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重启边缘应用失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCreate = async () => {
+    const normalizedForm = {
+      ...form,
+      name: form.name.trim(),
+      image: form.image.trim(),
+      cpuLimit: form.cpuLimit.trim(),
+      memoryLimit: form.memoryLimit.trim(),
+    };
+    if (!normalizedForm.name || !isValidK8sName(normalizedForm.name)) {
+      setError("边缘应用名称只能包含小写字母、数字和中划线，且首尾必须是字母或数字");
+      return;
+    }
+    if (!normalizedForm.image) {
+      setError("镜像不能为空");
+      return;
+    }
+    setIsLoading(true);
+    setError("");
+    try {
+      await createEdgeApplicationResource(buildEdgeApplicationResource(normalizedForm));
       setCreateOpen(false);
       setForm({ name: "", namespace: "default", type: "Deployment", image: "nginx:latest", cpuLimit: "100m", memoryLimit: "128Mi", replicas: 1 });
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建边缘应用失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleEdit = async () => {
+    if (!editItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      let updated = updateFirstContainer(editItem.raw, {
+        image: editForm.image,
+        resources: {
+          limits: {
+            cpu: editForm.cpuLimit,
+            memory: editForm.memoryLimit,
+          },
+        },
+      });
+      const spec = { ...(updated.spec || {}) } as Record<string, any>;
+      if (editItem.type === "Deployment") {
+        const manifests = Array.isArray(spec.workloadTemplate?.manifests) ? [...spec.workloadTemplate.manifests] : [];
+        if (manifests[0]?.spec) {
+          manifests[0] = {
+            ...manifests[0],
+            spec: {
+              ...manifests[0].spec,
+              replicas: editForm.replicas,
+            },
+          };
+          spec.workloadTemplate = {
+            ...spec.workloadTemplate,
+            manifests,
+          };
+        } else if (spec.workloadTemplate?.spec) {
+          spec.workloadTemplate = {
+            ...spec.workloadTemplate,
+            spec: {
+              ...spec.workloadTemplate.spec,
+              replicas: editForm.replicas,
+            },
+          };
+        } else {
+          spec.replicas = editForm.replicas;
+        }
+        updated = { ...updated, spec };
+      }
+      await updateEdgeApplicationResource(editItem.namespace, updated);
+      setEditOpen(false);
+      setEditItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新边缘应用失败");
     } finally {
       setIsLoading(false);
     }
@@ -412,6 +725,7 @@ export function EdgeApps() {
                   <div className="space-y-1.5">
                     <Label className="text-xs text-[#4E5969]">名称</Label>
                     <Input placeholder="如 edge-app" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" />
+                    {createNameError && <p className="text-xs text-[#F53F3F]">{createNameError}</p>}
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-xs text-[#4E5969]">类型</Label>
@@ -462,7 +776,38 @@ export function EdgeApps() {
               </div>
               <DialogFooter>
                 <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
-                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button>
+                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!createName || !!createNameError || !createImage}>创建</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={editOpen} onOpenChange={setEditOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader>
+                <DialogTitle className="text-base">编辑边缘应用</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="grid grid-cols-2 gap-4">
+                  <InfoCard label="名称" value={editItem?.name || "-"} />
+                  <InfoCard label="类型" value={editItem?.type || "-"} />
+                </div>
+                {editItem?.type === "Deployment" && (
+                  <div className="space-y-1.5">
+                    <Label className="text-xs text-[#4E5969]">副本数</Label>
+                    <Input type="number" min={1} value={editForm.replicas} onChange={(e) => setEditForm({ ...editForm, replicas: Number(e.target.value) })} className="h-9 text-sm" />
+                  </div>
+                )}
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-[#4E5969]">镜像</Label>
+                  <Input value={editForm.image} onChange={(e) => setEditForm({ ...editForm, image: e.target.value })} className="h-9 text-sm" />
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">CPU 限制</Label><Input value={editForm.cpuLimit} onChange={(e) => setEditForm({ ...editForm, cpuLimit: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">内存限制</Label><Input value={editForm.memoryLimit} onChange={(e) => setEditForm({ ...editForm, memoryLimit: e.target.value })} className="h-9 text-sm" /></div>
+                </div>
+              </div>
+              <DialogFooter>
+                <Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button>
+                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || !editForm.image}>保存</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
@@ -559,8 +904,8 @@ export function EdgeApps() {
                     </TableCell>
                     <TableCell className="text-sm text-[#4E5969] px-4 py-3">
                       <div className="flex flex-col gap-0.5">
-                        <span>{row.cpu} m</span>
-                        <span className="text-[#86909C]">{row.memory}</span>
+                        <span>{row.cpuLimit !== "-" ? row.cpuLimit : `${row.cpu} m`}</span>
+                        <span className="text-[#86909C]">{row.memoryLimit !== "-" ? row.memoryLimit : row.memory}</span>
                       </div>
                     </TableCell>
                     <TableCell className="text-sm text-[#4E5969] px-4 py-3 max-w-[180px] truncate" title={row.images[0]}>
@@ -572,6 +917,10 @@ export function EdgeApps() {
                         <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}>
                           <Eye className="w-3.5 h-3.5 mr-1" />
                           详情
+                        </Button>
+                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}>
+                          <Pencil className="w-3.5 h-3.5 mr-1" />
+                          编辑
                         </Button>
                         <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#4E5969] hover:text-[#1D2129] hover:bg-[#F2F3F5]" onClick={() => handleRestart(row)}>
                           <RotateCcw className="w-3.5 h-3.5 mr-1" />

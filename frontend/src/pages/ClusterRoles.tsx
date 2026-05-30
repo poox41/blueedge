@@ -2,6 +2,7 @@ import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/p
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -42,6 +43,16 @@ function splitCsv(value: string): string[] {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
+function buildRules(resources: string, verbs: string) {
+  const resourceLines = resources.split(/\n+/).map((item) => item.trim()).filter(Boolean);
+  const verbLines = verbs.split(/\n+/).map((item) => item.trim()).filter(Boolean);
+  return resourceLines.map((resourceLine, index) => ({
+    apiGroups: [""],
+    resources: splitCsv(resourceLine),
+    verbs: splitCsv(verbLines[index] || verbLines[0] || "get,list,watch"),
+  }));
+}
+
 function buildClusterRoleResource(form: { name: string; resources: string; verbs: string }, base?: KubeResource): KubeResource {
   return {
     apiVersion: "rbac.authorization.k8s.io/v1",
@@ -50,13 +61,7 @@ function buildClusterRoleResource(form: { name: string; resources: string; verbs
       ...base?.metadata,
       name: form.name,
     },
-    rules: [
-      {
-        apiGroups: [""],
-        resources: splitCsv(form.resources),
-        verbs: splitCsv(form.verbs),
-      },
-    ],
+    rules: buildRules(form.resources, form.verbs),
   };
 }
 
@@ -105,8 +110,8 @@ export function ClusterRoles() {
     setEditItem(d);
     setEditForm({
       name: d.name,
-      resources: firstRule?.resources?.join(",") || "pods,nodes",
-      verbs: firstRule?.verbs?.join(",") || "get,list,watch",
+      resources: d.rules?.map((rule) => rule.resources?.join(",")).join("\n") || firstRule?.resources?.join(",") || "pods,nodes",
+      verbs: d.rules?.map((rule) => rule.verbs?.join(",")).join("\n") || firstRule?.verbs?.join(",") || "get,list,watch",
     });
     setEditOpen(true);
   };
@@ -168,8 +173,8 @@ export function ClusterRoles() {
               <DialogHeader><DialogTitle className="text-base">创建集群角色</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
                 <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input placeholder="如 cluster-reader" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
-                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">资源（逗号分隔）</Label><Input value={form.resources} onChange={e => setForm({ ...form, resources: e.target.value })} className="h-9 text-sm" /></div>
-                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">动词（逗号分隔）</Label><Input value={form.verbs} onChange={e => setForm({ ...form, verbs: e.target.value })} className="h-9 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">资源（每行一条规则，逗号分隔）</Label><Textarea value={form.resources} onChange={e => setForm({ ...form, resources: e.target.value })} className="min-h-20 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">动词（每行对应一条规则，逗号分隔）</Label><Textarea value={form.verbs} onChange={e => setForm({ ...form, verbs: e.target.value })} className="min-h-20 text-sm" /></div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
             </DialogContent>
@@ -179,8 +184,8 @@ export function ClusterRoles() {
               <DialogHeader><DialogTitle className="text-base">编辑集群角色</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
                 <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input value={editForm.name} disabled className="h-9 text-sm bg-[#F7F8FA]" /></div>
-                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">资源（逗号分隔）</Label><Input value={editForm.resources} onChange={e => setEditForm({ ...editForm, resources: e.target.value })} className="h-9 text-sm" /></div>
-                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">动词（逗号分隔）</Label><Input value={editForm.verbs} onChange={e => setEditForm({ ...editForm, verbs: e.target.value })} className="h-9 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">资源（每行一条规则，逗号分隔）</Label><Textarea value={editForm.resources} onChange={e => setEditForm({ ...editForm, resources: e.target.value })} className="min-h-20 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">动词（每行对应一条规则，逗号分隔）</Label><Textarea value={editForm.verbs} onChange={e => setEditForm({ ...editForm, verbs: e.target.value })} className="min-h-20 text-sm" /></div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleUpdate} disabled={!editForm.resources || !editForm.verbs}>保存</Button></DialogFooter>
             </DialogContent>

@@ -2,6 +2,7 @@ import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/p
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -41,6 +42,18 @@ subjects:
 ${(n.subjects || []).map(s => `  - kind: ${s.kind}\n    name: ${s.name}\n    namespace: ${s.namespace}`).join("\n")}`;
 }
 
+function parseSubjects(value: string) {
+  return value.split(/\n+/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [kind = "ServiceAccount", name = "default", namespace = "default"] = line.split(",").map((item) => item.trim());
+    return { kind, name, namespace };
+  });
+}
+
+function formatSubjects(subjects: CRB["subjects"]) {
+  const rows = subjects && subjects.length > 0 ? subjects : [{ kind: "ServiceAccount", name: "default", namespace: "default" }];
+  return rows.map((item) => `${item.kind},${item.name},${item.namespace || "default"}`).join("\n");
+}
+
 function buildClusterRoleBindingResource(form: { name: string; role: string; subject: string }, base?: KubeResource): KubeResource {
   return {
     apiVersion: "rbac.authorization.k8s.io/v1",
@@ -54,13 +67,7 @@ function buildClusterRoleBindingResource(form: { name: string; role: string; sub
       kind: "ClusterRole",
       name: form.role,
     },
-    subjects: [
-      {
-        kind: "ServiceAccount",
-        name: form.subject,
-        namespace: "default",
-      },
-    ],
+    subjects: parseSubjects(form.subject),
   };
 }
 
@@ -109,7 +116,7 @@ export function ClusterRoleBindings() {
     setEditForm({
       name: d.name,
       role: d.roleRef === "-" ? "" : d.roleRef,
-      subject: d.subjects?.[0]?.name || "default",
+      subject: formatSubjects(d.subjects),
     });
     setEditOpen(true);
   };
@@ -173,7 +180,7 @@ export function ClusterRoleBindings() {
                 <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input placeholder="如 my-cluster-binding" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">集群角色引用</Label><Input placeholder="角色名称" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">绑定主体</Label><Input value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">绑定主体</Label><Textarea value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} className="min-h-20 text-sm" placeholder="ServiceAccount,default,default" /></div>
                 </div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name || !form.role}>创建</Button></DialogFooter>
@@ -186,7 +193,7 @@ export function ClusterRoleBindings() {
                 <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input value={editForm.name} disabled className="h-9 text-sm bg-[#F7F8FA]" /></div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">集群角色引用</Label><Input value={editForm.role} onChange={e => setEditForm({ ...editForm, role: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">绑定主体</Label><Input value={editForm.subject} onChange={e => setEditForm({ ...editForm, subject: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">绑定主体</Label><Textarea value={editForm.subject} onChange={e => setEditForm({ ...editForm, subject: e.target.value })} className="min-h-20 text-sm" /></div>
                 </div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleUpdate} disabled={!editForm.role || !editForm.subject}>保存</Button></DialogFooter>

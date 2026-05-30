@@ -9,15 +9,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { createDeviceResource, deleteDeviceResource, listDevices } from "@/api/services/resources";
+import { createDeviceResource, deleteDeviceResource, getDevice, listDeviceModels, listDevices, listNodes, updateDeviceResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { DeviceView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
-interface DI { namespace: string; name: string; model: string; node: string; status: string; statusColor: string; twins: number; createdAt: string; protocol?: string; }
+interface DI { namespace: string; name: string; model: string; node: string; status: string; statusColor: string; twins: number; createdAt: string; protocol?: string; raw: KubeResource; }
 
 function toDeviceRow(item: DeviceView): DI {
   const raw = item.raw as Record<string, any>;
@@ -32,7 +32,25 @@ function toDeviceRow(item: DeviceView): DI {
     twins: Array.isArray(raw.status?.twins) ? raw.status.twins.length : Array.isArray(raw.spec?.properties) ? raw.spec.properties.length : 0,
     createdAt: item.createdAt,
     protocol: raw.spec?.protocol?.protocolName || raw.protocol || "-",
+    raw: item.raw,
   };
+}
+
+function getTwins(raw: KubeResource): Array<{ name: string; desired: string; reported: string }> {
+  const twins = Array.isArray(raw.status?.twins) ? raw.status.twins : [];
+  if (twins.length > 0) {
+    return twins.map((item: any) => ({
+      name: item?.propertyName || item?.name || "-",
+      desired: String(item?.desired?.value ?? item?.desired ?? "-"),
+      reported: String(item?.reported?.value ?? item?.reported ?? "-"),
+    }));
+  }
+  const properties = Array.isArray(raw.spec?.properties) ? raw.spec.properties : [];
+  return properties.map((item: any) => ({
+    name: item?.name || item?.propertyName || "-",
+    desired: "-",
+    reported: "-",
+  }));
 }
 
 function yaml(n: DI) {
@@ -81,6 +99,8 @@ function buildDeviceResource(form: { name: string; namespace: string; model: str
 export function DeviceInstances() {
   const namespaces = useNamespaceOptions();
   const [data, setData] = useState<DI[]>([]);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [nodeOptions, setNodeOptions] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -89,17 +109,26 @@ export function DeviceInstances() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<DI | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<DI | null>(null);
   const [form, setForm] = useState({ name: "", namespace: "default", model: "test-model", node: "edge-node", protocol: "MQTT" });
+  const [editItem, setEditItem] = useState<DI | null>(null);
+  const [editForm, setEditForm] = useState({ model: "", node: "", protocol: "MQTT" });
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setError("");
     try {
-      const rows = await listDevices(ns === "all" ? undefined : ns);
+      const [rows, models, nodes] = await Promise.all([
+        listDevices(ns === "all" ? undefined : ns),
+        listDeviceModels(ns === "all" ? undefined : ns).catch(() => []),
+        listNodes().catch(() => []),
+      ]);
       setData(rows.map(toDeviceRow));
+      setModelOptions(models.map((item) => item.name));
+      setNodeOptions(nodes.map((item) => item.name));
       setPage(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "设备实例数据加载失败");
@@ -122,7 +151,29 @@ export function DeviceInstances() {
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
-  const openDetail = (d: DI) => { setSelected(d); setDetailOpen(true); };
+  const openDetail = async (d: DI) => {
+    setSelected(d);
+    setDetailOpen(true);
+    try {
+      setSelected(toDeviceRow(await getDevice(d.namespace, d.name)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载设备实例详情失败");
+    }
+  };
+  const openEdit = async (d: DI) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const detail = toDeviceRow(await getDevice(d.namespace, d.name));
+      setEditItem(detail);
+      setEditForm({ model: detail.model, node: detail.node, protocol: detail.protocol || "MQTT" });
+      setEditOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载设备实例详情失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
   const openDel = (d: DI) => { setDelItem(d); setDelOpen(true); };
   const confirmDel = async () => {
     if (!delItem) return;
@@ -153,6 +204,37 @@ export function DeviceInstances() {
       setIsLoading(false);
     }
   };
+  const handleEdit = async () => {
+    if (!editItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      const updated: KubeResource = {
+        ...editItem.raw,
+        metadata: {
+          ...(editItem.raw.metadata || {}),
+          labels: {
+            ...(editItem.raw.metadata?.labels || {}),
+            model: editForm.model,
+          },
+        },
+        spec: {
+          ...(editItem.raw.spec || {}),
+          deviceModelRef: { name: editForm.model },
+          nodeName: editForm.node,
+          protocol: { protocolName: editForm.protocol },
+        },
+      };
+      await updateDeviceResource(editItem.namespace, updated);
+      setEditOpen(false);
+      setEditItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新设备实例失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   return (
     <div className="space-y-4">
@@ -172,14 +254,30 @@ export function DeviceInstances() {
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">设备模型</Label><Input value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标节点</Label><Input value={form.node} onChange={e => setForm({ ...form, node: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">设备模型</Label><select value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">{modelOptions.length === 0 && <option value={form.model}>{form.model}</option>}{modelOptions.map(model => <option key={model} value={model}>{model}</option>)}</select></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标节点</Label><select value={form.node} onChange={e => setForm({ ...form, node: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">{nodeOptions.length === 0 && <option value={form.node}>{form.node}</option>}{nodeOptions.map(node => <option key={node} value={node}>{node}</option>)}</select></div>
                 </div>
                 <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">协议</Label>
                   <select value={form.protocol} onChange={e => setForm({ ...form, protocol: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option>MQTT</option><option>Modbus</option><option>OPC UA</option><option>Bluetooth</option></select>
                 </div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={editOpen} onOpenChange={setEditOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader><DialogTitle className="text-base">编辑设备实例</DialogTitle></DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="命名空间" value={editItem?.namespace || "-"} /></div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">设备模型</Label><select value={editForm.model} onChange={e => setEditForm({ ...editForm, model: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">{!modelOptions.includes(editForm.model) && <option value={editForm.model}>{editForm.model}</option>}{modelOptions.map(model => <option key={model} value={model}>{model}</option>)}</select></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标节点</Label><select value={editForm.node} onChange={e => setEditForm({ ...editForm, node: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">{!nodeOptions.includes(editForm.node) && <option value={editForm.node}>{editForm.node}</option>}{nodeOptions.map(node => <option key={node} value={node}>{node}</option>)}</select></div>
+                </div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">协议</Label>
+                  <select value={editForm.protocol} onChange={e => setEditForm({ ...editForm, protocol: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option>MQTT</option><option>Modbus</option><option>OPC UA</option><option>Bluetooth</option></select>
+                </div>
+              </div>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || !editForm.model || !editForm.node}>保存</Button></DialogFooter>
             </DialogContent>
           </Dialog>
         </div>
@@ -211,7 +309,7 @@ export function DeviceInstances() {
             <TableCell className="px-4 py-3"><Badge variant="outline" className="text-xs font-normal">{row.protocol || "-"}</Badge></TableCell>
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.twins}</TableCell>
             <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
+            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
       </div>
@@ -238,9 +336,10 @@ export function DeviceInstances() {
               </div>
             </TabsContent>
             <TabsContent value="twins" className="mt-3 space-y-2">
-              {[{ name: "temperature", desired: "25.0", reported: "25.3" }, { name: "humidity", desired: "60", reported: "58" }, { name: "status", desired: "running", reported: "running" }].map((t, i) => (
+              {getTwins(selected.raw).map((t, i) => (
                 <div key={i} className="bg-[#F7F8FA] rounded-md p-3"><div className="flex items-center justify-between"><span className="text-sm font-medium">{t.name}</span><Badge className="text-xs font-normal bg-[#E8FFEA] text-[#00B42A]">已同步</Badge></div><div className="grid grid-cols-2 gap-2 mt-2"><Info label="期望值" value={t.desired} /><Info label="上报值" value={t.reported} /></div></div>
               ))}
+              {getTwins(selected.raw).length === 0 && <div className="text-sm text-[#86909C] py-6 text-center">暂无设备孪生数据</div>}
             </TabsContent>
             <TabsContent value="yaml" className="mt-3"><div className="relative"><pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-x-auto">{yaml(selected)}</pre><Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(yaml(selected))}><Copy className="w-3.5 h-3.5" /></Button></div></TabsContent>
           </Tabs>)}

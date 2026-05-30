@@ -9,14 +9,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { createRuleEndpointResource, deleteRuleEndpointResource, listRuleEndpoints } from "@/api/services/resources";
+import { createRuleEndpointResource, deleteRuleEndpointResource, getRuleEndpoint, listRuleEndpoints, updateRuleEndpointResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, RuleEndpointView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
-interface RE { namespace: string; name: string; ruleEndpointType: string; targetResource: string; description: string; createdAt: string; }
+interface RE { namespace: string; name: string; ruleEndpointType: string; targetResource: string; description: string; createdAt: string; raw: KubeResource; }
 
 function toRuleEndpointRow(item: RuleEndpointView): RE {
   const raw = item.raw as Record<string, any>;
@@ -27,6 +27,7 @@ function toRuleEndpointRow(item: RuleEndpointView): RE {
     targetResource: item.targetResource,
     description: raw.spec?.description || raw.description || "",
     createdAt: item.createdAt,
+    raw: item.raw,
   };
 }
 
@@ -67,9 +68,12 @@ export function RuleEndpoints() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<RE | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<RE | null>(null);
   const [form, setForm] = useState({ name: "", namespace: "default", type: "EventBus", targetResource: "" });
+  const [editItem, setEditItem] = useState<RE | null>(null);
+  const [editForm, setEditForm] = useState({ type: "EventBus", targetResource: "", description: "" });
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -100,7 +104,29 @@ export function RuleEndpoints() {
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
-  const openDetail = (d: RE) => { setSelected(d); setDetailOpen(true); };
+  const openDetail = async (d: RE) => {
+    setSelected(d);
+    setDetailOpen(true);
+    try {
+      setSelected(toRuleEndpointRow(await getRuleEndpoint(d.namespace, d.name)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载规则端点详情失败");
+    }
+  };
+  const openEdit = async (d: RE) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const detail = toRuleEndpointRow(await getRuleEndpoint(d.namespace, d.name));
+      setEditItem(detail);
+      setEditForm({ type: detail.ruleEndpointType, targetResource: detail.targetResource || "", description: detail.description || "" });
+      setEditOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载规则端点详情失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
   const openDel = (d: RE) => { setDelItem(d); setDelOpen(true); };
   const confirmDel = async () => {
     if (!delItem) return;
@@ -127,6 +153,33 @@ export function RuleEndpoints() {
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建规则端点失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleEdit = async () => {
+    if (!editItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      const updated: KubeResource = {
+        ...editItem.raw,
+        spec: {
+          ...(editItem.raw.spec || {}),
+          description: editForm.description,
+          ruleEndpointType: editForm.type,
+          properties: {
+            ...((editItem.raw.spec?.properties || {}) as Record<string, unknown>),
+            ...(editForm.targetResource ? { targetResource: editForm.targetResource } : {}),
+          },
+        },
+      };
+      await updateRuleEndpointResource(editItem.namespace, updated);
+      setEditOpen(false);
+      setEditItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新规则端点失败");
     } finally {
       setIsLoading(false);
     }
@@ -159,6 +212,22 @@ export function RuleEndpoints() {
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
+          <Dialog open={editOpen} onOpenChange={setEditOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader><DialogTitle className="text-base">编辑规则端点</DialogTitle></DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="命名空间" value={editItem?.namespace || "-"} /></div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">端点类型</Label>
+                    <select value={editForm.type} onChange={e => setEditForm({ ...editForm, type: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option>EventBus</option><option>Rest</option><option>ServiceBus</option></select>
+                  </div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标资源</Label><Input value={editForm.targetResource} onChange={e => setEditForm({ ...editForm, targetResource: e.target.value })} className="h-9 text-sm" /></div>
+                </div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">描述</Label><Input value={editForm.description} onChange={e => setEditForm({ ...editForm, description: e.target.value })} className="h-9 text-sm" /></div>
+              </div>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem}>保存</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
       <div className="flex items-center justify-between gap-4">
@@ -182,7 +251,7 @@ export function RuleEndpoints() {
             <TableCell className="px-4 py-3"><Badge variant="outline" className={cn("text-xs font-normal", row.ruleEndpointType === "EventBus" ? "border-[#E8FFEA] text-[#00B42A] bg-[#E8FFEA]" : "border-[#E8F3FF] text-[#165DFF] bg-[#E8F3FF]")}>{row.ruleEndpointType}</Badge></TableCell>
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.targetResource || "-"}</TableCell>
             <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
+            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
       </div>

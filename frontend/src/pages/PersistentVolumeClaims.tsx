@@ -14,7 +14,8 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
-import { listPersistentVolumeClaims } from "@/api/services/storage";
+import { createPersistentVolumeClaim, deletePersistentVolumeClaim, listPersistentVolumeClaims } from "@/api/services/storage";
+import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface PVC {
@@ -53,6 +54,32 @@ spec:
   volumeName: ${n.volume}
 status:
   phase: ${n.status === "已绑定" ? "Bound" : "Pending"}`;
+}
+
+function buildPersistentVolumeClaimResource(form: {
+  name: string;
+  namespace: string;
+  capacity: string;
+  accessMode: string;
+  storageClass: string;
+}): KubeResource {
+  return {
+    apiVersion: "v1",
+    kind: "PersistentVolumeClaim",
+    metadata: {
+      name: form.name,
+      namespace: form.namespace,
+    },
+    spec: {
+      accessModes: [form.accessMode],
+      resources: {
+        requests: {
+          storage: form.capacity,
+        },
+      },
+      storageClassName: form.storageClass,
+    },
+  };
 }
 
 export function PersistentVolumeClaims() {
@@ -102,10 +129,34 @@ export function PersistentVolumeClaims() {
 
   const openDetail = (n: PVC) => { setSelected(n); setDetailOpen(true); };
   const openDel = (n: PVC) => { setDelItem(n); setDelOpen(true); };
-  const confirmDel = () => { if (delItem) { setData(p => p.filter(d => d.name !== delItem.name)); setDelOpen(false); } };
-  const handleCreate = () => {
-    const pvc: PVC = { name: form.name, namespace: form.namespace, status: "待处理", statusColor: "warning", capacity: form.capacity, accessModes: form.accessMode, storageClass: form.storageClass, volume: "-", createdAt: new Date().toLocaleString("zh-CN") };
-    setData(p => [pvc, ...p]); setCreateOpen(false); setForm({ name: "", namespace: "default", capacity: "10Gi", accessMode: "ReadWriteOnce", storageClass: "local-path" });
+  const confirmDel = async () => {
+    if (!delItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deletePersistentVolumeClaim(delItem.namespace, delItem.name);
+      setDelOpen(false);
+      setDelItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除持久卷声明失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createPersistentVolumeClaim(buildPersistentVolumeClaimResource(form));
+      setCreateOpen(false);
+      setForm({ name: "", namespace: "default", capacity: "10Gi", accessMode: "ReadWriteOnce", storageClass: "local-path" });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建持久卷声明失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

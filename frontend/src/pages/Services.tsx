@@ -9,14 +9,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { createServiceResource, deleteServiceResource, listServices } from "@/api/services/resources";
+import { createServiceResource, deleteServiceResource, getService, listServices, updateServiceResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, ServiceView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
-interface Svc { namespace: string; name: string; type: string; clusterIP: string; externalIP: string; ports: string; createdAt: string; selector?: Record<string, string>; sessionAffinity?: string; }
+interface Svc { namespace: string; name: string; type: string; clusterIP: string; externalIP: string; ports: string; createdAt: string; selector?: Record<string, string>; sessionAffinity?: string; raw: KubeResource; }
 
 function toServiceRow(item: ServiceView): Svc {
   const raw = item.raw as Record<string, any>;
@@ -30,6 +30,16 @@ function toServiceRow(item: ServiceView): Svc {
     createdAt: item.createdAt,
     selector: raw.spec?.selector || raw.selector || {},
     sessionAffinity: raw.spec?.sessionAffinity || "None",
+    raw: item.raw,
+  };
+}
+
+function getFirstServicePort(raw: KubeResource): { port: number; targetPort: number } {
+  const ports = (raw.spec?.ports || []) as Array<{ port?: number; targetPort?: number | string }>;
+  const first = Array.isArray(ports) ? ports[0] : undefined;
+  return {
+    port: Number(first?.port || 80),
+    targetPort: Number(first?.targetPort || first?.port || 80),
   };
 }
 
@@ -89,9 +99,12 @@ export function Services() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<Svc | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<Svc | null>(null);
   const [form, setForm] = useState({ name: "", namespace: "default", type: "ClusterIP", port: 80, targetPort: 80 });
+  const [editItem, setEditItem] = useState<Svc | null>(null);
+  const [editForm, setEditForm] = useState({ type: "ClusterIP", port: 80, targetPort: 80 });
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -122,7 +135,30 @@ export function Services() {
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
-  const openDetail = (d: Svc) => { setSelected(d); setDetailOpen(true); };
+  const openDetail = async (d: Svc) => {
+    setSelected(d);
+    setDetailOpen(true);
+    try {
+      setSelected(toServiceRow(await getService(d.namespace, d.name)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载服务详情失败");
+    }
+  };
+  const openEdit = async (d: Svc) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const detail = toServiceRow(await getService(d.namespace, d.name));
+      const firstPort = getFirstServicePort(detail.raw);
+      setEditItem(detail);
+      setEditForm({ type: detail.type, port: firstPort.port, targetPort: firstPort.targetPort });
+      setEditOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载服务详情失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
   const openDel = (d: Svc) => { setDelItem(d); setDelOpen(true); };
   const confirmDel = async () => {
     if (!delItem) return;
@@ -149,6 +185,44 @@ export function Services() {
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建服务失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleEdit = async () => {
+    if (!editItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      const currentPorts = (editItem.raw.spec?.ports || []) as Array<Record<string, unknown>>;
+      const firstPort = currentPorts[0] || {};
+      const nextPort: Record<string, unknown> = {
+        ...firstPort,
+        name: firstPort.name || "http",
+        protocol: firstPort.protocol || "TCP",
+        port: editForm.port,
+        targetPort: editForm.targetPort,
+      };
+      if (editForm.type === "ClusterIP") {
+        delete nextPort.nodePort;
+      }
+      const updated: KubeResource = {
+        ...editItem.raw,
+        spec: {
+          ...(editItem.raw.spec || {}),
+          type: editForm.type,
+          ports: [
+            nextPort,
+            ...currentPorts.slice(1),
+          ],
+        },
+      };
+      await updateServiceResource(editItem.namespace, updated);
+      setEditOpen(false);
+      setEditItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新服务失败");
     } finally {
       setIsLoading(false);
     }
@@ -182,6 +256,25 @@ export function Services() {
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
+          <Dialog open={editOpen} onOpenChange={setEditOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader><DialogTitle className="text-base">编辑服务</DialogTitle></DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="grid grid-cols-2 gap-4">
+                  <Info label="名称" value={editItem?.name || "-"} />
+                  <Info label="命名空间" value={editItem?.namespace || "-"} />
+                </div>
+                <div className="grid grid-cols-3 gap-4">
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">类型</Label>
+                    <select value={editForm.type} onChange={e => setEditForm({ ...editForm, type: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option>ClusterIP</option><option>NodePort</option><option>LoadBalancer</option></select>
+                  </div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">端口</Label><Input type="number" value={editForm.port} onChange={e => setEditForm({ ...editForm, port: Number(e.target.value) })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标端口</Label><Input type="number" value={editForm.targetPort} onChange={e => setEditForm({ ...editForm, targetPort: Number(e.target.value) })} className="h-9 text-sm" /></div>
+                </div>
+              </div>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || editForm.port <= 0 || editForm.targetPort <= 0}>保存</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
       <div className="flex items-center justify-between gap-4">
@@ -209,7 +302,7 @@ export function Services() {
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.externalIP}</TableCell>
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.ports}</TableCell>
             <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
+            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
       </div>

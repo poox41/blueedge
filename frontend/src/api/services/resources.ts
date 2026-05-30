@@ -179,16 +179,31 @@ export async function listDeviceModels(namespace?: string): Promise<DeviceModelV
   return normalizeDeviceModelList(res.data);
 }
 
+export async function getDeviceModel(namespace: string, name: string): Promise<DeviceModelView> {
+  const res = await bffRequest<unknown>(`/devicemodel/${encodePathPart(namespace)}/${encodePathPart(name)}`);
+  return normalizeDeviceModelList([res.data])[0];
+}
+
 export async function listDevices(namespace?: string): Promise<DeviceView[]> {
   const path = namespace ? `/device/${namespace}` : "/device";
   const res = await bffRequest<unknown>(path);
   return normalizeDeviceList(res.data);
 }
 
+export async function getDevice(namespace: string, name: string): Promise<DeviceView> {
+  const res = await bffRequest<unknown>(`/device/${encodePathPart(namespace)}/${encodePathPart(name)}`);
+  return normalizeDeviceList([res.data])[0];
+}
+
 export async function listServices(namespace?: string): Promise<ServiceView[]> {
   const path = namespace ? `/service/${namespace}` : "/service";
   const res = await bffRequest<unknown>(path);
   return normalizeServiceList(res.data);
+}
+
+export async function getService(namespace: string, name: string): Promise<ServiceView> {
+  const res = await bffRequest<unknown>(`/service/${encodePathPart(namespace)}/${encodePathPart(name)}`);
+  return normalizeServiceList([res.data])[0];
 }
 
 export async function createServiceResource(resource: KubeResource): Promise<KubeResource> {
@@ -341,10 +356,20 @@ export async function listRuleEndpoints(namespace?: string): Promise<RuleEndpoin
   return normalizeRuleEndpointList(res.data);
 }
 
+export async function getRuleEndpoint(namespace: string, name: string): Promise<RuleEndpointView> {
+  const res = await bffRequest<unknown>(`/ruleendpoint/${encodePathPart(namespace)}/${encodePathPart(name)}`);
+  return normalizeRuleEndpointList([res.data])[0];
+}
+
 export async function listRules(namespace?: string): Promise<RuleView[]> {
   const path = namespace ? `/rule/${namespace}` : "/rule";
   const res = await bffRequest<unknown>(path);
   return normalizeRuleList(res.data);
+}
+
+export async function getRule(namespace: string, name: string): Promise<RuleView> {
+  const res = await bffRequest<unknown>(`/rule/${encodePathPart(namespace)}/${encodePathPart(name)}`);
+  return normalizeRuleList([res.data])[0];
 }
 
 export async function listNodeGroups(): Promise<any[]> {
@@ -361,6 +386,11 @@ export async function listEdgeApplications(namespace?: string): Promise<any[]> {
   const path = namespace ? `/edgeapplication/${namespace}` : "/edgeapplication";
   const res = await bffRequest<unknown>(path);
   return Array.isArray((res.data as any)?.items) ? (res.data as any).items : [];
+}
+
+export async function getEdgeApplication(namespace: string, name: string): Promise<any> {
+  const res = await bffRequest<unknown>(`/edgeapplication/${encodePathPart(namespace)}/${encodePathPart(name)}`);
+  return res.data;
 }
 
 export async function listClusterRoles(): Promise<any[]> {
@@ -394,4 +424,9 @@ export async function listServiceAccounts(namespace?: string): Promise<any[]> {
 export async function listCRDs(): Promise<any[]> {
   const res = await bffRequest<unknown>("/crd");
   return Array.isArray((res.data as any)?.items) ? (res.data as any).items : [];
+}
+
+export async function getCRD(name: string): Promise<any> {
+  const res = await bffRequest<unknown>(`/crd/${encodePathPart(name)}`);
+  return res.data;
 }

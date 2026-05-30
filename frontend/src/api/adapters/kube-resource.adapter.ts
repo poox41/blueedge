@@ -17,13 +17,16 @@ export function mapSubjects(subjects: unknown): Array<{ kind: string; name: stri
 }
 
 export function getResourceName(item: KubeResource): string {
-  return item.metadata?.name || "-";
+  return item.metadata?.name || (typeof item.name === "string" ? item.name : "-");
 }
 
 export function getResourceNamespace(item: KubeResource): string {
-  return item.metadata?.namespace || "default";
+  return item.metadata?.namespace || (typeof item.namespace === "string" ? item.namespace : "default");
 }
 
 export function getResourceCreatedAt(item: KubeResource): string {
-  return item.metadata?.creationTimestamp || "-";
+  if (item.metadata?.creationTimestamp) return item.metadata.creationTimestamp;
+  if (typeof item.creationTimestamp === "string") return item.creationTimestamp;
+  if (typeof item.createdAt === "string") return item.createdAt;
+  return "-";
 }

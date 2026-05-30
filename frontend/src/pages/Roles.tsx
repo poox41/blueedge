@@ -2,6 +2,7 @@ import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/p
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -46,6 +47,16 @@ function splitCsv(value: string): string[] {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
 }
 
+function buildRules(resources: string, verbs: string) {
+  const resourceLines = resources.split(/\n+/).map((item) => item.trim()).filter(Boolean);
+  const verbLines = verbs.split(/\n+/).map((item) => item.trim()).filter(Boolean);
+  return resourceLines.map((resourceLine, index) => ({
+    apiGroups: [""],
+    resources: splitCsv(resourceLine),
+    verbs: splitCsv(verbLines[index] || verbLines[0] || "get,list"),
+  }));
+}
+
 function buildRoleResource(form: { name: string; namespace: string; resources: string; verbs: string }, base?: KubeResource): KubeResource {
   return {
     apiVersion: "rbac.authorization.k8s.io/v1",
@@ -55,13 +66,7 @@ function buildRoleResource(form: { name: string; namespace: string; resources: s
       name: form.name,
       namespace: form.namespace,
     },
-    rules: [
-      {
-        apiGroups: [""],
-        resources: splitCsv(form.resources),
-        verbs: splitCsv(form.verbs),
-      },
-    ],
+    rules: buildRules(form.resources, form.verbs),
   };
 }
 
@@ -113,8 +118,8 @@ export function Roles() {
     setEditForm({
       name: d.name,
       namespace: d.namespace,
-      resources: firstRule?.resources?.join(",") || "pods",
-      verbs: firstRule?.verbs?.join(",") || "get,list",
+      resources: d.rules?.map((rule) => rule.resources?.join(",")).join("\n") || firstRule?.resources?.join(",") || "pods",
+      verbs: d.rules?.map((rule) => rule.verbs?.join(",")).join("\n") || firstRule?.verbs?.join(",") || "get,list",
     });
     setEditOpen(true);
   };
@@ -181,8 +186,8 @@ export function Roles() {
                     <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
                   </div>
                 </div>
-                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">资源（逗号分隔）</Label><Input value={form.resources} onChange={e => setForm({ ...form, resources: e.target.value })} className="h-9 text-sm" /></div>
-                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">动词（逗号分隔）</Label><Input value={form.verbs} onChange={e => setForm({ ...form, verbs: e.target.value })} className="h-9 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">资源（每行一条规则，逗号分隔）</Label><Textarea value={form.resources} onChange={e => setForm({ ...form, resources: e.target.value })} className="min-h-20 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">动词（每行对应一条规则，逗号分隔）</Label><Textarea value={form.verbs} onChange={e => setForm({ ...form, verbs: e.target.value })} className="min-h-20 text-sm" /></div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
             </DialogContent>
@@ -195,8 +200,8 @@ export function Roles() {
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input value={editForm.name} disabled className="h-9 text-sm bg-[#F7F8FA]" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">命名空间</Label><Input value={editForm.namespace} disabled className="h-9 text-sm bg-[#F7F8FA]" /></div>
                 </div>
-                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">资源（逗号分隔）</Label><Input value={editForm.resources} onChange={e => setEditForm({ ...editForm, resources: e.target.value })} className="h-9 text-sm" /></div>
-                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">动词（逗号分隔）</Label><Input value={editForm.verbs} onChange={e => setEditForm({ ...editForm, verbs: e.target.value })} className="h-9 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">资源（每行一条规则，逗号分隔）</Label><Textarea value={editForm.resources} onChange={e => setEditForm({ ...editForm, resources: e.target.value })} className="min-h-20 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">动词（每行对应一条规则，逗号分隔）</Label><Textarea value={editForm.verbs} onChange={e => setEditForm({ ...editForm, verbs: e.target.value })} className="min-h-20 text-sm" /></div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleUpdate} disabled={!editForm.resources || !editForm.verbs}>保存</Button></DialogFooter>
             </DialogContent>

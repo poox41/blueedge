@@ -10,10 +10,10 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { createNodeGroupResource, deleteNodeGroupResource, getNodeGroup, listNodeGroups, listNodes } from "@/api/services/resources";
+import { createNodeGroupResource, deleteNodeGroupResource, getNodeGroup, listNodeGroups, listNodes, updateNodeGroupResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { EdgeNodeView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
@@ -22,6 +22,7 @@ interface NodeGroup {
   name: string; namespace: string; nodes: string[];
   nodeSelector: Record<string, string>; status: string; statusColor: string; createdAt: string;
   allocationPolicy?: string; spreadConstraints?: boolean;
+  raw: KubeResource;
 }
 
 function compactObject(value: unknown): Record<string, string> {
@@ -35,13 +36,13 @@ function compactObject(value: unknown): Record<string, string> {
 
 function extractSelector(item: any): Record<string, string> {
   return compactObject(
+    item?.spec?.matchLabels ||
     item?.spec?.nodeSelector ||
     item?.spec?.selector?.matchLabels ||
     item?.spec?.selector ||
-    item?.spec?.matchLabels ||
+    item?.matchLabels ||
     item?.nodeSelector ||
-    item?.selector ||
-    item?.matchLabels,
+    item?.selector,
   );
 }
 
@@ -89,6 +90,7 @@ function toNodeGroup(item: any, allNodes: EdgeNodeView[] = []): NodeGroup {
     createdAt: item?.metadata?.creationTimestamp || item?.creationTimestamp || item?.createdAt || "-",
     allocationPolicy: item?.spec?.allocationPolicy || item?.spec?.type || item?.allocationPolicy || "Spread",
     spreadConstraints: item?.spec?.spreadConstraints ?? item?.spreadConstraints ?? true,
+    raw: item,
   };
 }
 
@@ -99,10 +101,10 @@ metadata:
   name: ${n.name}
   namespace: ${n.namespace}
 spec:
-  nodeSelector:
+  matchLabels:
 ${Object.entries(n.nodeSelector).map(([k, v]) => `    ${k}: ${v}`).join("\n")}
-  allocationPolicy: ${n.allocationPolicy || "Spread"}
-  spreadConstraints: ${n.spreadConstraints ?? true}`;
+  nodes:
+${n.nodes.map((node) => `  - ${node}`).join("\n") || "  []"}`;
 }
 
 function buildNodeGroupResource(form: { name: string; namespace: string; nodeType: string; policy: string }): KubeResource {
@@ -114,11 +116,9 @@ function buildNodeGroupResource(form: { name: string; namespace: string; nodeTyp
       namespace: form.namespace,
     },
     spec: {
-      nodeSelector: {
+      matchLabels: {
         nodeType: form.nodeType,
       },
-      allocationPolicy: form.policy,
-      spreadConstraints: true,
     },
   };
 }
@@ -134,9 +134,12 @@ export function NodeGroups() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<NodeGroup | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<NodeGroup | null>(null);
   const [form, setForm] = useState({ name: "", namespace: "default", nodeType: "edge", policy: "Spread" });
+  const [editItem, setEditItem] = useState<NodeGroup | null>(null);
+  const [editForm, setEditForm] = useState({ nodeType: "edge", policy: "Spread", spreadConstraints: true });
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -179,7 +182,35 @@ export function NodeGroups() {
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
-  const openDetail = (n: NodeGroup) => { setSelected(n); setDetailOpen(true); };
+  const openDetail = async (n: NodeGroup) => {
+    setSelected(n);
+    setDetailOpen(true);
+    try {
+      const [detail, allNodes] = await Promise.all([getNodeGroup(n.name), listNodes()]);
+      setSelected(toNodeGroup(detail, allNodes));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载节点组详情失败");
+    }
+  };
+  const openEdit = async (n: NodeGroup) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const [detail, allNodes] = await Promise.all([getNodeGroup(n.name), listNodes()]);
+      const row = toNodeGroup(detail, allNodes);
+      setEditItem(row);
+      setEditForm({
+        nodeType: row.nodeSelector.nodeType || row.nodeSelector.role || "edge",
+        policy: row.allocationPolicy || "Spread",
+        spreadConstraints: row.spreadConstraints ?? true,
+      });
+      setEditOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载节点组详情失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
   const openDel = (n: NodeGroup) => { setDelItem(n); setDelOpen(true); };
   const confirmDel = async () => {
     if (!delItem) return;
@@ -206,6 +237,28 @@ export function NodeGroups() {
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建节点组失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleEdit = async () => {
+    if (!editItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      const updated: KubeResource = {
+        ...editItem.raw,
+        spec: {
+          ...(editItem.raw.spec || {}),
+          matchLabels: { nodeType: editForm.nodeType },
+        },
+      };
+      await updateNodeGroupResource(updated);
+      setEditOpen(false);
+      setEditItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新节点组失败");
     } finally {
       setIsLoading(false);
     }
@@ -238,6 +291,22 @@ export function NodeGroups() {
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
+          <Dialog open={editOpen} onOpenChange={setEditOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader><DialogTitle className="text-base">编辑节点组</DialogTitle></DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="命名空间" value={editItem?.namespace || "-"} /></div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">节点选择器类型</Label><Input value={editForm.nodeType} onChange={e => setEditForm({ ...editForm, nodeType: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">分配策略</Label>
+                    <Select value={editForm.policy} onValueChange={v => setEditForm({ ...editForm, policy: v })}><SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Spread" className="text-sm">Spread</SelectItem><SelectItem value="Pack" className="text-sm">Pack</SelectItem></SelectContent></Select>
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 text-sm text-[#4E5969]"><input type="checkbox" checked={editForm.spreadConstraints} onChange={e => setEditForm({ ...editForm, spreadConstraints: e.target.checked })} />启用分散约束</label>
+              </div>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || !editForm.nodeType}>保存</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
       <div className="flex items-center justify-between gap-4">
@@ -261,11 +330,18 @@ export function NodeGroups() {
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.nodes.join(", ") || "-"}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex flex-wrap gap-1">{Object.entries(row.nodeSelector).map(([k, v]) => (<Badge key={k} variant="secondary" className="text-xs font-normal bg-[#E8F3FF] text-[#165DFF]">{k}: {v}</Badge>))}</div></TableCell>
+            <TableCell className="px-4 py-3">
+              <div className="flex flex-wrap gap-1">
+                {Object.entries(row.nodeSelector).map(([k, v]) => (
+                  <Badge key={k} variant="secondary" className="text-xs font-normal bg-[#E8F3FF] text-[#165DFF]">{k}: {v}</Badge>
+                ))}
+                {Object.keys(row.nodeSelector).length === 0 && <span className="text-sm text-[#86909C]">-</span>}
+              </div>
+            </TableCell>
             <TableCell className="px-4 py-3"><StatusBadge status={row.status} color={row.statusColor} /></TableCell>
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.allocationPolicy || "-"}</TableCell>
             <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
+            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
       </div>
@@ -289,7 +365,7 @@ export function NodeGroups() {
                 <Info label="节点数" value={String(selected.nodes.length)} /><Info label="分配策略" value={selected.allocationPolicy || "-"} />
                 <Info label="分散约束" value={selected.spreadConstraints ? "开启" : "关闭"} /><Info label="状态" value={selected.status} />
               </div>
-              <div className="space-y-2"><h4 className="text-xs text-[#86909C]">节点选择器</h4><div className="flex flex-wrap gap-2">{Object.entries(selected.nodeSelector).map(([k, v]) => (<Badge key={k} variant="secondary" className="text-xs font-normal bg-[#E8F3FF] text-[#165DFF]">{k}: {v}</Badge>))}</div></div>
+              <div className="space-y-2"><h4 className="text-xs text-[#86909C]">节点选择器</h4><div className="flex flex-wrap gap-2">{Object.entries(selected.nodeSelector).map(([k, v]) => (<Badge key={k} variant="secondary" className="text-xs font-normal bg-[#E8F3FF] text-[#165DFF]">{k}: {v}</Badge>))}{Object.keys(selected.nodeSelector).length === 0 && <span className="text-sm text-[#86909C]">-</span>}</div></div>
               <div className="space-y-2"><h4 className="text-xs text-[#86909C]">包含节点</h4><div className="flex flex-wrap gap-2">{selected.nodes.map(n => (<Badge key={n} variant="outline" className="text-xs font-normal">{n}</Badge>))}{selected.nodes.length === 0 && <span className="text-sm text-[#86909C]">无节点</span>}</div></div>
             </TabsContent>
             <TabsContent value="yaml" className="mt-3"><div className="relative"><pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-x-auto">{yamlNg(selected)}</pre><Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(yamlNg(selected))}><Copy className="w-3.5 h-3.5" /></Button></div></TabsContent>

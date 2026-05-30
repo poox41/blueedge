@@ -9,14 +9,14 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, ArrowRight } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, ArrowRight, Pencil } from "lucide-react";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { createRuleResource, deleteRuleResource, listRuleEndpoints, listRules } from "@/api/services/resources";
+import { createRuleResource, deleteRuleResource, getRule, listRuleEndpoints, listRules, updateRuleResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, RuleEndpointView, RuleView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
-interface Rule { namespace: string; name: string; source: string; sourceResource: string; target: string; targetResource: string; createdAt: string; }
+interface Rule { namespace: string; name: string; source: string; sourceResource: string; target: string; targetResource: string; createdAt: string; raw: KubeResource; }
 
 function toRuleRow(item: RuleView): Rule {
   return {
@@ -27,6 +27,7 @@ function toRuleRow(item: RuleView): Rule {
     target: item.target,
     targetResource: item.targetResource || "",
     createdAt: item.createdAt,
+    raw: item.raw,
   };
 }
 
@@ -72,9 +73,12 @@ export function Rules() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<Rule | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<Rule | null>(null);
   const [form, setForm] = useState({ name: "", namespace: "default", source: "", target: "" });
+  const [editItem, setEditItem] = useState<Rule | null>(null);
+  const [editForm, setEditForm] = useState({ source: "", sourceResource: "", target: "", targetResource: "" });
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -109,7 +113,34 @@ export function Rules() {
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
-  const openDetail = (d: Rule) => { setSelected(d); setDetailOpen(true); };
+  const openDetail = async (d: Rule) => {
+    setSelected(d);
+    setDetailOpen(true);
+    try {
+      setSelected(toRuleRow(await getRule(d.namespace, d.name)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载规则详情失败");
+    }
+  };
+  const openEdit = async (d: Rule) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const detail = toRuleRow(await getRule(d.namespace, d.name));
+      setEditItem(detail);
+      setEditForm({
+        source: detail.source,
+        sourceResource: detail.sourceResource || "",
+        target: detail.target,
+        targetResource: detail.targetResource || "",
+      });
+      setEditOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载规则详情失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
   const openDel = (d: Rule) => { setDelItem(d); setDelOpen(true); };
   const confirmDel = async () => {
     if (!delItem) return;
@@ -136,6 +167,31 @@ export function Rules() {
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建规则失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleEdit = async () => {
+    if (!editItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      const updated: KubeResource = {
+        ...editItem.raw,
+        spec: {
+          ...(editItem.raw.spec || {}),
+          source: editForm.source,
+          sourceResource: editForm.sourceResource || {},
+          target: editForm.target,
+          targetResource: editForm.targetResource || {},
+        },
+      };
+      await updateRuleResource(editItem.namespace, updated);
+      setEditOpen(false);
+      setEditItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新规则失败");
     } finally {
       setIsLoading(false);
     }
@@ -170,6 +226,27 @@ export function Rules() {
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name || !form.source || !form.target}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
+          <Dialog open={editOpen} onOpenChange={setEditOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader><DialogTitle className="text-base">编辑规则</DialogTitle></DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="命名空间" value={editItem?.namespace || "-"} /></div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">源端点</Label>
+                    <select value={editForm.source} onChange={e => setEditForm({ ...editForm, source: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option value="">选择端点</option>{endpointOptions.map(e => (<option key={e.name} value={e.name}>{e.name}</option>))}</select>
+                  </div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标端点</Label>
+                    <select value={editForm.target} onChange={e => setEditForm({ ...editForm, target: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option value="">选择端点</option>{endpointOptions.map(e => (<option key={e.name} value={e.name}>{e.name}</option>))}</select>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">源资源</Label><Input value={editForm.sourceResource} onChange={e => setEditForm({ ...editForm, sourceResource: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标资源</Label><Input value={editForm.targetResource} onChange={e => setEditForm({ ...editForm, targetResource: e.target.value })} className="h-9 text-sm" /></div>
+                </div>
+              </div>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || !editForm.source || !editForm.target}>保存</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
       <div className="flex items-center justify-between gap-4">
@@ -193,7 +270,7 @@ export function Rules() {
             <TableCell className="px-4 py-3"><Badge variant="outline" className="text-xs font-normal bg-[#E8F3FF] text-[#165DFF]">{row.source}</Badge></TableCell>
             <TableCell className="px-4 py-3"><Badge variant="outline" className="text-xs font-normal bg-[#E8FFEA] text-[#00B42A]">{row.target}</Badge></TableCell>
             <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
+            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
       </div>
@@ -212,7 +289,7 @@ export function Rules() {
           <SheetHeader className="pb-4 border-b border-[#E5E6EB]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle><Badge variant="outline" className="text-xs font-normal w-fit mt-2">{selected?.namespace}</Badge></SheetHeader>
           {selected && (<Tabs defaultValue="overview" className="mt-4"><TabsList className="bg-[#F7F8FA] h-9"><TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger><TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger></TabsList>
             <TabsContent value="overview" className="mt-3 space-y-4">
-              <div className="grid grid-cols-2 gap-3"><Info label="名称" value={selected.name} /><Info label="命名空间" value={selected.namespace} /><Info label="源端点" value={selected.source} /><Info label="目标端点" value={selected.target} /></div>
+              <div className="grid grid-cols-2 gap-3"><Info label="名称" value={selected.name} /><Info label="命名空间" value={selected.namespace} /><Info label="源端点" value={selected.source} /><Info label="目标端点" value={selected.target} /><Info label="源资源" value={selected.sourceResource || "-"} /><Info label="目标资源" value={selected.targetResource || "-"} /></div>
               <div className="bg-[#F7F8FA] rounded-lg p-4"><div className="flex items-center justify-center gap-4"><Badge variant="outline" className="text-xs bg-[#E8F3FF] text-[#165DFF]">{selected.source}</Badge><ArrowRight className="w-5 h-5 text-[#86909C]" /><Badge variant="outline" className="text-xs bg-[#E8FFEA] text-[#00B42A]">{selected.target}</Badge></div><p className="text-center text-xs text-[#86909C] mt-2">数据流向</p></div>
             </TabsContent>
             <TabsContent value="yaml" className="mt-3"><div className="relative"><pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-x-auto">{yaml(selected)}</pre><Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(yaml(selected))}><Copy className="w-3.5 h-3.5" /></Button></div></TabsContent>

@@ -9,25 +9,27 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { createDeviceModelResource, deleteDeviceModelResource, listDeviceModels } from "@/api/services/resources";
+import { createDeviceModelResource, deleteDeviceModelResource, getDeviceModel, listDeviceModels, updateDeviceModelResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { DeviceModelView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
-interface DM { namespace: string; name: string; labels: number; properties: number; createdAt: string; description?: string; protocol?: string; }
+interface DM { namespace: string; name: string; labels: number; properties: number; createdAt: string; description?: string; protocol?: string; raw: KubeResource; }
 
 function toDeviceModelRow(item: DeviceModelView): DM {
   const raw = item.raw as Record<string, any>;
+  const labels = raw.metadata?.labels || raw.labels || {};
   return {
     namespace: item.namespace,
     name: item.name,
-    labels: Object.keys(raw.metadata?.labels || raw.labels || {}).length,
+    labels: Object.keys(labels).length,
     properties: item.propertiesCount,
     createdAt: item.createdAt,
-    description: raw.spec?.description || raw.description || "-",
-    protocol: raw.spec?.protocol?.protocolName || raw.protocol || "-",
+    description: raw.metadata?.annotations?.description || raw.description || "-",
+    protocol: raw.spec?.protocol || raw.spec?.protocol?.protocolName || labels.protocol || raw.protocol || "-",
+    raw: item.raw,
   };
 }
 
@@ -38,13 +40,12 @@ metadata:
   name: ${n.name}
   namespace: ${n.namespace}
 spec:
+  protocol: ${n.protocol || "MQTT"}
   properties:
     - name: temperature
       description: Temperature sensor
-      type:
-        string:
-          accessMode: ReadWrite
-          defaultValue: "0"`;
+      type: STRING
+      accessMode: ReadWrite`;
 }
 
 function buildDeviceModelResource(form: { name: string; namespace: string; properties: number; protocol: string }): KubeResource {
@@ -61,12 +62,8 @@ function buildDeviceModelResource(form: { name: string; namespace: string; prope
       properties: Array.from({ length: Math.max(1, form.properties) }, (_, index) => ({
         name: index === 0 ? "temperature" : `property-${index + 1}`,
         description: index === 0 ? "Temperature sensor" : `Property ${index + 1}`,
-        type: {
-          string: {
-            accessMode: "ReadWrite",
-            defaultValue: "0",
-          },
-        },
+        type: "STRING",
+        accessMode: "ReadWrite",
       })),
     },
   };
@@ -83,9 +80,12 @@ export function DeviceModels() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<DM | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<DM | null>(null);
   const [form, setForm] = useState({ name: "", namespace: "default", properties: 2, protocol: "MQTT" });
+  const [editItem, setEditItem] = useState<DM | null>(null);
+  const [editForm, setEditForm] = useState({ properties: 1, protocol: "MQTT", description: "" });
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -116,7 +116,30 @@ export function DeviceModels() {
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
-  const openDetail = (d: DM) => { setSelected(d); setDetailOpen(true); };
+  const openDetail = async (d: DM) => {
+    setSelected(d);
+    setDetailOpen(true);
+    try {
+      const detail = await getDeviceModel(d.namespace, d.name);
+      setSelected(toDeviceModelRow(detail));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载设备模型详情失败");
+    }
+  };
+  const openEdit = async (d: DM) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const detail = toDeviceModelRow(await getDeviceModel(d.namespace, d.name));
+      setEditItem(detail);
+      setEditForm({ properties: detail.properties || 1, protocol: detail.protocol || "MQTT", description: detail.description === "-" ? "" : detail.description || "" });
+      setEditOpen(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载设备模型详情失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
   const openDel = (d: DM) => { setDelItem(d); setDelOpen(true); };
   const confirmDel = async () => {
     if (!delItem) return;
@@ -143,6 +166,46 @@ export function DeviceModels() {
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建设备模型失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleEdit = async () => {
+    if (!editItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      const { description: _description, ...baseSpec } = editItem.raw.spec || {};
+      const updated: KubeResource = {
+        ...editItem.raw,
+        metadata: {
+          ...(editItem.raw.metadata || {}),
+          annotations: {
+            ...(editItem.raw.metadata?.annotations || {}),
+            description: editForm.description,
+          },
+          labels: {
+            ...(editItem.raw.metadata?.labels || {}),
+            protocol: editForm.protocol.toLowerCase().replace(/\s+/g, "-"),
+          },
+        },
+        spec: {
+          ...baseSpec,
+          protocol: editForm.protocol,
+          properties: Array.from({ length: Math.max(1, editForm.properties) }, (_, index) => ({
+            name: index === 0 ? "temperature" : `property-${index + 1}`,
+            description: index === 0 ? "Temperature sensor" : `Property ${index + 1}`,
+            type: "STRING",
+            accessMode: "ReadWrite",
+          })),
+        },
+      };
+      await updateDeviceModelResource(editItem.namespace, updated);
+      setEditOpen(false);
+      setEditItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新设备模型失败");
     } finally {
       setIsLoading(false);
     }
@@ -175,6 +238,22 @@ export function DeviceModels() {
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
+          <Dialog open={editOpen} onOpenChange={setEditOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader><DialogTitle className="text-base">编辑设备模型</DialogTitle></DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="命名空间" value={editItem?.namespace || "-"} /></div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">属性数量</Label><Input type="number" value={editForm.properties} onChange={e => setEditForm({ ...editForm, properties: Number(e.target.value) })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">协议</Label>
+                    <select value={editForm.protocol} onChange={e => setEditForm({ ...editForm, protocol: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option>MQTT</option><option>Modbus</option><option>OPC UA</option><option>Bluetooth</option></select>
+                  </div>
+                </div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">描述</Label><Input value={editForm.description} onChange={e => setEditForm({ ...editForm, description: e.target.value })} className="h-9 text-sm" /></div>
+              </div>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || editForm.properties <= 0}>保存</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
       <div className="flex items-center justify-between gap-4">
@@ -200,7 +279,7 @@ export function DeviceModels() {
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.properties}</TableCell>
             <TableCell className="px-4 py-3"><Badge variant="outline" className="text-xs font-normal">{row.protocol || "-"}</Badge></TableCell>
             <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
+            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
       </div>

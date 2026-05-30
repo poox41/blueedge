@@ -2,6 +2,7 @@ import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/p
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -45,6 +46,18 @@ subjects:
 ${(n.subjects || []).map(s => `  - kind: ${s.kind}\n    name: ${s.name}\n    namespace: ${s.namespace}`).join("\n")}`;
 }
 
+function parseSubjects(value: string, fallbackNamespace: string) {
+  return value.split(/\n+/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [kind = "ServiceAccount", name = "default", namespace = fallbackNamespace] = line.split(",").map((item) => item.trim());
+    return { kind, name, namespace };
+  });
+}
+
+function formatSubjects(subjects: RB["subjects"], fallbackNamespace: string) {
+  const rows = subjects && subjects.length > 0 ? subjects : [{ kind: "ServiceAccount", name: "default", namespace: fallbackNamespace }];
+  return rows.map((item) => `${item.kind},${item.name},${item.namespace || fallbackNamespace}`).join("\n");
+}
+
 function buildRoleBindingResource(form: { name: string; namespace: string; role: string; subject: string }, base?: KubeResource): KubeResource {
   return {
     apiVersion: "rbac.authorization.k8s.io/v1",
@@ -59,13 +72,7 @@ function buildRoleBindingResource(form: { name: string; namespace: string; role:
       kind: "Role",
       name: form.role,
     },
-    subjects: [
-      {
-        kind: "ServiceAccount",
-        name: form.subject,
-        namespace: form.namespace,
-      },
-    ],
+    subjects: parseSubjects(form.subject, form.namespace),
   };
 }
 
@@ -117,7 +124,7 @@ export function RoleBindings() {
       name: d.name,
       namespace: d.namespace,
       role: d.roleRef === "-" ? "" : d.roleRef,
-      subject: d.subjects?.[0]?.name || "default",
+      subject: formatSubjects(d.subjects, d.namespace),
     });
     setEditOpen(true);
   };
@@ -186,7 +193,7 @@ export function RoleBindings() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">角色引用</Label><Input placeholder="角色名称" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">绑定主体</Label><Input value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">绑定主体</Label><Textarea value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} className="min-h-20 text-sm" placeholder="ServiceAccount,default,default" /></div>
                 </div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name || !form.role}>创建</Button></DialogFooter>
@@ -202,7 +209,7 @@ export function RoleBindings() {
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">角色引用</Label><Input value={editForm.role} onChange={e => setEditForm({ ...editForm, role: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">绑定主体</Label><Input value={editForm.subject} onChange={e => setEditForm({ ...editForm, subject: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">绑定主体</Label><Textarea value={editForm.subject} onChange={e => setEditForm({ ...editForm, subject: e.target.value })} className="min-h-20 text-sm" /></div>
                 </div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleUpdate} disabled={!editForm.role || !editForm.subject}>保存</Button></DialogFooter>
