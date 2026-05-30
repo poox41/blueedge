@@ -1,4 +1,4 @@
-import { bffRequest } from "@/api/request";
+import { bffRequest, gatewayRequest } from "@/api/request";
 import { asItems } from "@/api/adapters/common";
 import { normalizeDeploymentList } from "@/api/adapters/deployment.adapter";
 import { normalizeDeviceList } from "@/api/adapters/device.adapter";
@@ -11,15 +11,110 @@ import type {
   DeviceModelView,
   DeviceView,
   EdgeNodeView,
+  KubeResource,
   RuleEndpointView,
   RuleView,
   ServiceView,
   WorkloadView,
 } from "@/types/kubeedge";
 
+type NamespacedResourceKind =
+  | "deployment"
+  | "service"
+  | "device"
+  | "devicemodel"
+  | "rule"
+  | "ruleendpoint"
+  | "role"
+  | "rolebinding"
+  | "serviceaccount"
+  | "edgeapplication";
+
+type ClusterResourceKind = "node" | "nodegroup" | "clusterrole" | "clusterrolebinding";
+
+function encodePathPart(value: string): string {
+  return encodeURIComponent(value);
+}
+
+export async function createNamespacedResource<T extends KubeResource = KubeResource>(
+  kind: NamespacedResourceKind,
+  namespace: string,
+  resource: T,
+): Promise<T> {
+  const res = await bffRequest<T, T>(`/${kind}/${encodePathPart(namespace)}`, {
+    method: "POST",
+    body: resource,
+  });
+  return res.data;
+}
+
+export async function updateNamespacedResource<T extends KubeResource = KubeResource>(
+  kind: NamespacedResourceKind,
+  namespace: string,
+  resource: T,
+): Promise<T> {
+  const res = await bffRequest<T, T>(`/${kind}/${encodePathPart(namespace)}`, {
+    method: "PUT",
+    body: resource,
+  });
+  return res.data;
+}
+
+export async function deleteNamespacedResource(
+  kind: NamespacedResourceKind,
+  namespace: string,
+  name: string,
+): Promise<void> {
+  await bffRequest(`/${kind}/${encodePathPart(namespace)}/${encodePathPart(name)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function createClusterResource<T extends KubeResource = KubeResource>(
+  kind: ClusterResourceKind,
+  resource: T,
+): Promise<T> {
+  const res = await bffRequest<T, T>(`/${kind}`, {
+    method: "POST",
+    body: resource,
+  });
+  return res.data;
+}
+
+export async function updateClusterResource<T extends KubeResource = KubeResource>(
+  kind: ClusterResourceKind,
+  resource: T,
+): Promise<T> {
+  const res = await bffRequest<T, T>(`/${kind}`, {
+    method: "PUT",
+    body: resource,
+  });
+  return res.data;
+}
+
+export async function deleteClusterResource(kind: ClusterResourceKind, name: string): Promise<void> {
+  await bffRequest(`/${kind}/${encodePathPart(name)}`, {
+    method: "DELETE",
+  });
+}
+
+export const resourceWrites = {
+  createNamespaced: createNamespacedResource,
+  updateNamespaced: updateNamespacedResource,
+  deleteNamespaced: deleteNamespacedResource,
+  createCluster: createClusterResource,
+  updateCluster: updateClusterResource,
+  deleteCluster: deleteClusterResource,
+};
+
 export async function listNodes(): Promise<EdgeNodeView[]> {
   const res = await bffRequest<unknown>("/node");
   return normalizeNodeList(res.data);
+}
+
+export async function getNode(name: string): Promise<EdgeNodeView> {
+  const res = await bffRequest<unknown>(`/node/${encodePathPart(name)}`);
+  return normalizeNodeList([res.data])[0];
 }
 
 export async function listNamespaces(): Promise<Array<{ value: string; label: string }>> {
@@ -41,14 +136,41 @@ export async function listDeployments(namespace?: string): Promise<WorkloadView[
 }
 
 export async function getDeployment(namespace: string, name: string): Promise<WorkloadView> {
-  const res = await bffRequest<unknown>(`/deployment/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`);
+  const res = await bffRequest<unknown>(`/deployment/${encodePathPart(namespace)}/${encodePathPart(name)}`);
   return normalizeDeploymentList([res.data])[0];
 }
 
+export async function createDeploymentResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("deployment", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateDeploymentResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("deployment", namespace, resource);
+}
+
+export async function deleteDeploymentResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("deployment", namespace, name);
+}
+
+export async function updateNodeResource(resource: KubeResource): Promise<KubeResource> {
+  return updateClusterResource("node", resource);
+}
+
+export async function deleteNodeResource(name: string): Promise<void> {
+  return deleteClusterResource("node", name);
+}
+
 export async function listPods(namespace?: string): Promise<any[]> {
-  const path = namespace ? `/pod/${namespace}` : "/pod";
-  const res = await bffRequest<unknown>(path);
-  return asItems(res.data);
+  try {
+    const res = await gatewayRequest<unknown>("/workloads/pods", {
+      params: { namespace },
+    });
+    return asItems(res.data);
+  } catch {
+    const path = namespace ? `/pod/${namespace}` : "/pod";
+    const res = await bffRequest<unknown>(path);
+    return asItems(res.data);
+  }
 }
 
 export async function listDeviceModels(namespace?: string): Promise<DeviceModelView[]> {
@@ -67,6 +189,150 @@ export async function listServices(namespace?: string): Promise<ServiceView[]> {
   const path = namespace ? `/service/${namespace}` : "/service";
   const res = await bffRequest<unknown>(path);
   return normalizeServiceList(res.data);
+}
+
+export async function createServiceResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("service", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateServiceResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("service", namespace, resource);
+}
+
+export async function deleteServiceResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("service", namespace, name);
+}
+
+export async function createDeviceModelResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("devicemodel", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateDeviceModelResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("devicemodel", namespace, resource);
+}
+
+export async function deleteDeviceModelResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("devicemodel", namespace, name);
+}
+
+export async function createDeviceResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("device", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateDeviceResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("device", namespace, resource);
+}
+
+export async function deleteDeviceResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("device", namespace, name);
+}
+
+export async function createRuleEndpointResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("ruleendpoint", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateRuleEndpointResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("ruleendpoint", namespace, resource);
+}
+
+export async function deleteRuleEndpointResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("ruleendpoint", namespace, name);
+}
+
+export async function createRuleResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("rule", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateRuleResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("rule", namespace, resource);
+}
+
+export async function deleteRuleResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("rule", namespace, name);
+}
+
+export async function createServiceAccountResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("serviceaccount", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateServiceAccountResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("serviceaccount", namespace, resource);
+}
+
+export async function deleteServiceAccountResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("serviceaccount", namespace, name);
+}
+
+export async function createRoleResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("role", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateRoleResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("role", namespace, resource);
+}
+
+export async function deleteRoleResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("role", namespace, name);
+}
+
+export async function createRoleBindingResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("rolebinding", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateRoleBindingResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("rolebinding", namespace, resource);
+}
+
+export async function deleteRoleBindingResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("rolebinding", namespace, name);
+}
+
+export async function createEdgeApplicationResource(resource: KubeResource): Promise<KubeResource> {
+  return createNamespacedResource("edgeapplication", resource.metadata?.namespace || "default", resource);
+}
+
+export async function updateEdgeApplicationResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
+  return updateNamespacedResource("edgeapplication", namespace, resource);
+}
+
+export async function deleteEdgeApplicationResource(namespace: string, name: string): Promise<void> {
+  return deleteNamespacedResource("edgeapplication", namespace, name);
+}
+
+export async function createNodeGroupResource(resource: KubeResource): Promise<KubeResource> {
+  return createClusterResource("nodegroup", resource);
+}
+
+export async function updateNodeGroupResource(resource: KubeResource): Promise<KubeResource> {
+  return updateClusterResource("nodegroup", resource);
+}
+
+export async function deleteNodeGroupResource(name: string): Promise<void> {
+  return deleteClusterResource("nodegroup", name);
+}
+
+export async function createClusterRoleResource(resource: KubeResource): Promise<KubeResource> {
+  return createClusterResource("clusterrole", resource);
+}
+
+export async function updateClusterRoleResource(resource: KubeResource): Promise<KubeResource> {
+  return updateClusterResource("clusterrole", resource);
+}
+
+export async function deleteClusterRoleResource(name: string): Promise<void> {
+  return deleteClusterResource("clusterrole", name);
+}
+
+export async function createClusterRoleBindingResource(resource: KubeResource): Promise<KubeResource> {
+  return createClusterResource("clusterrolebinding", resource);
+}
+
+export async function updateClusterRoleBindingResource(resource: KubeResource): Promise<KubeResource> {
+  return updateClusterResource("clusterrolebinding", resource);
+}
+
+export async function deleteClusterRoleBindingResource(name: string): Promise<void> {
+  return deleteClusterResource("clusterrolebinding", name);
 }
 
 export async function listRuleEndpoints(namespace?: string): Promise<RuleEndpointView[]> {

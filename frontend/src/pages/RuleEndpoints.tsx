@@ -11,9 +11,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { listRuleEndpoints } from "@/api/services/resources";
+import { createRuleEndpointResource, deleteRuleEndpointResource, listRuleEndpoints } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
-import type { RuleEndpointView } from "@/types/kubeedge";
+import type { KubeResource, RuleEndpointView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface RE { namespace: string; name: string; ruleEndpointType: string; targetResource: string; description: string; createdAt: string; }
@@ -39,6 +39,21 @@ metadata:
 spec:
   ruleEndpointType: ${n.ruleEndpointType}
   targetResource: ${n.targetResource || '""'}`;
+}
+
+function buildRuleEndpointResource(form: { name: string; namespace: string; type: string; targetResource: string }): KubeResource {
+  return {
+    apiVersion: "rules.kubeedge.io/v1",
+    kind: "RuleEndpoint",
+    metadata: {
+      name: form.name,
+      namespace: form.namespace,
+    },
+    spec: {
+      ruleEndpointType: form.type,
+      properties: form.targetResource ? { targetResource: form.targetResource } : {},
+    },
+  };
 }
 
 export function RuleEndpoints() {
@@ -87,10 +102,34 @@ export function RuleEndpoints() {
 
   const openDetail = (d: RE) => { setSelected(d); setDetailOpen(true); };
   const openDel = (d: RE) => { setDelItem(d); setDelOpen(true); };
-  const confirmDel = () => { if (delItem) { setData(p => p.filter(d => d.name !== delItem.name)); setDelOpen(false); } };
-  const handleCreate = () => {
-    const re: RE = { name: form.name, namespace: form.namespace, ruleEndpointType: form.type, targetResource: form.targetResource, description: "", createdAt: new Date().toLocaleString("zh-CN") };
-    setData(p => [re, ...p]); setCreateOpen(false); setForm({ name: "", namespace: "default", type: "EventBus", targetResource: "" });
+  const confirmDel = async () => {
+    if (!delItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteRuleEndpointResource(delItem.namespace, delItem.name);
+      setDelOpen(false);
+      setDelItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除规则端点失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createRuleEndpointResource(buildRuleEndpointResource(form));
+      setCreateOpen(false);
+      setForm({ name: "", namespace: "default", type: "EventBus", targetResource: "" });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建规则端点失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

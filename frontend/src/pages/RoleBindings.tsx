@@ -9,14 +9,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Link2 } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Link2, Pencil } from "lucide-react";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { formatLabels, getResourceCreatedAt, getResourceName, getResourceNamespace, mapSubjects } from "@/api/adapters/kube-resource.adapter";
-import { listRoleBindings } from "@/api/services/resources";
+import { createRoleBindingResource, deleteRoleBindingResource, listRoleBindings, updateRoleBindingResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
+import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
-interface RB { namespace: string; name: string; roleRef: string; labels: string; createdAt: string; subjects?: Array<{ kind: string; name: string; namespace: string }>; }
+interface RB { namespace: string; name: string; roleRef: string; labels: string; createdAt: string; subjects?: Array<{ kind: string; name: string; namespace: string }>; raw: KubeResource; }
 
 function toRoleBinding(item: any): RB {
   return {
@@ -26,6 +27,7 @@ function toRoleBinding(item: any): RB {
     labels: formatLabels(item?.metadata?.labels),
     createdAt: getResourceCreatedAt(item),
     subjects: mapSubjects(item?.subjects),
+    raw: item,
   };
 }
 
@@ -43,6 +45,30 @@ subjects:
 ${(n.subjects || []).map(s => `  - kind: ${s.kind}\n    name: ${s.name}\n    namespace: ${s.namespace}`).join("\n")}`;
 }
 
+function buildRoleBindingResource(form: { name: string; namespace: string; role: string; subject: string }, base?: KubeResource): KubeResource {
+  return {
+    apiVersion: "rbac.authorization.k8s.io/v1",
+    kind: "RoleBinding",
+    metadata: {
+      ...base?.metadata,
+      name: form.name,
+      namespace: form.namespace,
+    },
+    roleRef: {
+      apiGroup: "rbac.authorization.k8s.io",
+      kind: "Role",
+      name: form.role,
+    },
+    subjects: [
+      {
+        kind: "ServiceAccount",
+        name: form.subject,
+        namespace: form.namespace,
+      },
+    ],
+  };
+}
+
 export function RoleBindings() {
   const namespaces = useNamespaceOptions();
   const [data, setData] = useState<RB[]>([]);
@@ -54,9 +80,12 @@ export function RoleBindings() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<RB | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<RB | null>(null);
   const [form, setForm] = useState({ name: "", namespace: "default", role: "", subject: "default" });
+  const [editForm, setEditForm] = useState({ name: "", namespace: "default", role: "", subject: "default" });
+  const [editItem, setEditItem] = useState<RB | null>(null);
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -82,11 +111,60 @@ export function RoleBindings() {
   const paginated = filtered.slice(start, start + pageSize);
 
   const openDetail = (d: RB) => { setSelected(d); setDetailOpen(true); };
+  const openEdit = (d: RB) => {
+    setEditItem(d);
+    setEditForm({
+      name: d.name,
+      namespace: d.namespace,
+      role: d.roleRef === "-" ? "" : d.roleRef,
+      subject: d.subjects?.[0]?.name || "default",
+    });
+    setEditOpen(true);
+  };
   const openDel = (d: RB) => { setDelItem(d); setDelOpen(true); };
-  const confirmDel = () => { if (delItem) { setData(p => p.filter(d => d.name !== delItem.name)); setDelOpen(false); } };
-  const handleCreate = () => {
-    const rb: RB = { name: form.name, namespace: form.namespace, roleRef: form.role, labels: "-", createdAt: new Date().toLocaleString("zh-CN"), subjects: [{ kind: "ServiceAccount", name: form.subject, namespace: form.namespace }] };
-    setData(p => [rb, ...p]); setCreateOpen(false); setForm({ name: "", namespace: "default", role: "", subject: "default" });
+  const confirmDel = async () => {
+    if (!delItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteRoleBindingResource(delItem.namespace, delItem.name);
+      setDelOpen(false);
+      setDelItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除角色绑定失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createRoleBindingResource(buildRoleBindingResource(form));
+      setCreateOpen(false);
+      setForm({ name: "", namespace: "default", role: "", subject: "default" });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建角色绑定失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleUpdate = async () => {
+    if (!editItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await updateRoleBindingResource(editItem.namespace, buildRoleBindingResource(editForm, editItem.raw));
+      setEditOpen(false);
+      setEditItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新角色绑定失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -114,6 +192,22 @@ export function RoleBindings() {
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name || !form.role}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
+          <Dialog open={editOpen} onOpenChange={setEditOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader><DialogTitle className="text-base">编辑角色绑定</DialogTitle></DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input value={editForm.name} disabled className="h-9 text-sm bg-[#F7F8FA]" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">命名空间</Label><Input value={editForm.namespace} disabled className="h-9 text-sm bg-[#F7F8FA]" /></div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">角色引用</Label><Input value={editForm.role} onChange={e => setEditForm({ ...editForm, role: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">绑定主体</Label><Input value={editForm.subject} onChange={e => setEditForm({ ...editForm, subject: e.target.value })} className="h-9 text-sm" /></div>
+                </div>
+              </div>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleUpdate} disabled={!editForm.role || !editForm.subject}>保存</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
         </div>
       </div>
       <div className="flex items-center justify-between gap-4">
@@ -137,7 +231,7 @@ export function RoleBindings() {
             <TableCell className="px-4 py-3"><Badge variant="outline" className="text-xs font-normal bg-[#E8F3FF] text-[#165DFF]">{row.roleRef}</Badge></TableCell>
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.labels}</TableCell>
             <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
+            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
       </div>

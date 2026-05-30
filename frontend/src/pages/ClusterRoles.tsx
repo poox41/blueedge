@@ -9,12 +9,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
 import { formatLabels, getResourceCreatedAt, getResourceName } from "@/api/adapters/kube-resource.adapter";
-import { listClusterRoles } from "@/api/services/resources";
+import { createClusterRoleResource, deleteClusterRoleResource, listClusterRoles, updateClusterRoleResource } from "@/api/services/resources";
+import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
-interface CR { name: string; labels: string; createdAt: string; rules?: Array<{ apiGroups: string[]; resources: string[]; verbs: string[] }>; }
+interface CR { name: string; labels: string; createdAt: string; rules?: Array<{ apiGroups: string[]; resources: string[]; verbs: string[] }>; raw: KubeResource; }
 
 function toClusterRole(item: any): CR {
   return {
@@ -22,6 +23,7 @@ function toClusterRole(item: any): CR {
     labels: formatLabels(item?.metadata?.labels),
     createdAt: getResourceCreatedAt(item),
     rules: Array.isArray(item?.rules) ? item.rules : [],
+    raw: item,
   };
 }
 
@@ -36,6 +38,28 @@ rules:
 ${(n.rules || []).map(rule => `  - apiGroups: ["${rule.apiGroups.join('", "')}"]\n    resources: ["${rule.resources.join('", "')}"]\n    verbs: ["${rule.verbs.join('", "')}"]`).join("\n")}`;
 }
 
+function splitCsv(value: string): string[] {
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function buildClusterRoleResource(form: { name: string; resources: string; verbs: string }, base?: KubeResource): KubeResource {
+  return {
+    apiVersion: "rbac.authorization.k8s.io/v1",
+    kind: "ClusterRole",
+    metadata: {
+      ...base?.metadata,
+      name: form.name,
+    },
+    rules: [
+      {
+        apiGroups: [""],
+        resources: splitCsv(form.resources),
+        verbs: splitCsv(form.verbs),
+      },
+    ],
+  };
+}
+
 export function ClusterRoles() {
   const [data, setData] = useState<CR[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -45,9 +69,12 @@ export function ClusterRoles() {
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<CR | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<CR | null>(null);
   const [form, setForm] = useState({ name: "", resources: "pods,nodes", verbs: "get,list,watch" });
+  const [editForm, setEditForm] = useState({ name: "", resources: "pods,nodes", verbs: "get,list,watch" });
+  const [editItem, setEditItem] = useState<CR | null>(null);
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -73,11 +100,60 @@ export function ClusterRoles() {
   const paginated = filtered.slice(start, start + pageSize);
 
   const openDetail = (d: CR) => { setSelected(d); setDetailOpen(true); };
+  const openEdit = (d: CR) => {
+    const firstRule = d.rules?.[0];
+    setEditItem(d);
+    setEditForm({
+      name: d.name,
+      resources: firstRule?.resources?.join(",") || "pods,nodes",
+      verbs: firstRule?.verbs?.join(",") || "get,list,watch",
+    });
+    setEditOpen(true);
+  };
   const openDel = (d: CR) => { setDelItem(d); setDelOpen(true); };
-  const confirmDel = () => { if (delItem) { setData(p => p.filter(d => d.name !== delItem.name)); setDelOpen(false); } };
-  const handleCreate = () => {
-    const cr: CR = { name: form.name, labels: "-", createdAt: new Date().toLocaleString("zh-CN"), rules: [{ apiGroups: [""], resources: form.resources.split(",").map(s => s.trim()), verbs: form.verbs.split(",").map(s => s.trim()) }] };
-    setData(p => [cr, ...p]); setCreateOpen(false); setForm({ name: "", resources: "pods,nodes", verbs: "get,list,watch" });
+  const confirmDel = async () => {
+    if (!delItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteClusterRoleResource(delItem.name);
+      setDelOpen(false);
+      setDelItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除集群角色失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createClusterRoleResource(buildClusterRoleResource(form));
+      setCreateOpen(false);
+      setForm({ name: "", resources: "pods,nodes", verbs: "get,list,watch" });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建集群角色失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleUpdate = async () => {
+    if (!editItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await updateClusterRoleResource(buildClusterRoleResource(editForm, editItem.raw));
+      setEditOpen(false);
+      setEditItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新集群角色失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -96,6 +172,17 @@ export function ClusterRoles() {
                 <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">动词（逗号分隔）</Label><Input value={form.verbs} onChange={e => setForm({ ...form, verbs: e.target.value })} className="h-9 text-sm" /></div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
+            </DialogContent>
+          </Dialog>
+          <Dialog open={editOpen} onOpenChange={setEditOpen}>
+            <DialogContent className="max-w-lg">
+              <DialogHeader><DialogTitle className="text-base">编辑集群角色</DialogTitle></DialogHeader>
+              <div className="space-y-4 py-2">
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input value={editForm.name} disabled className="h-9 text-sm bg-[#F7F8FA]" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">资源（逗号分隔）</Label><Input value={editForm.resources} onChange={e => setEditForm({ ...editForm, resources: e.target.value })} className="h-9 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">动词（逗号分隔）</Label><Input value={editForm.verbs} onChange={e => setEditForm({ ...editForm, verbs: e.target.value })} className="h-9 text-sm" /></div>
+              </div>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleUpdate} disabled={!editForm.resources || !editForm.verbs}>保存</Button></DialogFooter>
             </DialogContent>
           </Dialog>
         </div>
@@ -117,7 +204,7 @@ export function ClusterRoles() {
             <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
             <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.labels}</TableCell>
             <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
+            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
       </div>

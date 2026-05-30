@@ -9,16 +9,17 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { Search, Plus, RefreshCw, Trash2, ChevronLeft, ChevronRight, Eye, Copy } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, ChevronLeft, ChevronRight, Eye, Copy, Ban, CheckCircle2 } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { formatMemory, listNodeMetrics } from "@/api/services/metrics";
-import { listNodes } from "@/api/services/resources";
-import type { EdgeNodeView } from "@/types/kubeedge";
+import { deleteNodeResource, getNode, listNodes, updateNodeResource } from "@/api/services/resources";
+import type { EdgeNodeView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface Node {
   name: string; role: string; status: string; statusColor: string; labels: number;
   cpu: string; memory: string; ip: string; taints: number; pods: number; createdAt: string;
+  raw: KubeResource; unschedulable: boolean;
   os?: string; kernel?: string; kubelet?: string; containerRuntime?: string;
   architecture?: string; capacity?: { cpu: string; memory: string; storage: string };
   conditions?: Array<{ type: string; status: string; message: string }>;
@@ -38,6 +39,9 @@ function statusColor(status: EdgeNodeView["status"]) {
 
 function toPageNode(node: EdgeNodeView, metricsByName: Map<string, { cpuMillicores: number; memoryBytes: number }>): Node {
   const raw = node.raw as Record<string, any>;
+  const nodeInfo = raw.status?.nodeInfo || {};
+  const capacity = raw.status?.capacity || {};
+  const conditions = Array.isArray(raw.status?.conditions) ? raw.status.conditions : [];
   const metrics = metricsByName.get(node.name);
   return {
     name: node.name,
@@ -51,19 +55,27 @@ function toPageNode(node: EdgeNodeView, metricsByName: Map<string, { cpuMillicor
     taints: Array.isArray(raw.spec?.taints) ? raw.spec.taints.length : 0,
     pods: Number(raw.podCount || raw.pods || 0),
     createdAt: node.createdAt,
+    raw: node.raw,
+    unschedulable: Boolean(raw.spec?.unschedulable),
     os: node.osImage,
-    kernel: "-",
+    kernel: nodeInfo.kernelVersion || "-",
     kubelet: node.kubeletVersion,
-    containerRuntime: "-",
-    architecture: "-",
-    capacity: { cpu: "-", memory: "-", storage: "-" },
-    conditions: [
-      {
-        type: "Ready",
-        status: node.status === "Ready" ? "True" : "False",
-        message: node.status === "Ready" ? "节点已就绪" : "节点未就绪",
-      },
-    ],
+    containerRuntime: nodeInfo.containerRuntimeVersion || "-",
+    architecture: nodeInfo.architecture || "-",
+    capacity: { cpu: capacity.cpu || "-", memory: capacity.memory || "-", storage: capacity["ephemeral-storage"] || "-" },
+    conditions: conditions.length > 0
+      ? conditions.map((item: any) => ({
+        type: item.type || "-",
+        status: item.status || "-",
+        message: item.message || item.reason || "-",
+      }))
+      : [
+        {
+          type: "Ready",
+          status: node.status === "Ready" ? "True" : "False",
+          message: node.status === "Ready" ? "节点已就绪" : "节点未就绪",
+        },
+      ],
   };
 }
 
@@ -137,20 +149,60 @@ export function Nodes() {
   const start = (currentPage - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
-  const openDetail = (n: Node) => { setSelected(n); setDetailOpen(true); };
   const openDelete = (n: Node) => { setDeleteItem(n); setDeleteOpen(true); };
-  const confirmDelete = () => { if (deleteItem) { setData(p => p.filter(n => n.name !== deleteItem.name)); setDeleteOpen(false); } };
+  const openDetailWithFreshData = async (n: Node) => {
+    setSelected(n);
+    setDetailOpen(true);
+    try {
+      const detail = await getNode(n.name);
+      setSelected({ ...toPageNode(detail, new Map()), cpu: n.cpu, memory: n.memory });
+    } catch {
+      setSelected(n);
+    }
+  };
+  const confirmDelete = async () => {
+    if (!deleteItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteNodeResource(deleteItem.name);
+      setDeleteOpen(false);
+      setDeleteItem(null);
+      if (selected?.name === deleteItem.name) {
+        setDetailOpen(false);
+        setSelected(null);
+      }
+      await loadNodes();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除节点失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const toggleScheduling = async (node: Node) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const detail = await getNode(node.name);
+      const resource = detail.raw;
+      resource.spec = {
+        ...(resource.spec || {}),
+        unschedulable: !Boolean((resource.spec as Record<string, unknown> | undefined)?.unschedulable),
+      };
+      await updateNodeResource(resource);
+      await loadNodes();
+      const refreshed = await getNode(node.name);
+      setSelected({ ...toPageNode(refreshed, new Map()), cpu: node.cpu, memory: node.memory });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新节点调度状态失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   const handleCreate = () => {
-    const newNode: Node = {
-      name: form.name, role: form.role, status: "未就绪", statusColor: "warning", labels: 5,
-      cpu: "0", memory: "0Mi", ip: form.ip, taints: 0, pods: 0,
-      createdAt: new Date().toLocaleString("zh-CN"),
-      os: "Linux 5.15.0", kernel: "5.15.0-105-generic", kubelet: "v1.28.0",
-      containerRuntime: "containerd://1.7.0", architecture: "amd64",
-      capacity: { cpu: form.cpu, memory: form.memory, storage: "100Gi" },
-    };
-    setData(p => [newNode, ...p]);
+    setError("当前 BFF 不支持创建 Node；节点需要由 kubelet/edgecore 注册后自动出现在列表中。");
     setCreateOpen(false);
     setForm({ name: "", role: "edge", ip: "", cpu: "2", memory: "4Gi" });
   };
@@ -226,7 +278,7 @@ export function Nodes() {
               <TableRow><TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">暂无节点数据</TableCell></TableRow>
             ) : paginated.map(row => (
               <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
-                <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
+                <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetailWithFreshData(row)}>{row.name}</TableCell>
                 <TableCell className="px-4 py-3"><Badge variant="outline" className={cn("text-xs font-normal", row.role === "cloud" ? "border-[#E8F3FF] text-[#165DFF] bg-[#E8F3FF]" : "border-[#E8FFEA] text-[#00B42A] bg-[#E8FFEA]")}>{row.role}</Badge></TableCell>
                 <TableCell className="px-4 py-3"><StatusBadge status={row.status} color={row.statusColor} /></TableCell>
                 <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.cpu}</TableCell>
@@ -236,7 +288,7 @@ export function Nodes() {
                 <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
                 <TableCell className="px-4 py-3">
                   <div className="flex items-center gap-1">
-                    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button>
+                    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetailWithFreshData(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button>
                     <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDelete(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button>
                   </div>
                 </TableCell>
@@ -288,8 +340,13 @@ export function Nodes() {
                   <Info label="Pod 数量" value={String(selected.pods)} />
                   <Info label="标签数" value={String(selected.labels)} />
                   <Info label="污点" value={String(selected.taints)} />
+                  <Info label="调度状态" value={selected.unschedulable ? "不可调度" : "可调度"} />
                 </div>
                 <div className="flex gap-2 pt-2">
+                  <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => toggleScheduling(selected)} disabled={isLoading}>
+                    {selected.unschedulable ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <Ban className="w-3.5 h-3.5 mr-1" />}
+                    {selected.unschedulable ? "恢复调度" : "设为不可调度"}
+                  </Button>
                   <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => openDelete(selected)}><Trash2 className="w-3.5 h-3.5 mr-1 text-[#F53F3F]" /><span className="text-[#F53F3F]">删除</span></Button>
                 </div>
               </TabsContent>

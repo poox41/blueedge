@@ -70,9 +70,16 @@ import {
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { formatMemory, listPodMetrics, type PodMetric } from "@/api/services/metrics";
-import { getDeployment, listDeployments, listPods } from "@/api/services/resources";
+import {
+  createDeploymentResource,
+  deleteDeploymentResource,
+  getDeployment,
+  listDeployments,
+  listPods,
+  updateDeploymentResource,
+} from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
-import type { WorkloadView } from "@/types/kubeedge";
+import type { KubeResource, WorkloadView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface PodSummary {
@@ -117,11 +124,11 @@ function getPodName(pod: any): string {
 }
 
 function getPodNamespace(pod: any): string {
-  return pod?.metadata?.namespace || pod?.namespace || "default";
+  return pod?.metadata?.namespace || pod?.namespace || pod?.podNamespace || "default";
 }
 
 function getPodLabels(pod: any): Record<string, string> {
-  return pod?.metadata?.labels || pod?.labels || {};
+  return pod?.metadata?.labels || pod?.labels || pod?.spec?.template?.metadata?.labels || {};
 }
 
 function getPodImages(pod: any): string[] {
@@ -146,7 +153,26 @@ function getPodStatus(pod: any): string {
 }
 
 function getPodNode(pod: any): string {
-  return pod?.spec?.nodeName || pod?.nodeName || pod?.node || "-";
+  return pod?.spec?.nodeName || pod?.nodeName || pod?.node || pod?.host || "-";
+}
+
+function getObjectRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .filter(([, item]) => typeof item === "string" || typeof item === "number" || typeof item === "boolean")
+      .map(([key, item]) => [key, String(item)]),
+  );
+}
+
+function getDeploymentSelector(raw: Record<string, any>): Record<string, string> {
+  const matchLabels = getObjectRecord(raw.spec?.selector?.matchLabels || raw.selector);
+  if (Object.keys(matchLabels).length > 0) return matchLabels;
+
+  const templateLabels = getObjectRecord(raw.spec?.template?.metadata?.labels);
+  if (Object.keys(templateLabels).length > 0) return templateLabels;
+
+  return getObjectRecord(raw.metadata?.labels || raw.labels);
 }
 
 function podMatchesDeployment(pod: any, deployment: WorkloadView, selector: Record<string, string>): boolean {
@@ -178,7 +204,7 @@ function toDeploymentRow(item: WorkloadView, pods: any[] = [], metricsByPod: Map
         ? [rawImages]
         : [];
   const labels = raw.metadata?.labels || raw.labels || {};
-  const selector = raw.spec?.selector?.matchLabels || raw.selector || labels;
+  const selector = getDeploymentSelector(raw);
   const ports = Array.isArray(containers) ? containers.flatMap((container: any) => container.ports || []) : [];
   const matchedPods = pods.filter((pod) => podMatchesDeployment(pod, item, selector));
   const runningPods = matchedPods.filter((pod) => getPodStatus(pod) === "Running").length;
@@ -188,14 +214,14 @@ function toDeploymentRow(item: WorkloadView, pods: any[] = [], metricsByPod: Map
     const name = getPodName(pod);
     const metric = metricsByPod.get(`${getPodNamespace(pod)}/${name}`);
     return {
-    name,
-    status: getPodStatus(pod),
-    node: getPodNode(pod),
-    images: getPodImages(pod),
-    restartCount: getPodRestartCount(pod),
-    cpuMillicores: metric?.cpuMillicores || 0,
-    memoryBytes: metric?.memoryBytes || 0,
-  };
+      name,
+      status: getPodStatus(pod),
+      node: getPodNode(pod),
+      images: getPodImages(pod),
+      restartCount: getPodRestartCount(pod),
+      cpuMillicores: metric?.cpuMillicores || 0,
+      memoryBytes: metric?.memoryBytes || 0,
+    };
   });
   const cpuMillicores = podSummaries.reduce((sum, pod) => sum + pod.cpuMillicores, 0);
   const memoryBytes = podSummaries.reduce((sum, pod) => sum + pod.memoryBytes, 0);
@@ -266,6 +292,64 @@ ${d.ports.map(p => `        - containerPort: ${p.containerPort}`).join("\n") || 
           requests:
             cpu: ${d.cpuRequest}
             memory: ${d.memoryRequest}`;
+}
+
+function buildDeploymentResource(form: {
+  name: string;
+  namespace: string;
+  replicas: number;
+  image: string;
+  cpuLimit: string;
+  memoryLimit: string;
+  cpuRequest: string;
+  memoryRequest: string;
+  port: number;
+}): KubeResource {
+  const labels = { app: form.name };
+  return {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: {
+      name: form.name,
+      namespace: form.namespace,
+      labels,
+    },
+    spec: {
+      replicas: form.replicas,
+      selector: {
+        matchLabels: labels,
+      },
+      template: {
+        metadata: {
+          labels,
+        },
+        spec: {
+          containers: [
+            {
+              name: form.name,
+              image: form.image,
+              ports: form.port ? [{ containerPort: form.port, protocol: "TCP" }] : undefined,
+              resources: {
+                limits: {
+                  cpu: form.cpuLimit,
+                  memory: form.memoryLimit,
+                },
+                requests: {
+                  cpu: form.cpuRequest,
+                  memory: form.memoryRequest,
+                },
+              },
+            },
+          ],
+        },
+      },
+    },
+  };
+}
+
+async function getCurrentDeploymentResource(namespace: string, name: string): Promise<KubeResource> {
+  const current = await getDeployment(namespace, name);
+  return current.raw;
 }
 
 export function Deployments() {
@@ -356,11 +440,19 @@ export function Deployments() {
     setDeleteOpen(true);
   };
 
-  const confirmDelete = () => {
-    if (deleteItem) {
-      setData((prev) => prev.filter((d) => d.name !== deleteItem.name));
+  const confirmDelete = async () => {
+    if (!deleteItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteDeploymentResource(deleteItem.namespace, deleteItem.name);
       setDeleteOpen(false);
       setDeleteItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除部署失败");
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -370,68 +462,68 @@ export function Deployments() {
     setScaleOpen(true);
   };
 
-  const confirmScale = () => {
-    if (selected) {
-      setData((prev) =>
-        prev.map((d) =>
-          d.name === selected.name ? { ...d, desiredReplicas: scaleValue, pods: `${d.availableReplicas}/${scaleValue}` } : d
-        )
-      );
+  const confirmScale = async () => {
+    if (!selected) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      const resource = await getCurrentDeploymentResource(selected.namespace, selected.name);
+      resource.spec = {
+        ...(resource.spec || {}),
+        replicas: scaleValue,
+      };
+      await updateDeploymentResource(selected.namespace, resource);
       setScaleOpen(false);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "扩缩容失败");
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const togglePause = (d: Deployment) => {
-    const isPaused = d.status === "已暂停";
-    setData((prev) =>
-      prev.map((item) =>
-        item.name === d.name
-          ? { ...item, status: isPaused ? "活跃" : "已暂停", statusColor: isPaused ? "success" : "warning" }
-          : item
-      )
-    );
+  const togglePause = async (d: Deployment) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const resource = await getCurrentDeploymentResource(d.namespace, d.name);
+      const isPaused = Boolean((resource.spec as Record<string, unknown> | undefined)?.paused);
+      resource.spec = {
+        ...(resource.spec || {}),
+        paused: !isPaused,
+      };
+      await updateDeploymentResource(d.namespace, resource);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新部署状态失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleCreate = () => {
-    const newItem: Deployment = {
-      namespace: form.namespace,
-      name: form.name,
-      status: "活跃",
-      statusColor: "success",
-      pods: `0/${form.replicas}`,
-      desiredReplicas: form.replicas,
-      availableReplicas: 0,
-      updatedReplicas: 0,
-      cpu: "0",
-      memory: "0Mi",
-      cpuLimit: form.cpuLimit,
-      memoryLimit: form.memoryLimit,
-      cpuRequest: form.cpuRequest,
-      memoryRequest: form.memoryRequest,
-      createdAt: new Date().toLocaleString("zh-CN"),
-      node: "-",
-      images: [form.image],
-      strategy: "RollingUpdate",
-      selector: { app: form.name },
-      labels: { app: form.name, version: "v1" },
-      annotations: { "deployment.kubernetes.io/revision": "1" },
-      restartCount: 0,
-      ports: form.port ? [{ name: "http", containerPort: form.port, protocol: "TCP" }] : [],
-      podItems: [],
-    };
-    setData((prev) => [newItem, ...prev]);
-    setCreateOpen(false);
-    setForm({
-      name: "",
-      namespace: "default",
-      replicas: 1,
-      image: "nginx:latest",
-      cpuLimit: "100m",
-      memoryLimit: "128Mi",
-      cpuRequest: "50m",
-      memoryRequest: "64Mi",
-      port: 80,
-    });
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createDeploymentResource(buildDeploymentResource(form));
+      setCreateOpen(false);
+      setForm({
+        name: "",
+        namespace: "default",
+        replicas: 1,
+        image: "nginx:latest",
+        cpuLimit: "100m",
+        memoryLimit: "128Mi",
+        cpuRequest: "50m",
+        memoryRequest: "64Mi",
+        port: 80,
+      });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建部署失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

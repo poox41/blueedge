@@ -11,9 +11,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, ArrowRight } from "lucide-react";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { listRuleEndpoints, listRules } from "@/api/services/resources";
+import { createRuleResource, deleteRuleResource, listRuleEndpoints, listRules } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
-import type { RuleEndpointView, RuleView } from "@/types/kubeedge";
+import type { KubeResource, RuleEndpointView, RuleView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface Rule { namespace: string; name: string; source: string; sourceResource: string; target: string; targetResource: string; createdAt: string; }
@@ -41,6 +41,23 @@ spec:
   sourceResource: ${n.sourceResource || '""'}
   target: ${n.target}
   targetResource: ${n.targetResource || '""'}`;
+}
+
+function buildRuleResource(form: { name: string; namespace: string; source: string; target: string }): KubeResource {
+  return {
+    apiVersion: "rules.kubeedge.io/v1",
+    kind: "Rule",
+    metadata: {
+      name: form.name,
+      namespace: form.namespace,
+    },
+    spec: {
+      source: form.source,
+      sourceResource: {},
+      target: form.target,
+      targetResource: {},
+    },
+  };
 }
 
 export function Rules() {
@@ -94,10 +111,34 @@ export function Rules() {
 
   const openDetail = (d: Rule) => { setSelected(d); setDetailOpen(true); };
   const openDel = (d: Rule) => { setDelItem(d); setDelOpen(true); };
-  const confirmDel = () => { if (delItem) { setData(p => p.filter(d => d.name !== delItem.name)); setDelOpen(false); } };
-  const handleCreate = () => {
-    const rule: Rule = { name: form.name, namespace: form.namespace, source: form.source, sourceResource: "", target: form.target, targetResource: "", createdAt: new Date().toLocaleString("zh-CN") };
-    setData(p => [rule, ...p]); setCreateOpen(false); setForm({ name: "", namespace: "default", source: "", target: "" });
+  const confirmDel = async () => {
+    if (!delItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteRuleResource(delItem.namespace, delItem.name);
+      setDelOpen(false);
+      setDelItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除规则失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createRuleResource(buildRuleResource(form));
+      setCreateOpen(false);
+      setForm({ name: "", namespace: "default", source: "", target: "" });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建规则失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

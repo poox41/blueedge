@@ -13,9 +13,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { getNodeGroup, listNodeGroups, listNodes } from "@/api/services/resources";
+import { createNodeGroupResource, deleteNodeGroupResource, getNodeGroup, listNodeGroups, listNodes } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
-import type { EdgeNodeView } from "@/types/kubeedge";
+import type { EdgeNodeView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface NodeGroup {
@@ -93,7 +93,7 @@ function toNodeGroup(item: any, allNodes: EdgeNodeView[] = []): NodeGroup {
 }
 
 function yamlNg(n: NodeGroup) {
-  return `apiVersion: edgeclusters.kubeedge.io/v1
+  return `apiVersion: apps.kubeedge.io/v1alpha1
 kind: NodeGroup
 metadata:
   name: ${n.name}
@@ -103,6 +103,24 @@ spec:
 ${Object.entries(n.nodeSelector).map(([k, v]) => `    ${k}: ${v}`).join("\n")}
   allocationPolicy: ${n.allocationPolicy || "Spread"}
   spreadConstraints: ${n.spreadConstraints ?? true}`;
+}
+
+function buildNodeGroupResource(form: { name: string; namespace: string; nodeType: string; policy: string }): KubeResource {
+  return {
+    apiVersion: "apps.kubeedge.io/v1alpha1",
+    kind: "NodeGroup",
+    metadata: {
+      name: form.name,
+      namespace: form.namespace,
+    },
+    spec: {
+      nodeSelector: {
+        nodeType: form.nodeType,
+      },
+      allocationPolicy: form.policy,
+      spreadConstraints: true,
+    },
+  };
 }
 
 export function NodeGroups() {
@@ -163,10 +181,34 @@ export function NodeGroups() {
 
   const openDetail = (n: NodeGroup) => { setSelected(n); setDetailOpen(true); };
   const openDel = (n: NodeGroup) => { setDelItem(n); setDelOpen(true); };
-  const confirmDel = () => { if (delItem) { setData(p => p.filter(d => d.name !== delItem.name)); setDelOpen(false); } };
-  const handleCreate = () => {
-    const ng: NodeGroup = { name: form.name, namespace: form.namespace, nodes: [], nodeSelector: { nodeType: form.nodeType }, status: "就绪", statusColor: "success", createdAt: new Date().toLocaleString("zh-CN"), allocationPolicy: form.policy, spreadConstraints: true };
-    setData(p => [ng, ...p]); setCreateOpen(false); setForm({ name: "", namespace: "default", nodeType: "edge", policy: "Spread" });
+  const confirmDel = async () => {
+    if (!delItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteNodeGroupResource(delItem.name);
+      setDelOpen(false);
+      setDelItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除节点组失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createNodeGroupResource(buildNodeGroupResource(form));
+      setCreateOpen(false);
+      setForm({ name: "", namespace: "default", nodeType: "edge", policy: "Spread" });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建节点组失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

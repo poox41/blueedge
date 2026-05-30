@@ -12,9 +12,9 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { listDevices } from "@/api/services/resources";
+import { createDeviceResource, deleteDeviceResource, listDevices } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
-import type { DeviceView } from "@/types/kubeedge";
+import type { DeviceView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface DI { namespace: string; name: string; model: string; node: string; status: string; statusColor: string; twins: number; createdAt: string; protocol?: string; }
@@ -36,7 +36,7 @@ function toDeviceRow(item: DeviceView): DI {
 }
 
 function yaml(n: DI) {
-  return `apiVersion: devices.kubeedge.io/v1alpha2
+  return `apiVersion: devices.kubeedge.io/v1beta1
 kind: Device
 metadata:
   name: ${n.name}
@@ -54,6 +54,28 @@ spec:
   protocol:
     mqtt:
       client-id: ${n.name}`;
+}
+
+function buildDeviceResource(form: { name: string; namespace: string; model: string; node: string; protocol: string }): KubeResource {
+  return {
+    apiVersion: "devices.kubeedge.io/v1beta1",
+    kind: "Device",
+    metadata: {
+      name: form.name,
+      namespace: form.namespace,
+      labels: { model: form.model },
+    },
+    spec: {
+      deviceModelRef: {
+        name: form.model,
+      },
+      nodeName: form.node,
+      protocol: {
+        protocolName: form.protocol,
+      },
+      properties: [],
+    },
+  };
 }
 
 export function DeviceInstances() {
@@ -102,10 +124,34 @@ export function DeviceInstances() {
 
   const openDetail = (d: DI) => { setSelected(d); setDetailOpen(true); };
   const openDel = (d: DI) => { setDelItem(d); setDelOpen(true); };
-  const confirmDel = () => { if (delItem) { setData(p => p.filter(d => d.name !== delItem.name)); setDelOpen(false); } };
-  const handleCreate = () => {
-    const d: DI = { name: form.name, namespace: form.namespace, model: form.model, node: form.node, status: "在线", statusColor: "success", twins: 0, createdAt: new Date().toLocaleString("zh-CN"), protocol: form.protocol };
-    setData(p => [d, ...p]); setCreateOpen(false); setForm({ name: "", namespace: "default", model: "test-model", node: "edge-node", protocol: "MQTT" });
+  const confirmDel = async () => {
+    if (!delItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteDeviceResource(delItem.namespace, delItem.name);
+      setDelOpen(false);
+      setDelItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除设备实例失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createDeviceResource(buildDeviceResource(form));
+      setCreateOpen(false);
+      setForm({ name: "", namespace: "default", model: "test-model", node: "edge-node", protocol: "MQTT" });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建设备实例失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

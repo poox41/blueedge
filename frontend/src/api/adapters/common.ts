@@ -18,7 +18,7 @@ export function getName(raw: KubeResource): string {
 }
 
 export function getNamespace(raw: KubeResource): string {
-  return raw.metadata?.namespace || "default";
+  return raw.metadata?.namespace || (typeof raw.namespace === "string" ? raw.namespace : "default");
 }
 
 export function getCreatedAt(raw: KubeResource): string {

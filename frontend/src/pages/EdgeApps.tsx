@@ -74,8 +74,9 @@ import {
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
-import { listEdgeApplications } from "@/api/services/resources";
+import { createEdgeApplicationResource, deleteEdgeApplicationResource, listEdgeApplications } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
+import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface EdgeApp {
@@ -210,6 +211,57 @@ ${Object.entries(a.labels).map(([k, v]) => `    ${k}: ${v}`).join("\n")}
 ${spec}`;
 }
 
+function buildEdgeApplicationResource(form: {
+  name: string;
+  namespace: string;
+  type: string;
+  image: string;
+  cpuLimit: string;
+  memoryLimit: string;
+  replicas: number;
+}): KubeResource {
+  const labels = { app: form.name };
+  return {
+    apiVersion: "apps.kubeedge.io/v1alpha1",
+    kind: "EdgeApplication",
+    metadata: {
+      name: form.name,
+      namespace: form.namespace,
+      labels,
+    },
+    spec: {
+      workloadScope: {
+        targetNodeGroups: [],
+      },
+      workloadTemplate: {
+        kind: form.type,
+        spec: {
+          replicas: form.type === "Deployment" ? form.replicas : undefined,
+          selector: form.type === "Deployment" || form.type === "DaemonSet" ? { matchLabels: labels } : undefined,
+          template: {
+            metadata: { labels },
+            spec: {
+              containers: [
+                {
+                  name: form.name,
+                  image: form.image,
+                  resources: {
+                    limits: {
+                      cpu: form.cpuLimit,
+                      memory: form.memoryLimit,
+                    },
+                  },
+                },
+              ],
+              restartPolicy: form.type === "Job" ? "OnFailure" : undefined,
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 export function EdgeApps() {
   const namespaces = useNamespaceOptions();
   const [data, setData] = useState<EdgeApp[]>([]);
@@ -289,63 +341,43 @@ export function EdgeApps() {
     setDeleteOpen(true);
   };
 
-  const confirmDelete = () => {
-    if (deleteItem) {
-      setData((prev) => prev.filter((d) => d.name !== deleteItem.name));
+  const confirmDelete = async () => {
+    if (!deleteItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteEdgeApplicationResource(deleteItem.namespace, deleteItem.name);
       setDeleteOpen(false);
       setDeleteItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除边缘应用失败");
+    } finally {
+      setIsLoading(false);
     }
   };
 
   const togglePause = (a: EdgeApp) => {
-    const isPaused = a.status === "已暂停";
-    setData((prev) =>
-      prev.map((item) =>
-        item.name === a.name
-          ? { ...item, status: isPaused ? "运行中" : "已暂停", statusColor: isPaused ? "success" : "warning" }
-          : item
-      )
-    );
+    setError(`边缘应用 ${a.name} 的暂停/恢复需要确认 EdgeApplication 更新语义，当前暂未启用真实写入。`);
   };
 
   const handleRestart = (a: EdgeApp) => {
-    setData((prev) =>
-      prev.map((item) =>
-        item.name === a.name ? { ...item, restartCount: item.restartCount + 1, status: "运行中", statusColor: "success" } : item
-      )
-    );
+    setError(`边缘应用 ${a.name} 的重启需要后端事件或滚动更新语义，当前暂未启用真实写入。`);
   };
 
-  const handleCreate = () => {
-    const newItem: EdgeApp = {
-      namespace: form.namespace,
-      name: form.name,
-      type: form.type,
-      status: "运行中",
-      statusColor: "success",
-      node: "edge-node",
-      nodeRole: "edge",
-      images: [form.image],
-      cpu: "0",
-      memory: "0Mi",
-      cpuLimit: form.cpuLimit,
-      memoryLimit: form.memoryLimit,
-      restartCount: 0,
-      pods: form.type === "Deployment" ? `0/${form.replicas}` : "1/1",
-      ports: [],
-      createdAt: new Date().toLocaleString("zh-CN"),
-      age: "刚刚",
-      labels: { app: form.name },
-    };
-    if (form.type === "Deployment") {
-      newItem.selector = { app: form.name };
-      newItem.strategy = "RollingUpdate";
-      newItem.desiredReplicas = form.replicas;
-      newItem.availableReplicas = 0;
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createEdgeApplicationResource(buildEdgeApplicationResource(form));
+      setCreateOpen(false);
+      setForm({ name: "", namespace: "default", type: "Deployment", image: "nginx:latest", cpuLimit: "100m", memoryLimit: "128Mi", replicas: 1 });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建边缘应用失败");
+    } finally {
+      setIsLoading(false);
     }
-    setData((prev) => [newItem, ...prev]);
-    setCreateOpen(false);
-    setForm({ name: "", namespace: "default", type: "Deployment", image: "nginx:latest", cpuLimit: "100m", memoryLimit: "128Mi", replicas: 1 });
   };
 
   return (

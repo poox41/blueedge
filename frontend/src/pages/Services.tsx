@@ -11,9 +11,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { listServices } from "@/api/services/resources";
+import { createServiceResource, deleteServiceResource, listServices } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
-import type { ServiceView } from "@/types/kubeedge";
+import type { KubeResource, ServiceView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface Svc { namespace: string; name: string; type: string; clusterIP: string; externalIP: string; ports: string; createdAt: string; selector?: Record<string, string>; sessionAffinity?: string; }
@@ -45,6 +45,37 @@ spec:
   selector:
 ${Object.entries(n.selector || {}).map(([k, v]) => `    ${k}: ${v}`).join("\n")}
   sessionAffinity: ${n.sessionAffinity || "None"}`;
+}
+
+function buildServiceResource(form: {
+  name: string;
+  namespace: string;
+  type: string;
+  port: number;
+  targetPort: number;
+}): KubeResource {
+  return {
+    apiVersion: "v1",
+    kind: "Service",
+    metadata: {
+      name: form.name,
+      namespace: form.namespace,
+      labels: { app: form.name },
+    },
+    spec: {
+      type: form.type,
+      selector: { app: form.name },
+      ports: [
+        {
+          name: "http",
+          port: form.port,
+          targetPort: form.targetPort,
+          protocol: "TCP",
+        },
+      ],
+      sessionAffinity: "None",
+    },
+  };
 }
 
 export function Services() {
@@ -93,10 +124,34 @@ export function Services() {
 
   const openDetail = (d: Svc) => { setSelected(d); setDetailOpen(true); };
   const openDel = (d: Svc) => { setDelItem(d); setDelOpen(true); };
-  const confirmDel = () => { if (delItem) { setData(p => p.filter(d => d.name !== delItem.name)); setDelOpen(false); } };
-  const handleCreate = () => {
-    const s: Svc = { name: form.name, namespace: form.namespace, type: form.type, clusterIP: "Pending", externalIP: "-", ports: `${form.port}/TCP`, createdAt: new Date().toLocaleString("zh-CN"), selector: { app: form.name }, sessionAffinity: "None" };
-    setData(p => [s, ...p]); setCreateOpen(false); setForm({ name: "", namespace: "default", type: "ClusterIP", port: 80, targetPort: 80 });
+  const confirmDel = async () => {
+    if (!delItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteServiceResource(delItem.namespace, delItem.name);
+      setDelOpen(false);
+      setDelItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除服务失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createServiceResource(buildServiceResource(form));
+      setCreateOpen(false);
+      setForm({ name: "", namespace: "default", type: "ClusterIP", port: 80, targetPort: 80 });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建服务失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

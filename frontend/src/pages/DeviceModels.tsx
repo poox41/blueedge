@@ -11,9 +11,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { listDeviceModels } from "@/api/services/resources";
+import { createDeviceModelResource, deleteDeviceModelResource, listDeviceModels } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
-import type { DeviceModelView } from "@/types/kubeedge";
+import type { DeviceModelView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface DM { namespace: string; name: string; labels: number; properties: number; createdAt: string; description?: string; protocol?: string; }
@@ -32,7 +32,7 @@ function toDeviceModelRow(item: DeviceModelView): DM {
 }
 
 function yaml(n: DM) {
-  return `apiVersion: devices.kubeedge.io/v1alpha2
+  return `apiVersion: devices.kubeedge.io/v1beta1
 kind: DeviceModel
 metadata:
   name: ${n.name}
@@ -45,6 +45,31 @@ spec:
         string:
           accessMode: ReadWrite
           defaultValue: "0"`;
+}
+
+function buildDeviceModelResource(form: { name: string; namespace: string; properties: number; protocol: string }): KubeResource {
+  return {
+    apiVersion: "devices.kubeedge.io/v1beta1",
+    kind: "DeviceModel",
+    metadata: {
+      name: form.name,
+      namespace: form.namespace,
+      labels: { protocol: form.protocol.toLowerCase().replace(/\s+/g, "-") },
+    },
+    spec: {
+      protocol: form.protocol,
+      properties: Array.from({ length: Math.max(1, form.properties) }, (_, index) => ({
+        name: index === 0 ? "temperature" : `property-${index + 1}`,
+        description: index === 0 ? "Temperature sensor" : `Property ${index + 1}`,
+        type: {
+          string: {
+            accessMode: "ReadWrite",
+            defaultValue: "0",
+          },
+        },
+      })),
+    },
+  };
 }
 
 export function DeviceModels() {
@@ -93,10 +118,34 @@ export function DeviceModels() {
 
   const openDetail = (d: DM) => { setSelected(d); setDetailOpen(true); };
   const openDel = (d: DM) => { setDelItem(d); setDelOpen(true); };
-  const confirmDel = () => { if (delItem) { setData(p => p.filter(d => d.name !== delItem.name)); setDelOpen(false); } };
-  const handleCreate = () => {
-    const d: DM = { name: form.name, namespace: form.namespace, labels: 0, properties: form.properties, createdAt: new Date().toLocaleString("zh-CN"), description: "-", protocol: form.protocol };
-    setData(p => [d, ...p]); setCreateOpen(false); setForm({ name: "", namespace: "default", properties: 2, protocol: "MQTT" });
+  const confirmDel = async () => {
+    if (!delItem) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteDeviceModelResource(delItem.namespace, delItem.name);
+      setDelOpen(false);
+      setDelItem(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除设备模型失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+  const handleCreate = async () => {
+    setIsLoading(true);
+    setError("");
+    try {
+      await createDeviceModelResource(buildDeviceModelResource(form));
+      setCreateOpen(false);
+      setForm({ name: "", namespace: "default", properties: 2, protocol: "MQTT" });
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建设备模型失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (

@@ -248,6 +248,19 @@ app.get("/metrics/pods", async (req, res) => {
   }
 });
 
+app.get("/workloads/pods", async (req, res) => {
+  try {
+    const namespace = typeof req.query.namespace === "string" ? req.query.namespace : "";
+    const path = namespace
+      ? `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods`
+      : "/api/v1/pods";
+    const data = await getK8sJson(path, req.headers.authorization);
+    res.json(data);
+  } catch (error) {
+    res.status(503).json({ message: error instanceof Error ? error.message : "pod API is unavailable" });
+  }
+});
+
 app.use("/bff", createProxyMiddleware({ target: bffBaseUrl, changeOrigin: true, pathRewrite: { "^/bff": "" } }));
 
 app.listen(port, () => {

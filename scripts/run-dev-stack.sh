@@ -93,6 +93,7 @@ start_bff() {
       --apiserver-host="$KUBE_APISERVER" \
       --apiserver-skip-tls-verify=true \
       --insecure-port="$BFF_PORT" \
+      </dev/null \
       >"$(log_file bff)" 2>&1 &
     echo $! >"$(pid_file bff)"
   )
@@ -117,6 +118,7 @@ start_gateway() {
       K8S_API_SERVER="$KUBE_APISERVER" \
       K8S_SKIP_TLS_VERIFY="true" \
       npm run dev \
+      </dev/null \
       >"$(log_file gateway)" 2>&1 &
     echo $! >"$(pid_file gateway)"
   )
@@ -141,6 +143,7 @@ start_frontend() {
       VITE_BFF_PROXY_TARGET="http://127.0.0.1:$BFF_PORT" \
       VITE_GATEWAY_PROXY_TARGET="http://127.0.0.1:$GATEWAY_PORT" \
       npm run dev -- --host 0.0.0.0 --port "$FRONTEND_PORT" \
+      </dev/null \
       >"$(log_file frontend)" 2>&1 &
     echo $! >"$(pid_file frontend)"
   )
