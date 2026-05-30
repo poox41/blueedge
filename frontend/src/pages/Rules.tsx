@@ -2,6 +2,7 @@ import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/p
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -17,6 +18,83 @@ import type { KubeResource, RuleEndpointView, RuleView } from "@/types/kubeedge"
 import { cn } from "@/lib/utils";
 
 interface Rule { namespace: string; name: string; source: string; sourceResource: string; target: string; targetResource: string; createdAt: string; raw: KubeResource; }
+type RouteKind = "rest-eventbus" | "eventbus-rest" | "rest-servicebus";
+type EndpointKind = "rest" | "eventbus" | "servicebus";
+
+const routeOptions: Array<{ value: RouteKind; label: string; sourceType: EndpointKind; targetType: EndpointKind }> = [
+  { value: "rest-eventbus", label: "Rest -> EventBus", sourceType: "rest", targetType: "eventbus" },
+  { value: "eventbus-rest", label: "EventBus -> Rest", sourceType: "eventbus", targetType: "rest" },
+  { value: "rest-servicebus", label: "Rest -> ServiceBus", sourceType: "rest", targetType: "servicebus" },
+];
+
+function normalizeEndpointType(type: string): EndpointKind {
+  const normalized = type.toLowerCase();
+  if (normalized === "rest") return "rest";
+  if (normalized === "servicebus") return "servicebus";
+  return "eventbus";
+}
+
+function endpointTypeText(type: string): string {
+  const normalized = normalizeEndpointType(type);
+  if (normalized === "rest") return "云端 rest";
+  if (normalized === "servicebus") return "边端 servicebus";
+  return "边端 eventbus";
+}
+
+function endpointTypeClass(type: string): string {
+  const normalized = normalizeEndpointType(type);
+  if (normalized === "rest") return "bg-[#E8F3FF] text-[#165DFF]";
+  if (normalized === "servicebus") return "bg-[#FFF7E8] text-[#D25F00]";
+  return "bg-[#E8FFEA] text-[#00B42A]";
+}
+
+function endpointMatchesNamespace(endpoint: RuleEndpointView, namespace: string): boolean {
+  return endpoint.namespace === namespace || !endpoint.namespace;
+}
+
+function endpointMatchesType(endpoint: RuleEndpointView, type: EndpointKind): boolean {
+  return normalizeEndpointType(endpoint.type) === type;
+}
+
+function findEndpoint(endpoints: RuleEndpointView[], name: string): RuleEndpointView | undefined {
+  return endpoints.find((endpoint) => endpoint.name === name);
+}
+
+function resourceValue(raw: KubeResource, key: "sourceResource" | "targetResource"): string {
+  const value = raw.spec?.[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const resource = value as Record<string, unknown>;
+  if (typeof resource.path === "string") return resource.path;
+  if (typeof resource.topic === "string") return resource.topic;
+  if (typeof resource.resource === "string") return resource.resource;
+  return "";
+}
+
+function resourceNodeName(raw: KubeResource, key: "sourceResource" | "targetResource", fallback: string): string {
+  const value = raw.spec?.[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
+  const resource = value as Record<string, unknown>;
+  return typeof resource.node_name === "string" ? resource.node_name : fallback;
+}
+
+function buildRuleResourceMap(
+  type: EndpointKind,
+  role: "source" | "target",
+  value: string,
+  nodeName?: string,
+): Record<string, string> {
+  const trimmed = value.trim();
+  if (type === "eventbus") {
+    return {
+      ...(role === "source" && nodeName ? { node_name: nodeName } : {}),
+      ...(trimmed ? { topic: trimmed } : {}),
+    };
+  }
+  if (type === "rest") {
+    return trimmed ? { [role === "source" ? "path" : "resource"]: trimmed } : {};
+  }
+  return trimmed ? { path: trimmed } : {};
+}
 
 function toRuleRow(item: RuleView): Rule {
   return {
@@ -44,19 +122,31 @@ spec:
   targetResource: ${n.targetResource || '""'}`;
 }
 
-function buildRuleResource(form: { name: string; namespace: string; source: string; target: string }): KubeResource {
+function buildRuleResource(form: {
+  name: string;
+  namespace: string;
+  routeKind: RouteKind;
+  source: string;
+  sourceResource: string;
+  sourceNodeName: string;
+  target: string;
+  targetResource: string;
+  description: string;
+}): KubeResource {
+  const route = routeOptions.find((item) => item.value === form.routeKind) || routeOptions[0];
   return {
     apiVersion: "rules.kubeedge.io/v1",
     kind: "Rule",
     metadata: {
       name: form.name,
       namespace: form.namespace,
+      labels: form.description.trim() ? { description: form.description.trim() } : undefined,
     },
     spec: {
       source: form.source,
-      sourceResource: {},
+      sourceResource: buildRuleResourceMap(route.sourceType, "source", form.sourceResource, form.sourceNodeName),
       target: form.target,
-      targetResource: {},
+      targetResource: buildRuleResourceMap(route.targetType, "target", form.targetResource),
     },
   };
 }
@@ -76,9 +166,19 @@ export function Rules() {
   const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<Rule | null>(null);
-  const [form, setForm] = useState({ name: "", namespace: "default", source: "", target: "" });
+  const [form, setForm] = useState({
+    name: "",
+    namespace: "default",
+    routeKind: "rest-eventbus" as RouteKind,
+    source: "",
+    sourceResource: "",
+    sourceNodeName: "",
+    target: "",
+    targetResource: "",
+    description: "",
+  });
   const [editItem, setEditItem] = useState<Rule | null>(null);
-  const [editForm, setEditForm] = useState({ source: "", sourceResource: "", target: "", targetResource: "" });
+  const [editForm, setEditForm] = useState({ source: "", sourceResource: "", sourceNodeName: "", target: "", targetResource: "", description: "" });
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -130,9 +230,11 @@ export function Rules() {
       setEditItem(detail);
       setEditForm({
         source: detail.source,
-        sourceResource: detail.sourceResource || "",
+        sourceResource: resourceValue(detail.raw, "sourceResource") || detail.sourceResource || "",
+        sourceNodeName: resourceNodeName(detail.raw, "sourceResource", ""),
         target: detail.target,
-        targetResource: detail.targetResource || "",
+        targetResource: resourceValue(detail.raw, "targetResource") || detail.targetResource || "",
+        description: detail.raw.metadata?.labels?.description || "",
       });
       setEditOpen(true);
     } catch (err) {
@@ -161,9 +263,16 @@ export function Rules() {
     setIsLoading(true);
     setError("");
     try {
+      const source = findEndpoint(endpointOptions, form.source);
+      const target = findEndpoint(endpointOptions, form.target);
+      const route = routeOptions.find((item) => item.value === form.routeKind) || routeOptions[0];
+      if (!source || !target) throw new Error("请选择源端点和目的端点");
+      if (!endpointMatchesType(source, route.sourceType) || !endpointMatchesType(target, route.targetType)) {
+        throw new Error(`当前转发路径需要 ${route.label} 类型的端点`);
+      }
       await createRuleResource(buildRuleResource(form));
       setCreateOpen(false);
-      setForm({ name: "", namespace: "default", source: "", target: "" });
+      setForm({ name: "", namespace: "default", routeKind: "rest-eventbus", source: "", sourceResource: "", sourceNodeName: "", target: "", targetResource: "", description: "" });
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建规则失败");
@@ -176,14 +285,25 @@ export function Rules() {
     setIsLoading(true);
     setError("");
     try {
+      const sourceEndpoint = findEndpoint(endpointOptions, editForm.source);
+      const targetEndpoint = findEndpoint(endpointOptions, editForm.target);
+      const sourceType = sourceEndpoint ? normalizeEndpointType(sourceEndpoint.type) : "rest";
+      const targetType = targetEndpoint ? normalizeEndpointType(targetEndpoint.type) : "rest";
       const updated: KubeResource = {
         ...editItem.raw,
+        metadata: {
+          ...(editItem.raw.metadata || {}),
+          labels: {
+            ...(editItem.raw.metadata?.labels || {}),
+            ...(editForm.description.trim() ? { description: editForm.description.trim() } : {}),
+          },
+        },
         spec: {
           ...(editItem.raw.spec || {}),
           source: editForm.source,
-          sourceResource: editForm.sourceResource || {},
+          sourceResource: buildRuleResourceMap(sourceType, "source", editForm.sourceResource, editForm.sourceNodeName),
           target: editForm.target,
-          targetResource: editForm.targetResource || {},
+          targetResource: buildRuleResourceMap(targetType, "target", editForm.targetResource),
         },
       };
       await updateRuleResource(editItem.namespace, updated);
@@ -197,6 +317,15 @@ export function Rules() {
     }
   };
 
+  const currentRoute = routeOptions.find((item) => item.value === form.routeKind) || routeOptions[0];
+  const namespaceEndpoints = endpointOptions.filter((endpoint) => endpointMatchesNamespace(endpoint, form.namespace));
+  const sourceEndpointOptions = namespaceEndpoints.filter((endpoint) => endpointMatchesType(endpoint, currentRoute.sourceType));
+  const targetEndpointOptions = namespaceEndpoints.filter((endpoint) => endpointMatchesType(endpoint, currentRoute.targetType));
+  const sourceEndpoint = findEndpoint(endpointOptions, form.source);
+  const targetEndpoint = findEndpoint(endpointOptions, form.target);
+  const editSourceEndpoint = findEndpoint(endpointOptions, editForm.source);
+  const editSourceType = editSourceEndpoint ? normalizeEndpointType(editSourceEndpoint.type) : "rest";
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -205,25 +334,64 @@ export function Rules() {
           <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />刷新</Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild><Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建规则</Button></DialogTrigger>
-            <DialogContent className="max-w-lg">
-              <DialogHeader><DialogTitle className="text-base">创建规则</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-2">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input placeholder="如 my-rule" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">命名空间</Label>
-                    <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
+            <DialogContent className="max-w-[720px] max-h-[88vh] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0">
+              <DialogHeader className="px-6 py-4 border-b border-[#E5E6EB]"><DialogTitle className="text-base">创建消息路由</DialogTitle></DialogHeader>
+              <div className="min-h-0 overflow-y-auto px-6 py-4 space-y-4">
+                <div className="rounded-md border border-[#94BFFF] bg-[#E8F3FF] px-4 py-3 text-sm leading-6 text-[#1D2129]">
+                  <p className="font-medium mb-1">当前支持如下三种消息转发路径</p>
+                  <p>1.Rest &gt; EventBus：用户应用调用云端的 REST API 发送消息，最终消息发送到边缘中的 MQTT broker。</p>
+                  <p>2.EventBus &gt; Rest：用户向边缘中的 MQTT broker 发布消息，最终将消息发送到云端的 REST API。</p>
+                  <p>3.Rest &gt; ServiceBus：用户应用调用云端 REST API 发送消息，最终消息发送到边缘应用。</p>
+                </div>
+                <div className="grid grid-cols-[128px_1fr] items-center gap-3">
+                  <Label className="text-sm text-right text-[#4E5969]">转发路径</Label>
+                  <select value={form.routeKind} onChange={e => {
+                    const routeKind = e.target.value as RouteKind;
+                    setForm({ ...form, routeKind, source: "", sourceResource: "", sourceNodeName: "", target: "", targetResource: "" });
+                  }} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">
+                    {routeOptions.map((route) => (<option key={route.value} value={route.value}>{route.label}</option>))}
+                  </select>
+                </div>
+                <div className="grid grid-cols-[128px_1fr] items-center gap-3">
+                  <Label className="text-sm text-right text-[#4E5969]">消息路由名称 <span className="text-[#F53F3F]">*</span></Label><Input placeholder="请输入消息路由名称" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" />
+                </div>
+                <div className="grid grid-cols-[128px_1fr] items-center gap-3">
+                  <Label className="text-sm text-right text-[#4E5969]">命名空间 <span className="text-[#F53F3F]">*</span></Label>
+                    <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value, source: "", target: "" })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
+                </div>
+                <div className="grid grid-cols-[128px_1fr] items-center gap-3"><Label className="text-sm text-right text-[#4E5969]">源端点 <span className="text-[#F53F3F]">*</span></Label>
+                  <div className="relative">
+                    <select value={form.source} onChange={e => setForm({ ...form, source: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 pr-28 border-[#C9CDD4]"><option value="">选择端点</option>{sourceEndpointOptions.map(e => (<option key={e.name} value={e.name}>{e.name}</option>))}</select>
+                    {sourceEndpoint && <Badge className={cn("absolute right-8 top-1/2 -translate-y-1/2 text-xs font-normal", endpointTypeClass(sourceEndpoint.type))}>{endpointTypeText(sourceEndpoint.type)}</Badge>}
                   </div>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">源端点</Label>
-                    <select value={form.source} onChange={e => setForm({ ...form, source: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option value="">选择端点</option>{endpointOptions.map(e => (<option key={e.name} value={e.name}>{e.name}</option>))}</select>
-                  </div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标端点</Label>
-                    <select value={form.target} onChange={e => setForm({ ...form, target: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option value="">选择端点</option>{endpointOptions.map(e => (<option key={e.name} value={e.name}>{e.name}</option>))}</select>
+                <div className="grid grid-cols-[128px_1fr] items-center gap-3"><Label className="text-sm text-right text-[#4E5969]">源端点资源 <span className="text-[#F53F3F]">*</span></Label>
+                  {currentRoute.sourceType === "eventbus" ? (
+                    <div className="grid grid-cols-[180px_1fr] gap-2">
+                      <Input placeholder="请输入 node_name，如 aipc-31" value={form.sourceNodeName} onChange={e => setForm({ ...form, sourceNodeName: e.target.value })} className="h-9 text-sm" />
+                      <Input placeholder="请输入一个 topic" value={form.sourceResource} onChange={e => setForm({ ...form, sourceResource: e.target.value })} className="h-9 text-sm" />
+                    </div>
+                  ) : (
+                    <Input placeholder="请输入 Rest 路径，如 /abc/bc" value={form.sourceResource} onChange={e => setForm({ ...form, sourceResource: e.target.value })} className="h-9 text-sm" />
+                  )}
+                </div>
+                <div className="grid grid-cols-[128px_1fr] items-center gap-3"><Label className="text-sm text-right text-[#4E5969]">目的端点 <span className="text-[#F53F3F]">*</span></Label>
+                  <div className="relative">
+                    <select value={form.target} onChange={e => setForm({ ...form, target: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 pr-28 border-[#C9CDD4]"><option value="">选择端点</option>{targetEndpointOptions.map(e => (<option key={e.name} value={e.name}>{e.name}</option>))}</select>
+                    {targetEndpoint && <Badge className={cn("absolute right-8 top-1/2 -translate-y-1/2 text-xs font-normal", endpointTypeClass(targetEndpoint.type))}>{endpointTypeText(targetEndpoint.type)}</Badge>}
                   </div>
                 </div>
+                <div className="grid grid-cols-[128px_1fr] items-center gap-3"><Label className="text-sm text-right text-[#4E5969]">目的端点资源 <span className="text-[#F53F3F]">*</span></Label>
+                  <Input
+                    placeholder={currentRoute.targetType === "eventbus" ? "请输入 EventBus Topic" : currentRoute.targetType === "rest" ? "请输入 Rest 地址，如 http://abc.com/bc" : "请输入 ServiceBus 路径，如 /request_path"}
+                    value={form.targetResource}
+                    onChange={e => setForm({ ...form, targetResource: e.target.value })}
+                    className="h-9 text-sm"
+                  />
+                </div>
+                <div className="grid grid-cols-[128px_1fr] items-start gap-3"><Label className="pt-2 text-sm text-right text-[#4E5969]">描述</Label><Textarea placeholder="请输入消息路由描述" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="min-h-20 text-sm" /></div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name || !form.source || !form.target}>创建</Button></DialogFooter>
+              <DialogFooter className="px-6 py-4 border-t border-[#E5E6EB] bg-white"><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name || !form.source || !form.target || !form.sourceResource || !form.targetResource || (currentRoute.sourceType === "eventbus" && !form.sourceNodeName)}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
           <Dialog open={editOpen} onOpenChange={setEditOpen}>
@@ -243,6 +411,9 @@ export function Rules() {
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">源资源</Label><Input value={editForm.sourceResource} onChange={e => setEditForm({ ...editForm, sourceResource: e.target.value })} className="h-9 text-sm" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标资源</Label><Input value={editForm.targetResource} onChange={e => setEditForm({ ...editForm, targetResource: e.target.value })} className="h-9 text-sm" /></div>
                 </div>
+                {editSourceType === "eventbus" && (
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">源节点 node_name</Label><Input value={editForm.sourceNodeName} onChange={e => setEditForm({ ...editForm, sourceNodeName: e.target.value })} className="h-9 text-sm" /></div>
+                )}
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || !editForm.source || !editForm.target}>保存</Button></DialogFooter>
             </DialogContent>

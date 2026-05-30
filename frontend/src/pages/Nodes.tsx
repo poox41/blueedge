@@ -138,6 +138,13 @@ export function Nodes() {
   const [createOpen, setCreateOpen] = useState(false);
   const [deleteItem, setDeleteItem] = useState<Node | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [joinForm, setJoinForm] = useState({
+    mode: "edge",
+    cloudCoreAddress: "",
+    token: "",
+    nodeName: "",
+    kubeadmCommand: "",
+  });
   const pageSize = 10;
 
   const loadNodes = useCallback(async () => {
@@ -194,6 +201,15 @@ export function Nodes() {
       setSelected(n);
     }
   };
+
+  const edgeJoinCommand = [
+    "sudo keadm join",
+    joinForm.cloudCoreAddress.trim() ? `--cloudcore-ipport=${joinForm.cloudCoreAddress.trim()}` : "--cloudcore-ipport=<cloudcore-ip:10000>",
+    joinForm.token.trim() ? `--token=${joinForm.token.trim()}` : "--token=<cloudcore-token>",
+    joinForm.nodeName.trim() ? `--edgenode-name=${joinForm.nodeName.trim()}` : "",
+  ].filter(Boolean).join(" \\\n  ");
+  const kubeadmJoinCommand = joinForm.kubeadmCommand.trim() || "sudo kubeadm join <apiserver:6443> --token <token> --discovery-token-ca-cert-hash sha256:<hash>";
+  const currentJoinCommand = joinForm.mode === "edge" ? edgeJoinCommand : kubeadmJoinCommand;
   const confirmDelete = async () => {
     if (!deleteItem) return;
     setIsLoading(true);
@@ -247,23 +263,40 @@ export function Nodes() {
             <DialogTrigger asChild>
               <Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />接入节点</Button>
             </DialogTrigger>
-            <DialogContent className="max-w-lg">
+            <DialogContent className="max-w-2xl">
               <DialogHeader><DialogTitle className="text-base">接入节点</DialogTitle></DialogHeader>
-              <div className="space-y-3 py-2 text-sm text-[#4E5969]">
+              <div className="space-y-4 py-2 text-sm text-[#4E5969]">
                 <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3">
                   当前 API 不支持通过表单创建真实 Node。节点需要在目标机器上运行 kubelet 或 edgecore，向集群注册成功后自动出现在列表中。
                 </div>
-                <div className="space-y-1">
-                  <p className="font-medium text-[#1D2129]">边缘节点</p>
-                  <p>在目标机器安装 KubeEdge edgecore，并使用 cloudcore 生成的 token 执行 keadm join。</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button variant={joinForm.mode === "edge" ? "default" : "outline"} size="sm" onClick={() => setJoinForm({ ...joinForm, mode: "edge" })} className={cn("h-9", joinForm.mode === "edge" && "bg-[#165DFF] text-white")}>边缘节点</Button>
+                  <Button variant={joinForm.mode === "worker" ? "default" : "outline"} size="sm" onClick={() => setJoinForm({ ...joinForm, mode: "worker" })} className={cn("h-9", joinForm.mode === "worker" && "bg-[#165DFF] text-white")}>云端 / 工作节点</Button>
                 </div>
-                <div className="space-y-1">
-                  <p className="font-medium text-[#1D2129]">云端/工作节点</p>
-                  <p>使用 Kubernetes 标准 kubeadm join 接入集群。</p>
+                {joinForm.mode === "edge" ? (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5"><p className="text-xs text-[#4E5969]">CloudCore 地址</p><Input placeholder="如 192.168.16.52:10000" value={joinForm.cloudCoreAddress} onChange={(e) => setJoinForm({ ...joinForm, cloudCoreAddress: e.target.value })} className="h-9 text-sm" /></div>
+                    <div className="space-y-1.5"><p className="text-xs text-[#4E5969]">边缘节点名称</p><Input placeholder="可选，如 k8s-laptop-edge" value={joinForm.nodeName} onChange={(e) => setJoinForm({ ...joinForm, nodeName: e.target.value })} className="h-9 text-sm" /></div>
+                    <div className="col-span-2 space-y-1.5"><p className="text-xs text-[#4E5969]">CloudCore Token</p><Input placeholder="keadm gettoken 获取的 token" value={joinForm.token} onChange={(e) => setJoinForm({ ...joinForm, token: e.target.value })} className="h-9 text-sm" /></div>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <p className="text-xs text-[#4E5969]">kubeadm join 命令</p>
+                    <Input placeholder="粘贴 kubeadm token create --print-join-command 输出" value={joinForm.kubeadmCommand} onChange={(e) => setJoinForm({ ...joinForm, kubeadmCommand: e.target.value })} className="h-9 text-sm" />
+                  </div>
+                )}
+                <div className="space-y-2">
+                  <p className="font-medium text-[#1D2129]">{joinForm.mode === "edge" ? "在边缘节点执行" : "在工作节点执行"}</p>
+                  <div className="relative">
+                    <pre className="min-h-24 whitespace-pre-wrap break-all rounded-md bg-[#0A1628] p-3 pr-12 text-xs text-[#C9CDD4]">{currentJoinCommand}</pre>
+                    <Button variant="ghost" size="sm" className="absolute right-2 top-2 h-7 text-white/70 hover:text-white" onClick={() => navigator.clipboard.writeText(currentJoinCommand)}><Copy className="w-3.5 h-3.5" /></Button>
+                  </div>
+                  <p className="text-xs text-[#86909C]">执行完成并注册成功后，点击刷新查看新节点。</p>
                 </div>
               </div>
               <DialogFooter>
-                <Button size="sm" className="bg-[#165DFF] text-white" onClick={() => setCreateOpen(false)}>知道了</Button>
+                <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
+                <Button size="sm" className="bg-[#165DFF] text-white" onClick={() => navigator.clipboard.writeText(currentJoinCommand)}>复制命令</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>

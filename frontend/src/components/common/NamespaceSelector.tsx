@@ -40,9 +40,9 @@ export function NamespaceSelector({ value, onChange }: NamespaceSelectorProps) {
         <SelectTrigger className="w-[180px] h-8 text-sm border-[#C9CDD4] bg-white hover:border-[#165DFF] transition-colors focus:ring-1 focus:ring-[#165DFF]">
           <SelectValue />
         </SelectTrigger>
-        <SelectContent className="min-w-[180px]">
+        <SelectContent position="popper" align="end" className="w-[180px] max-h-[320px]">
           {namespaces.map((ns) => (
-            <SelectItem key={ns.value} value={ns.value} className="text-sm">
+            <SelectItem key={ns.value} value={ns.value} className="text-sm truncate">
               {ns.label}
             </SelectItem>
           ))}

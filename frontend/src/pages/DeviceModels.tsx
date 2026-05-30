@@ -2,6 +2,7 @@ import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/p
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -17,6 +18,54 @@ import type { DeviceModelView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
 interface DM { namespace: string; name: string; labels: number; properties: number; createdAt: string; description?: string; protocol?: string; raw: KubeResource; }
+type DeviceModelProperty = {
+  name: string;
+  description?: string;
+  type: string;
+  accessMode?: string;
+  defaultValue?: string;
+  minimum?: string;
+  maximum?: string;
+  unit?: string;
+};
+
+function defaultProperties(count = 1): DeviceModelProperty[] {
+  return Array.from({ length: Math.max(1, count) }, (_, index) => ({
+    name: index === 0 ? "temperature" : `property-${index + 1}`,
+    description: index === 0 ? "Temperature sensor" : `Property ${index + 1}`,
+    type: "STRING",
+    accessMode: "ReadWrite",
+  }));
+}
+
+function normalizeProperties(value: unknown, fallbackCount = 1): DeviceModelProperty[] {
+  if (!Array.isArray(value)) return defaultProperties(fallbackCount);
+  const properties = value
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    .map((item, index) => ({
+      name: typeof item.name === "string" && item.name ? item.name : `property-${index + 1}`,
+      description: typeof item.description === "string" ? item.description : "",
+      type: typeof item.type === "string" && item.type ? item.type : "STRING",
+      accessMode: typeof item.accessMode === "string" && item.accessMode ? item.accessMode : "ReadWrite",
+      ...(typeof item.defaultValue === "string" ? { defaultValue: item.defaultValue } : {}),
+      ...(typeof item.minimum === "string" ? { minimum: item.minimum } : {}),
+      ...(typeof item.maximum === "string" ? { maximum: item.maximum } : {}),
+      ...(typeof item.unit === "string" ? { unit: item.unit } : {}),
+    }));
+  return properties.length > 0 ? properties : defaultProperties(fallbackCount);
+}
+
+function formatProperties(value: unknown, fallbackCount = 1): string {
+  return JSON.stringify(normalizeProperties(value, fallbackCount), null, 2);
+}
+
+function parseProperties(text: string, fallbackCount: number): DeviceModelProperty[] {
+  const trimmed = text.trim();
+  if (!trimmed) return defaultProperties(fallbackCount);
+  const parsed = JSON.parse(trimmed);
+  if (!Array.isArray(parsed)) throw new Error("属性定义必须是 JSON 数组");
+  return normalizeProperties(parsed, fallbackCount);
+}
 
 function toDeviceModelRow(item: DeviceModelView): DM {
   const raw = item.raw as Record<string, any>;
@@ -48,7 +97,8 @@ spec:
       accessMode: ReadWrite`;
 }
 
-function buildDeviceModelResource(form: { name: string; namespace: string; properties: number; protocol: string }): KubeResource {
+function buildDeviceModelResource(form: { name: string; namespace: string; properties: number; protocol: string; description: string; propertiesText: string }): KubeResource {
+  const properties = parseProperties(form.propertiesText, form.properties);
   return {
     apiVersion: "devices.kubeedge.io/v1beta1",
     kind: "DeviceModel",
@@ -56,15 +106,11 @@ function buildDeviceModelResource(form: { name: string; namespace: string; prope
       name: form.name,
       namespace: form.namespace,
       labels: { protocol: form.protocol.toLowerCase().replace(/\s+/g, "-") },
+      annotations: form.description.trim() ? { description: form.description.trim() } : undefined,
     },
     spec: {
       protocol: form.protocol,
-      properties: Array.from({ length: Math.max(1, form.properties) }, (_, index) => ({
-        name: index === 0 ? "temperature" : `property-${index + 1}`,
-        description: index === 0 ? "Temperature sensor" : `Property ${index + 1}`,
-        type: "STRING",
-        accessMode: "ReadWrite",
-      })),
+      properties,
     },
   };
 }
@@ -83,9 +129,9 @@ export function DeviceModels() {
   const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<DM | null>(null);
-  const [form, setForm] = useState({ name: "", namespace: "default", properties: 2, protocol: "MQTT" });
+  const [form, setForm] = useState({ name: "", namespace: "default", properties: 2, protocol: "MQTT", description: "", propertiesText: formatProperties(defaultProperties(2)) });
   const [editItem, setEditItem] = useState<DM | null>(null);
-  const [editForm, setEditForm] = useState({ properties: 1, protocol: "MQTT", description: "" });
+  const [editForm, setEditForm] = useState({ properties: 1, protocol: "MQTT", description: "", propertiesText: formatProperties(defaultProperties(1)) });
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -132,7 +178,12 @@ export function DeviceModels() {
     try {
       const detail = toDeviceModelRow(await getDeviceModel(d.namespace, d.name));
       setEditItem(detail);
-      setEditForm({ properties: detail.properties || 1, protocol: detail.protocol || "MQTT", description: detail.description === "-" ? "" : detail.description || "" });
+      setEditForm({
+        properties: detail.properties || 1,
+        protocol: detail.protocol || "MQTT",
+        description: detail.description === "-" ? "" : detail.description || "",
+        propertiesText: formatProperties(detail.raw.spec?.properties, detail.properties || 1),
+      });
       setEditOpen(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载设备模型详情失败");
@@ -162,7 +213,7 @@ export function DeviceModels() {
     try {
       await createDeviceModelResource(buildDeviceModelResource(form));
       setCreateOpen(false);
-      setForm({ name: "", namespace: "default", properties: 2, protocol: "MQTT" });
+      setForm({ name: "", namespace: "default", properties: 2, protocol: "MQTT", description: "", propertiesText: formatProperties(defaultProperties(2)) });
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建设备模型失败");
@@ -176,6 +227,7 @@ export function DeviceModels() {
     setError("");
     try {
       const { description: _description, ...baseSpec } = editItem.raw.spec || {};
+      const properties = parseProperties(editForm.propertiesText, editForm.properties);
       const updated: KubeResource = {
         ...editItem.raw,
         metadata: {
@@ -192,12 +244,7 @@ export function DeviceModels() {
         spec: {
           ...baseSpec,
           protocol: editForm.protocol,
-          properties: Array.from({ length: Math.max(1, editForm.properties) }, (_, index) => ({
-            name: index === 0 ? "temperature" : `property-${index + 1}`,
-            description: index === 0 ? "Temperature sensor" : `Property ${index + 1}`,
-            type: "STRING",
-            accessMode: "ReadWrite",
-          })),
+          properties,
         },
       };
       await updateDeviceModelResource(editItem.namespace, updated);
@@ -219,9 +266,9 @@ export function DeviceModels() {
           <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />刷新</Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild><Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建设备模型</Button></DialogTrigger>
-            <DialogContent className="max-w-lg">
-              <DialogHeader><DialogTitle className="text-base">创建设备模型</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-2">
+            <DialogContent className="max-w-2xl max-h-[88vh] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0">
+              <DialogHeader className="px-6 py-4 border-b border-[#E5E6EB]"><DialogTitle className="text-base">创建设备模型</DialogTitle></DialogHeader>
+              <div className="min-h-0 overflow-y-auto px-6 py-4 space-y-4">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input placeholder="如 temperature-model" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">命名空间</Label>
@@ -229,29 +276,38 @@ export function DeviceModels() {
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">属性数量</Label><Input type="number" value={form.properties} onChange={e => setForm({ ...form, properties: Number(e.target.value) })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">属性数量</Label><Input type="number" value={form.properties} onChange={e => {
+                    const properties = Number(e.target.value);
+                    setForm({ ...form, properties, propertiesText: formatProperties(defaultProperties(properties)) });
+                  }} className="h-9 text-sm" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">协议</Label>
                     <select value={form.protocol} onChange={e => setForm({ ...form, protocol: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option>MQTT</option><option>Modbus</option><option>OPC UA</option><option>Bluetooth</option></select>
                   </div>
                 </div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">描述</Label><Input value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="h-9 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">属性定义（JSON 数组）</Label><Textarea value={form.propertiesText} onChange={e => setForm({ ...form, propertiesText: e.target.value })} className="min-h-52 text-xs font-mono" spellCheck={false} /></div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
+              <DialogFooter className="px-6 py-4 border-t border-[#E5E6EB] bg-white"><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
           <Dialog open={editOpen} onOpenChange={setEditOpen}>
-            <DialogContent className="max-w-lg">
-              <DialogHeader><DialogTitle className="text-base">编辑设备模型</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-2">
+            <DialogContent className="max-w-2xl max-h-[88vh] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0">
+              <DialogHeader className="px-6 py-4 border-b border-[#E5E6EB]"><DialogTitle className="text-base">编辑设备模型</DialogTitle></DialogHeader>
+              <div className="min-h-0 overflow-y-auto px-6 py-4 space-y-4">
                 <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="命名空间" value={editItem?.namespace || "-"} /></div>
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">属性数量</Label><Input type="number" value={editForm.properties} onChange={e => setEditForm({ ...editForm, properties: Number(e.target.value) })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">属性数量</Label><Input type="number" value={editForm.properties} onChange={e => {
+                    const properties = Number(e.target.value);
+                    setEditForm({ ...editForm, properties, propertiesText: formatProperties(defaultProperties(properties)) });
+                  }} className="h-9 text-sm" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">协议</Label>
                     <select value={editForm.protocol} onChange={e => setEditForm({ ...editForm, protocol: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option>MQTT</option><option>Modbus</option><option>OPC UA</option><option>Bluetooth</option></select>
                   </div>
                 </div>
                 <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">描述</Label><Input value={editForm.description} onChange={e => setEditForm({ ...editForm, description: e.target.value })} className="h-9 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">属性定义（JSON 数组）</Label><Textarea value={editForm.propertiesText} onChange={e => setEditForm({ ...editForm, propertiesText: e.target.value })} className="min-h-52 text-xs font-mono" spellCheck={false} /></div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || editForm.properties <= 0}>保存</Button></DialogFooter>
+              <DialogFooter className="px-6 py-4 border-t border-[#E5E6EB] bg-white"><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || editForm.properties <= 0}>保存</Button></DialogFooter>
             </DialogContent>
           </Dialog>
         </div>

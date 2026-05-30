@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -76,6 +77,7 @@ import {
   deleteDeploymentResource,
   getDeployment,
   listDeployments,
+  listNodes,
   listPods,
   updateDeploymentResource,
 } from "@/api/services/resources";
@@ -172,6 +174,133 @@ function getObjectRecord(value: unknown): Record<string, string> {
       .filter(([, item]) => typeof item === "string" || typeof item === "number" || typeof item === "boolean")
       .map(([key, item]) => [key, String(item)]),
   );
+}
+
+function parseYamlScalar(value: string): unknown {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  if (trimmed === "null" || trimmed === "~") return null;
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    const content = trimmed.slice(1, -1).trim();
+    return content ? content.split(",").map((item) => parseYamlScalar(item)) : [];
+  }
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    const content = trimmed.slice(1, -1).trim();
+    if (!content) return {};
+    return Object.fromEntries(
+      content.split(",").map((part) => {
+        const [key, ...rest] = part.split(":");
+        return [key.trim(), parseYamlScalar(rest.join(":"))];
+      }),
+    );
+  }
+  return trimmed;
+}
+
+type YamlObject = Record<string, unknown>;
+type YamlNode = YamlObject | unknown[];
+
+function setYamlValue(parent: YamlNode, key: string, value: unknown): void {
+  if (Array.isArray(parent)) {
+    parent.push({ [key]: value });
+    return;
+  }
+  parent[key] = value;
+}
+
+function parseSimpleYaml(input: string): KubeResource {
+  const jsonLike = input.trim();
+  if (!jsonLike) throw new Error("请粘贴 Deployment YAML");
+  if (jsonLike.startsWith("{")) return JSON.parse(jsonLike);
+
+  const lines = input
+    .replace(/\t/g, "  ")
+    .split(/\r?\n/)
+    .filter((line) => line.trim() && !line.trimStart().startsWith("#") && line.trim() !== "---");
+  const root: YamlObject = {};
+  const stack: Array<{ indent: number; value: YamlNode }> = [{ indent: -1, value: root }];
+
+  lines.forEach((rawLine, index) => {
+    const indent = rawLine.match(/^ */)?.[0].length || 0;
+    const text = rawLine.trim();
+    const isListItem = text.startsWith("- ");
+    while (
+      stack.length > 1 &&
+      (indent < stack[stack.length - 1].indent || (!isListItem && indent <= stack[stack.length - 1].indent))
+    ) {
+      stack.pop();
+    }
+    const parent = stack[stack.length - 1].value;
+
+    if (isListItem) {
+      if (!Array.isArray(parent)) throw new Error(`无法解析 YAML 行：${rawLine}`);
+      const itemText = text.slice(2).trim();
+      if (!itemText) {
+        const item: YamlObject = {};
+        parent.push(item);
+        stack.push({ indent, value: item });
+        return;
+      }
+      const separator = itemText.indexOf(":");
+      if (separator > 0) {
+        const key = itemText.slice(0, separator).trim();
+        const rest = itemText.slice(separator + 1).trim();
+        const item: YamlObject = {};
+        const itemValue = rest ? parseYamlScalar(rest) : {};
+        item[key] = itemValue;
+        parent.push(item);
+        if (!rest) stack.push({ indent, value: itemValue as YamlNode });
+        else stack.push({ indent, value: item });
+        return;
+      }
+      parent.push(parseYamlScalar(itemText));
+      return;
+    }
+
+    const separator = text.indexOf(":");
+    if (separator < 0) throw new Error(`无法解析 YAML 行：${rawLine}`);
+    const key = text.slice(0, separator).trim();
+    const rest = text.slice(separator + 1).trim();
+    if (rest) {
+      setYamlValue(parent, key, parseYamlScalar(rest));
+      return;
+    }
+
+    const nextLine = lines.slice(index + 1).find((line) => (line.match(/^ */)?.[0].length || 0) > indent);
+    const value: YamlNode = nextLine?.trim().startsWith("- ") ? [] : {};
+    setYamlValue(parent, key, value);
+    stack.push({ indent, value });
+  });
+
+  return root;
+}
+
+function validateDeploymentResource(resource: KubeResource): KubeResource {
+  if (!resource || typeof resource !== "object" || Array.isArray(resource)) {
+    throw new Error("YAML 内容必须是 Kubernetes 资源对象");
+  }
+  if (resource.kind !== "Deployment") {
+    throw new Error("当前入口只支持创建 kind: Deployment");
+  }
+  if (!resource.metadata?.name) {
+    throw new Error("Deployment YAML 缺少 metadata.name");
+  }
+  return {
+    ...resource,
+    metadata: {
+      ...(resource.metadata || {}),
+      namespace: resource.metadata?.namespace || "default",
+    },
+  };
 }
 
 function getDeploymentSelector(raw: Record<string, any>): Record<string, string> {
@@ -313,8 +442,47 @@ function buildDeploymentResource(form: {
   cpuRequest: string;
   memoryRequest: string;
   port: number;
+  schedulingMode: string;
+  targetNode: string;
+  nodeSelectorKey: string;
+  nodeSelectorValue: string;
+  storageEnabled: boolean;
+  volumeName: string;
+  claimName: string;
+  mountPath: string;
+  subPath: string;
+  readOnly: boolean;
 }): KubeResource {
   const labels = { app: form.name };
+  const volumeName = form.volumeName.trim() || `${form.name}-data`;
+  const claimName = form.claimName.trim();
+  const mountPath = form.mountPath.trim();
+  const targetNode = form.targetNode.trim();
+  const nodeSelectorKey = form.nodeSelectorKey.trim();
+  const nodeSelectorValue = form.nodeSelectorValue.trim();
+  const volumeMounts = form.storageEnabled && claimName && mountPath
+    ? [{
+        name: volumeName,
+        mountPath,
+        subPath: form.subPath.trim() || undefined,
+        readOnly: form.readOnly || undefined,
+      }]
+    : undefined;
+  const volumes = form.storageEnabled && claimName
+    ? [{
+        name: volumeName,
+        persistentVolumeClaim: {
+          claimName,
+          readOnly: form.readOnly || undefined,
+        },
+      }]
+    : undefined;
+  const podScheduling =
+    form.schedulingMode === "nodeName" && targetNode
+      ? { nodeName: targetNode }
+      : form.schedulingMode === "nodeSelector" && nodeSelectorKey && nodeSelectorValue
+        ? { nodeSelector: { [nodeSelectorKey]: nodeSelectorValue } }
+        : {};
   return {
     apiVersion: "apps/v1",
     kind: "Deployment",
@@ -333,11 +501,13 @@ function buildDeploymentResource(form: {
           labels,
         },
         spec: {
+          ...podScheduling,
           containers: [
             {
               name: form.name,
               image: form.image,
               ports: form.port ? [{ containerPort: form.port, protocol: "TCP" }] : undefined,
+              volumeMounts,
               resources: {
                 limits: {
                   cpu: form.cpuLimit,
@@ -350,6 +520,7 @@ function buildDeploymentResource(form: {
               },
             },
           ],
+          volumes,
         },
       },
     },
@@ -379,6 +550,30 @@ export function Deployments() {
   const [scaleValue, setScaleValue] = useState(1);
   const [deleteItem, setDeleteItem] = useState<Deployment | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [createMode, setCreateMode] = useState("form");
+  const [nodeOptions, setNodeOptions] = useState<Array<{ name: string; role: string }>>([]);
+  const [yamlText, setYamlText] = useState(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-app
+  template:
+    metadata:
+      labels:
+        app: my-app
+    spec:
+      # 可选：指定节点时使用 nodeName；不填则由 Kubernetes 调度器自动选择
+      # nodeName: k8s-worker01
+      containers:
+      - name: my-app
+        image: nginx:latest
+        ports:
+        - containerPort: 80`);
 
   const [form, setForm] = useState({
     name: "",
@@ -390,6 +585,16 @@ export function Deployments() {
     cpuRequest: "50m",
     memoryRequest: "64Mi",
     port: 80,
+    schedulingMode: "auto",
+    targetNode: "",
+    nodeSelectorKey: "kubernetes.io/hostname",
+    nodeSelectorValue: "",
+    storageEnabled: false,
+    volumeName: "data",
+    claimName: "",
+    mountPath: "/data",
+    subPath: "",
+    readOnly: false,
   });
 
   const pageSize = 10;
@@ -423,6 +628,21 @@ export function Deployments() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    let mounted = true;
+    listNodes()
+      .then((nodes) => {
+        if (!mounted) return;
+        setNodeOptions(nodes.map((node) => ({ name: node.name, role: node.role })));
+      })
+      .catch(() => {
+        if (mounted) setNodeOptions([]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const filtered = useMemo(() => {
     let result = data;
@@ -537,7 +757,23 @@ export function Deployments() {
     setIsLoading(true);
     setError("");
     try {
-      await createDeploymentResource(buildDeploymentResource(form));
+      if (createMode === "form" && form.storageEnabled && (!form.claimName.trim() || !form.mountPath.trim())) {
+        throw new Error("启用存储挂载时需要填写 PVC 名称和挂载路径");
+      }
+      if (createMode === "form" && form.schedulingMode === "nodeName" && !form.targetNode.trim()) {
+        throw new Error("指定节点时需要选择目标节点");
+      }
+      if (
+        createMode === "form" &&
+        form.schedulingMode === "nodeSelector" &&
+        (!form.nodeSelectorKey.trim() || !form.nodeSelectorValue.trim())
+      ) {
+        throw new Error("使用节点选择器时需要填写标签键和值");
+      }
+      const resource = createMode === "yaml"
+        ? validateDeploymentResource(parseSimpleYaml(yamlText))
+        : buildDeploymentResource(form);
+      await createDeploymentResource(resource);
       setCreateOpen(false);
       setForm({
         name: "",
@@ -549,6 +785,16 @@ export function Deployments() {
         cpuRequest: "50m",
         memoryRequest: "64Mi",
         port: 80,
+        schedulingMode: "auto",
+        targetNode: "",
+        nodeSelectorKey: "kubernetes.io/hostname",
+        nodeSelectorValue: "",
+        storageEnabled: false,
+        volumeName: "data",
+        claimName: "",
+        mountPath: "/data",
+        subPath: "",
+        readOnly: false,
       });
       await loadData();
     } catch (err) {
@@ -584,110 +830,253 @@ export function Deployments() {
                 创建部署
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-lg">
-              <DialogHeader>
+            <DialogContent className="max-w-2xl max-h-[88vh] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 overflow-hidden">
+              <DialogHeader className="px-6 pt-6 pb-3">
                 <DialogTitle className="text-base">创建部署</DialogTitle>
               </DialogHeader>
-              <div className="space-y-4 py-2">
-                <div className="grid grid-cols-2 gap-4">
+              <Tabs value={createMode} onValueChange={setCreateMode} className="min-h-0 overflow-hidden px-6">
+                <TabsList className="bg-[#F7F8FA] h-9">
+                  <TabsTrigger value="form" className="text-xs h-7">表单</TabsTrigger>
+                  <TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger>
+                </TabsList>
+                <TabsContent value="form" className="space-y-4 mt-4 max-h-[62vh] overflow-y-auto pr-1 pb-2">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-[#4E5969]">名称</Label>
+                      <Input
+                        placeholder="如 my-app"
+                        value={form.name}
+                        onChange={(e) => setForm({ ...form, name: e.target.value })}
+                        className="h-9 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-[#4E5969]">命名空间</Label>
+                      <Select
+                        value={form.namespace}
+                        onValueChange={(v) => setForm({ ...form, namespace: v })}
+                      >
+                        <SelectTrigger className="h-9 text-sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {namespaces.filter(n=>n.value!=="all").map((ns) => (
+                            <SelectItem key={ns.value} value={ns.value} className="text-sm">
+                              {ns.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-[#4E5969]">副本数</Label>
+                      <Input
+                        type="number"
+                        min={1}
+                        value={form.replicas}
+                        onChange={(e) => setForm({ ...form, replicas: Number(e.target.value) })}
+                        className="h-9 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-[#4E5969]">容器端口</Label>
+                      <Input
+                        type="number"
+                        value={form.port}
+                        onChange={(e) => setForm({ ...form, port: Number(e.target.value) })}
+                        className="h-9 text-sm"
+                      />
+                    </div>
+                  </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">名称</Label>
+                    <Label className="text-xs text-[#4E5969]">镜像</Label>
                     <Input
-                      placeholder="如 my-app"
-                      value={form.name}
-                      onChange={(e) => setForm({ ...form, name: e.target.value })}
+                      placeholder="如 nginx:latest"
+                      value={form.image}
+                      onChange={(e) => setForm({ ...form, image: e.target.value })}
                       className="h-9 text-sm"
                     />
                   </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">命名空间</Label>
-                    <Select
-                      value={form.namespace}
-                      onValueChange={(v) => setForm({ ...form, namespace: v })}
-                    >
-                      <SelectTrigger className="h-9 text-sm">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {namespaces.filter(n=>n.value!=="all").map((ns) => (
-                          <SelectItem key={ns.value} value={ns.value} className="text-sm">
-                            {ns.label}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-[#4E5969]">CPU 限制</Label>
+                      <Input
+                        value={form.cpuLimit}
+                        onChange={(e) => setForm({ ...form, cpuLimit: e.target.value })}
+                        className="h-9 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-[#4E5969]">内存限制</Label>
+                      <Input
+                        value={form.memoryLimit}
+                        onChange={(e) => setForm({ ...form, memoryLimit: e.target.value })}
+                        className="h-9 text-sm"
+                      />
+                    </div>
                   </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">副本数</Label>
-                    <Input
-                      type="number"
-                      min={1}
-                      value={form.replicas}
-                      onChange={(e) => setForm({ ...form, replicas: Number(e.target.value) })}
-                      className="h-9 text-sm"
-                    />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-[#4E5969]">CPU 请求</Label>
+                      <Input
+                        value={form.cpuRequest}
+                        onChange={(e) => setForm({ ...form, cpuRequest: e.target.value })}
+                        className="h-9 text-sm"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-[#4E5969]">内存请求</Label>
+                      <Input
+                        value={form.memoryRequest}
+                        onChange={(e) => setForm({ ...form, memoryRequest: e.target.value })}
+                        className="h-9 text-sm"
+                      />
+                    </div>
                   </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">容器端口</Label>
-                    <Input
-                      type="number"
-                      value={form.port}
-                      onChange={(e) => setForm({ ...form, port: Number(e.target.value) })}
-                      className="h-9 text-sm"
-                    />
+                  <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <Label className="text-xs text-[#4E5969]">调度节点</Label>
+                        <div className="mt-1 text-xs text-[#86909C]">不指定时由 Kubernetes 调度器自动选择节点</div>
+                      </div>
+                      <Select
+                        value={form.schedulingMode}
+                        onValueChange={(v) => setForm({
+                          ...form,
+                          schedulingMode: v,
+                          nodeSelectorValue: v === "nodeSelector" && form.targetNode ? form.targetNode : form.nodeSelectorValue,
+                        })}
+                      >
+                        <SelectTrigger className="h-9 w-[180px] bg-white text-sm">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="auto" className="text-sm">自动调度</SelectItem>
+                          <SelectItem value="nodeName" className="text-sm">指定节点</SelectItem>
+                          <SelectItem value="nodeSelector" className="text-sm">节点选择器</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    {form.schedulingMode !== "auto" && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-[#4E5969]">目标节点</Label>
+                          <Select
+                            value={form.targetNode || "__manual__"}
+                            onValueChange={(v) => setForm({
+                              ...form,
+                              targetNode: v === "__manual__" ? "" : v,
+                              nodeSelectorValue: form.schedulingMode === "nodeSelector" && v !== "__manual__" ? v : form.nodeSelectorValue,
+                            })}
+                          >
+                            <SelectTrigger className="h-9 bg-white text-sm">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__manual__" className="text-sm">
+                                {nodeOptions.length > 0 ? "手动输入" : "暂无节点数据"}
+                              </SelectItem>
+                              {nodeOptions.map((node) => (
+                                <SelectItem key={node.name} value={node.name} className="text-sm">
+                                  {node.name}{node.role !== "unknown" ? ` (${node.role})` : ""}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-[#4E5969]">节点名称</Label>
+                          <Input
+                            value={form.targetNode}
+                            onChange={(e) => setForm({
+                              ...form,
+                              targetNode: e.target.value,
+                              nodeSelectorValue: form.schedulingMode === "nodeSelector" ? e.target.value : form.nodeSelectorValue,
+                            })}
+                            className="h-9 bg-white text-sm"
+                            placeholder="如 k8s-worker01"
+                          />
+                        </div>
+                        {form.schedulingMode === "nodeSelector" && (
+                          <>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs text-[#4E5969]">标签键</Label>
+                              <Input
+                                value={form.nodeSelectorKey}
+                                onChange={(e) => setForm({ ...form, nodeSelectorKey: e.target.value })}
+                                className="h-9 bg-white text-sm"
+                                placeholder="kubernetes.io/hostname"
+                              />
+                            </div>
+                            <div className="space-y-1.5">
+                              <Label className="text-xs text-[#4E5969]">标签值</Label>
+                              <Input
+                                value={form.nodeSelectorValue}
+                                onChange={(e) => setForm({ ...form, nodeSelectorValue: e.target.value })}
+                                className="h-9 bg-white text-sm"
+                                placeholder="如 k8s-worker01"
+                              />
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-[#4E5969]">镜像</Label>
-                  <Input
-                    placeholder="如 nginx:latest"
-                    value={form.image}
-                    onChange={(e) => setForm({ ...form, image: e.target.value })}
-                    className="h-9 text-sm"
+                  <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3 space-y-3">
+                    <label className="flex items-center gap-2 text-sm text-[#1D2129]">
+                      <input
+                        type="checkbox"
+                        checked={form.storageEnabled}
+                        onChange={(e) => setForm({ ...form, storageEnabled: e.target.checked })}
+                        className="h-4 w-4 accent-[#165DFF]"
+                      />
+                      挂载持久卷声明（PVC）
+                    </label>
+                    {form.storageEnabled && (
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-[#4E5969]">PVC 名称</Label>
+                          <Input value={form.claimName} onChange={(e) => setForm({ ...form, claimName: e.target.value })} className="h-9 text-sm" placeholder="如 my-app-data" />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-[#4E5969]">卷名称</Label>
+                          <Input value={form.volumeName} onChange={(e) => setForm({ ...form, volumeName: e.target.value })} className="h-9 text-sm" />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-[#4E5969]">挂载路径</Label>
+                          <Input value={form.mountPath} onChange={(e) => setForm({ ...form, mountPath: e.target.value })} className="h-9 text-sm" placeholder="/data" />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label className="text-xs text-[#4E5969]">子路径</Label>
+                          <Input value={form.subPath} onChange={(e) => setForm({ ...form, subPath: e.target.value })} className="h-9 text-sm" placeholder="可选" />
+                        </div>
+                        <label className="col-span-2 flex items-center gap-2 text-sm text-[#4E5969]">
+                          <input
+                            type="checkbox"
+                            checked={form.readOnly}
+                            onChange={(e) => setForm({ ...form, readOnly: e.target.checked })}
+                            className="h-4 w-4 accent-[#165DFF]"
+                          />
+                          只读挂载
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                </TabsContent>
+                <TabsContent value="yaml" className="mt-4 max-h-[62vh] overflow-y-auto pb-2">
+                  <Textarea
+                    value={yamlText}
+                    onChange={(e) => setYamlText(e.target.value)}
+                    className="min-h-[440px] text-xs font-mono leading-relaxed"
+                    spellCheck={false}
                   />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">CPU 限制</Label>
-                    <Input
-                      value={form.cpuLimit}
-                      onChange={(e) => setForm({ ...form, cpuLimit: e.target.value })}
-                      className="h-9 text-sm"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">内存限制</Label>
-                    <Input
-                      value={form.memoryLimit}
-                      onChange={(e) => setForm({ ...form, memoryLimit: e.target.value })}
-                      className="h-9 text-sm"
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">CPU 请求</Label>
-                    <Input
-                      value={form.cpuRequest}
-                      onChange={(e) => setForm({ ...form, cpuRequest: e.target.value })}
-                      className="h-9 text-sm"
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">内存请求</Label>
-                    <Input
-                      value={form.memoryRequest}
-                      onChange={(e) => setForm({ ...form, memoryRequest: e.target.value })}
-                      className="h-9 text-sm"
-                    />
-                  </div>
-                </div>
-              </div>
-              <DialogFooter>
+                </TabsContent>
+              </Tabs>
+              <DialogFooter className="border-t border-[#E5E6EB] px-6 py-4">
                 <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
-                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button>
+                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={createMode === "form" ? !form.name : !yamlText.trim()}>创建</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>

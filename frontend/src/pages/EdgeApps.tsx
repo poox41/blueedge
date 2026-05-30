@@ -75,7 +75,7 @@ import {
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
-import { createEdgeApplicationResource, deleteEdgeApplicationResource, getEdgeApplication, listEdgeApplications, updateEdgeApplicationResource } from "@/api/services/resources";
+import { createEdgeApplicationResource, deleteEdgeApplicationResource, getEdgeApplication, listEdgeApplications, listNodeGroups, updateEdgeApplicationResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
@@ -126,7 +126,7 @@ const typeIcons: Record<string, React.ElementType> = {
   DaemonSet: MemoryStick,
 };
 
-const defaultTargetNodeGroups = [{ name: "edge-group" }];
+const defaultTargetNodeGroupName = "edge-group";
 const k8sNamePattern = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
 function isValidK8sName(name: string): boolean {
@@ -375,13 +375,43 @@ function buildEdgeApplicationResource(form: {
   cpuLimit: string;
   memoryLimit: string;
   replicas: number;
+  targetNodeGroup: string;
+  storageEnabled: boolean;
+  volumeName: string;
+  claimName: string;
+  mountPath: string;
+  subPath: string;
+  readOnly: boolean;
 }): KubeResource {
   const labels = { app: form.name };
+  const volumeName = form.volumeName.trim() || `${form.name}-data`;
+  const claimName = form.claimName.trim();
+  const mountPath = form.mountPath.trim();
+  const volumeMounts = form.storageEnabled && claimName && mountPath
+    ? [{
+        name: volumeName,
+        mountPath,
+        subPath: form.subPath.trim() || undefined,
+        readOnly: form.readOnly || undefined,
+      }]
+    : undefined;
+  const volumes = form.storageEnabled && claimName
+    ? [{
+        name: volumeName,
+        persistentVolumeClaim: {
+          claimName,
+          readOnly: form.readOnly || undefined,
+        },
+      }]
+    : undefined;
   const podSpec = {
+    hostNetwork: true,
+    dnsPolicy: "ClusterFirstWithHostNet",
     containers: [
       {
         name: form.name,
         image: form.image,
+        volumeMounts,
         resources: {
           limits: {
             cpu: form.cpuLimit,
@@ -390,6 +420,7 @@ function buildEdgeApplicationResource(form: {
         },
       },
     ],
+    volumes,
     restartPolicy: form.type === "Job" ? "OnFailure" : undefined,
   };
   const manifest: KubeResource = {
@@ -423,7 +454,7 @@ function buildEdgeApplicationResource(form: {
     },
     spec: {
       workloadScope: {
-        targetNodeGroups: defaultTargetNodeGroups,
+        targetNodeGroups: [{ name: form.targetNodeGroup || defaultTargetNodeGroupName }],
       },
       workloadTemplate: {
         manifests: [manifest],
@@ -449,6 +480,7 @@ export function EdgeApps() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [editItem, setEditItem] = useState<EdgeApp | null>(null);
   const [editForm, setEditForm] = useState({ image: "", cpuLimit: "", memoryLimit: "", replicas: 1 });
+  const [nodeGroupOptions, setNodeGroupOptions] = useState<string[]>([defaultTargetNodeGroupName]);
 
   const [form, setForm] = useState({
     name: "",
@@ -458,6 +490,13 @@ export function EdgeApps() {
     cpuLimit: "100m",
     memoryLimit: "128Mi",
     replicas: 1,
+    targetNodeGroup: defaultTargetNodeGroupName,
+    storageEnabled: false,
+    volumeName: "data",
+    claimName: "",
+    mountPath: "/data",
+    subPath: "",
+    readOnly: false,
   });
 
   const pageSize = 10;
@@ -489,6 +528,24 @@ export function EdgeApps() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    let mounted = true;
+    listNodeGroups()
+      .then((items) => {
+        if (!mounted) return;
+        const names = items
+          .map((item: any) => item?.metadata?.name || item?.name)
+          .filter(Boolean);
+        setNodeGroupOptions(Array.from(new Set([defaultTargetNodeGroupName, ...names])));
+      })
+      .catch(() => {
+        if (mounted) setNodeGroupOptions([defaultTargetNodeGroupName]);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const filtered = useMemo(() => {
     let result = data;
@@ -629,12 +686,35 @@ export function EdgeApps() {
       setError("镜像不能为空");
       return;
     }
+    if (!normalizedForm.targetNodeGroup.trim()) {
+      setError("请选择或填写目标节点组");
+      return;
+    }
+    if (normalizedForm.storageEnabled && (!normalizedForm.claimName.trim() || !normalizedForm.mountPath.trim())) {
+      setError("启用存储挂载时需要填写 PVC 名称和挂载路径");
+      return;
+    }
     setIsLoading(true);
     setError("");
     try {
       await createEdgeApplicationResource(buildEdgeApplicationResource(normalizedForm));
       setCreateOpen(false);
-      setForm({ name: "", namespace: "default", type: "Deployment", image: "nginx:latest", cpuLimit: "100m", memoryLimit: "128Mi", replicas: 1 });
+      setForm({
+        name: "",
+        namespace: "default",
+        type: "Deployment",
+        image: "nginx:latest",
+        cpuLimit: "100m",
+        memoryLimit: "128Mi",
+        replicas: 1,
+        targetNodeGroup: defaultTargetNodeGroupName,
+        storageEnabled: false,
+        volumeName: "data",
+        claimName: "",
+        mountPath: "/data",
+        subPath: "",
+        readOnly: false,
+      });
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建边缘应用失败");
@@ -719,11 +799,11 @@ export function EdgeApps() {
                 创建边缘应用
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-lg">
-              <DialogHeader>
+            <DialogContent className="max-w-2xl max-h-[88vh] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 overflow-hidden">
+              <DialogHeader className="px-6 pt-6 pb-3">
                 <DialogTitle className="text-base">创建边缘应用</DialogTitle>
               </DialogHeader>
-              <div className="space-y-4 py-2">
+              <div className="space-y-4 px-6 py-2 max-h-[62vh] overflow-y-auto">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <Label className="text-xs text-[#4E5969]">名称</Label>
@@ -766,6 +846,31 @@ export function EdgeApps() {
                   <Label className="text-xs text-[#4E5969]">镜像</Label>
                   <Input placeholder="如 nginx:latest" value={form.image} onChange={(e) => setForm({ ...form, image: e.target.value })} className="h-9 text-sm" />
                 </div>
+                <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3 space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-[#4E5969]">目标节点组</Label>
+                      <Select value={form.targetNodeGroup} onValueChange={(v) => setForm({ ...form, targetNodeGroup: v })}>
+                        <SelectTrigger className="h-9 bg-white text-sm"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {nodeGroupOptions.map((name) => (
+                            <SelectItem key={name} value={name} className="text-sm">{name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-[#4E5969]">节点组名称</Label>
+                      <Input
+                        value={form.targetNodeGroup}
+                        onChange={(e) => setForm({ ...form, targetNodeGroup: e.target.value })}
+                        className="h-9 bg-white text-sm"
+                        placeholder="如 edge-group"
+                      />
+                    </div>
+                  </div>
+                  <div className="text-xs text-[#86909C]">边缘应用会写入 workloadScope.targetNodeGroups，实际落到该节点组匹配的边缘节点。</div>
+                </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <Label className="text-xs text-[#4E5969]">CPU 限制</Label>
@@ -776,8 +881,48 @@ export function EdgeApps() {
                     <Input value={form.memoryLimit} onChange={(e) => setForm({ ...form, memoryLimit: e.target.value })} className="h-9 text-sm" />
                   </div>
                 </div>
+                <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3 space-y-3">
+                  <label className="flex items-center gap-2 text-sm text-[#1D2129]">
+                    <input
+                      type="checkbox"
+                      checked={form.storageEnabled}
+                      onChange={(e) => setForm({ ...form, storageEnabled: e.target.checked })}
+                      className="h-4 w-4 accent-[#165DFF]"
+                    />
+                    挂载持久卷声明（PVC）
+                  </label>
+                  {form.storageEnabled && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-[#4E5969]">PVC 名称</Label>
+                        <Input value={form.claimName} onChange={(e) => setForm({ ...form, claimName: e.target.value })} className="h-9 bg-white text-sm" placeholder="如 edge-app-data" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-[#4E5969]">卷名称</Label>
+                        <Input value={form.volumeName} onChange={(e) => setForm({ ...form, volumeName: e.target.value })} className="h-9 bg-white text-sm" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-[#4E5969]">挂载路径</Label>
+                        <Input value={form.mountPath} onChange={(e) => setForm({ ...form, mountPath: e.target.value })} className="h-9 bg-white text-sm" placeholder="/data" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-[#4E5969]">子路径</Label>
+                        <Input value={form.subPath} onChange={(e) => setForm({ ...form, subPath: e.target.value })} className="h-9 bg-white text-sm" placeholder="可选" />
+                      </div>
+                      <label className="col-span-2 flex items-center gap-2 text-sm text-[#4E5969]">
+                        <input
+                          type="checkbox"
+                          checked={form.readOnly}
+                          onChange={(e) => setForm({ ...form, readOnly: e.target.checked })}
+                          className="h-4 w-4 accent-[#165DFF]"
+                        />
+                        只读挂载
+                      </label>
+                    </div>
+                  )}
+                </div>
               </div>
-              <DialogFooter>
+              <DialogFooter className="border-t border-[#E5E6EB] px-6 py-4">
                 <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
                 <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!createName || !!createNameError || !createImage}>创建</Button>
               </DialogFooter>

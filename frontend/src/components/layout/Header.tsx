@@ -1,4 +1,4 @@
-import { Bell, User, ChevronDown, LogOut } from "lucide-react";
+import { User, ChevronDown, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -17,14 +17,6 @@ export function Header() {
         <span className="text-sm text-[#4E5969]">BlueEdge 边缘智能平台</span>
       </div>
       <div className="flex items-center gap-4">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="w-8 h-8 text-[#4E5969] hover:text-[#165DFF] hover:bg-[#F2F3F5] relative"
-        >
-          <Bell className="w-4 h-4" />
-          <span className="absolute top-1 right-1 w-2 h-2 bg-[#F53F3F] rounded-full" />
-        </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button

@@ -71,8 +71,51 @@ function parseKeyValues(text: string): Record<string, string> {
   );
 }
 
+function encodeBase64(value: string): string {
+  return btoa(unescape(encodeURIComponent(value)));
+}
+
 function formatSecretValues(data: Record<string, string>): string {
   return Object.entries(data).map(([key, value]) => `${key}=${decodeBase64(value)}`).join("\n");
+}
+
+function parseDockerConfigText(text: string): string {
+  const values = parseKeyValues(text);
+  const dockerConfig = values[".dockerconfigjson"] || text.trim();
+  if (!dockerConfig) throw new Error("Docker config JSON 不能为空");
+
+  try {
+    return JSON.stringify(JSON.parse(dockerConfig));
+  } catch {
+    const decoded = decodeBase64(dockerConfig);
+    if (decoded) {
+      try {
+        return JSON.stringify(JSON.parse(decoded));
+      } catch {
+        // fall through to the explicit error below
+      }
+    }
+  }
+
+  throw new Error(".dockerconfigjson 必须是合法 JSON，或填写已 base64 编码的合法 JSON");
+}
+
+function buildDockerConfig(form: SecretFormState): string {
+  if (form.dataText.trim()) return parseDockerConfigText(form.dataText);
+  if (!form.dockerServer.trim() || !form.dockerUsername.trim() || !form.dockerPassword) {
+    throw new Error("Docker 镜像仓库地址、用户名和密码不能为空");
+  }
+
+  return JSON.stringify({
+    auths: {
+      [form.dockerServer.trim()]: {
+        username: form.dockerUsername.trim(),
+        password: form.dockerPassword,
+        ...(form.dockerEmail.trim() ? { email: form.dockerEmail.trim() } : {}),
+        auth: encodeBase64(`${form.dockerUsername.trim()}:${form.dockerPassword}`),
+      },
+    },
+  });
 }
 
 function toSecret(item: any): SecretRow {
@@ -88,7 +131,19 @@ function toSecret(item: any): SecretRow {
   };
 }
 
-function buildSecretResource(form: { name: string; namespace: string; type: string; dataText: string }, base?: KubeResource): KubeResource {
+interface SecretFormState {
+  name: string;
+  namespace: string;
+  type: string;
+  dataText: string;
+  dockerServer: string;
+  dockerUsername: string;
+  dockerPassword: string;
+  dockerEmail: string;
+}
+
+function buildSecretResource(form: SecretFormState, base?: KubeResource): KubeResource {
+  const type = form.type || "Opaque";
   const next: KubeResource = {
     apiVersion: "v1",
     kind: "Secret",
@@ -97,11 +152,59 @@ function buildSecretResource(form: { name: string; namespace: string; type: stri
       name: form.name,
       namespace: form.namespace,
     },
-    type: form.type || "Opaque",
-    stringData: parseKeyValues(form.dataText),
+    type,
   };
+
   delete next.data;
+  delete next.stringData;
+
+  if (type === "kubernetes.io/dockerconfigjson") {
+    const dockerConfig = buildDockerConfig(form);
+    next.data = {
+      ".dockerconfigjson": encodeBase64(dockerConfig),
+    };
+    return next;
+  }
+
+  next.stringData = parseKeyValues(form.dataText);
   return next;
+}
+
+function emptySecretForm(): SecretFormState {
+  return {
+    name: "",
+    namespace: "default",
+    type: "Opaque",
+    dataText: "username=admin\npassword=changeme",
+    dockerServer: "",
+    dockerUsername: "",
+    dockerPassword: "",
+    dockerEmail: "",
+  };
+}
+
+function parseDockerForm(data: Record<string, string>): Pick<SecretFormState, "dockerServer" | "dockerUsername" | "dockerPassword" | "dockerEmail" | "dataText"> {
+  const decoded = decodeBase64(data[".dockerconfigjson"] || "");
+  try {
+    const config = JSON.parse(decoded);
+    const server = Object.keys(config?.auths || {})[0] || "";
+    const auth = server ? config.auths[server] || {} : {};
+    return {
+      dockerServer: server,
+      dockerUsername: typeof auth.username === "string" ? auth.username : "",
+      dockerPassword: typeof auth.password === "string" ? auth.password : "",
+      dockerEmail: typeof auth.email === "string" ? auth.email : "",
+      dataText: decoded ? `.dockerconfigjson=${decoded}` : "",
+    };
+  } catch {
+    return {
+      dockerServer: "",
+      dockerUsername: "",
+      dockerPassword: "",
+      dockerEmail: "",
+      dataText: decoded ? `.dockerconfigjson=${decoded}` : "",
+    };
+  }
 }
 
 function yaml(row: SecretRow) {
@@ -130,8 +233,8 @@ export function Secrets() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteItem, setDeleteItem] = useState<SecretRow | null>(null);
   const [editItem, setEditItem] = useState<SecretRow | null>(null);
-  const [form, setForm] = useState({ name: "", namespace: "default", type: "Opaque", dataText: "username=admin\npassword=changeme" });
-  const [editForm, setEditForm] = useState({ name: "", namespace: "default", type: "Opaque", dataText: "" });
+  const [form, setForm] = useState<SecretFormState>(emptySecretForm());
+  const [editForm, setEditForm] = useState<SecretFormState>(emptySecretForm());
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -181,12 +284,16 @@ export function Secrets() {
     setError("");
     try {
       const detail = toSecret(await getSecret(row.namespace, row.name));
+      const secretData = toRecord(detail.raw.data);
+      const dockerForm = detail.type === "kubernetes.io/dockerconfigjson"
+        ? parseDockerForm(secretData)
+        : { dockerServer: "", dockerUsername: "", dockerPassword: "", dockerEmail: "", dataText: formatSecretValues(secretData) };
       setEditItem(detail);
       setEditForm({
         name: detail.name,
         namespace: detail.namespace,
         type: detail.type,
-        dataText: formatSecretValues(toRecord(detail.raw.data)),
+        ...dockerForm,
       });
       setEditOpen(true);
     } catch (err) {
@@ -202,7 +309,7 @@ export function Secrets() {
     try {
       await createSecretResource(buildSecretResource(form));
       setCreateOpen(false);
-      setForm({ name: "", namespace: "default", type: "Opaque", dataText: "username=admin\npassword=changeme" });
+      setForm(emptySecretForm());
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建 Secret 失败");
@@ -314,15 +421,51 @@ export function Secrets() {
   );
 }
 
-function SecretForm({ form, setForm, namespaces, readonly = false }: { form: { name: string; namespace: string; type: string; dataText: string }; setForm: (form: { name: string; namespace: string; type: string; dataText: string }) => void; namespaces: Array<{ value: string; label: string }>; readonly?: boolean }) {
+function SecretForm({ form, setForm, namespaces, readonly = false }: { form: SecretFormState; setForm: (form: SecretFormState) => void; namespaces: Array<{ value: string; label: string }>; readonly?: boolean }) {
+  const isDockerConfig = form.type === "kubernetes.io/dockerconfigjson";
   return (
     <div className="space-y-4 py-2">
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input placeholder="如 app-secret" value={form.name} disabled={readonly} onChange={(e) => setForm({ ...form, name: e.target.value })} className={cn("h-9 text-sm", readonly && "bg-[#F7F8FA]")} /></div>
         <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">命名空间</Label><select value={form.namespace} disabled={readonly} onChange={(e) => setForm({ ...form, namespace: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4] disabled:bg-[#F7F8FA]">{namespaces.filter((item) => item.value !== "all").map((item) => (<option key={item.value} value={item.value}>{item.label}</option>))}</select></div>
       </div>
-      <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">类型</Label><Input value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className="h-9 text-sm" /></div>
-      <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">数据（每行一组 key=value）</Label><Textarea value={form.dataText} onChange={(e) => setForm({ ...form, dataText: e.target.value })} className="min-h-40 text-sm font-mono" /></div>
+      <div className="space-y-1.5">
+        <Label className="text-xs text-[#4E5969]">类型</Label>
+        <select
+          value={form.type}
+          onChange={(e) => setForm({ ...form, type: e.target.value, dataText: e.target.value === "kubernetes.io/dockerconfigjson" ? "" : form.dataText })}
+          className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"
+        >
+          <option value="Opaque">Opaque</option>
+          <option value="kubernetes.io/dockerconfigjson">kubernetes.io/dockerconfigjson</option>
+          <option value="kubernetes.io/tls">kubernetes.io/tls</option>
+          <option value="kubernetes.io/basic-auth">kubernetes.io/basic-auth</option>
+          <option value="kubernetes.io/ssh-auth">kubernetes.io/ssh-auth</option>
+        </select>
+      </div>
+      {isDockerConfig ? (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">镜像仓库地址</Label><Input placeholder="如 https://index.docker.io/v1/" value={form.dockerServer} onChange={(e) => setForm({ ...form, dockerServer: e.target.value })} className="h-9 text-sm" /></div>
+            <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">邮箱</Label><Input placeholder="可选" value={form.dockerEmail} onChange={(e) => setForm({ ...form, dockerEmail: e.target.value })} className="h-9 text-sm" /></div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">用户名</Label><Input value={form.dockerUsername} onChange={(e) => setForm({ ...form, dockerUsername: e.target.value })} className="h-9 text-sm" /></div>
+            <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">密码</Label><Input type="password" value={form.dockerPassword} onChange={(e) => setForm({ ...form, dockerPassword: e.target.value })} className="h-9 text-sm" /></div>
+          </div>
+          <div className="space-y-1.5">
+            <Label className="text-xs text-[#4E5969]">.dockerconfigjson（可选，填写后优先使用）</Label>
+            <Textarea
+              placeholder='.dockerconfigjson={"auths":{"https://index.docker.io/v1/":{"username":"xxx","password":"xxx","auth":"base64"}}}'
+              value={form.dataText}
+              onChange={(e) => setForm({ ...form, dataText: e.target.value })}
+              className="min-h-28 text-sm font-mono"
+            />
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">数据（每行一组 key=value）</Label><Textarea value={form.dataText} onChange={(e) => setForm({ ...form, dataText: e.target.value })} className="min-h-40 text-sm font-mono" /></div>
+      )}
     </div>
   );
 }
