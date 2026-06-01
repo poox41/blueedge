@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -79,6 +80,7 @@ import { createEdgeApplicationResource, deleteEdgeApplicationResource, getEdgeAp
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import yaml from "js-yaml";
 
 interface EdgeApp {
   namespace: string;
@@ -131,6 +133,34 @@ const k8sNamePattern = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
 
 function isValidK8sName(name: string): boolean {
   return k8sNamePattern.test(name) && name.length <= 63;
+}
+
+function parseSimpleYaml(input: string): KubeResource {
+  const jsonLike = input.trim();
+  if (!jsonLike) throw new Error("请粘贴 EdgeApplication YAML");
+  return (jsonLike.startsWith("{") ? JSON.parse(jsonLike) : yaml.load(input)) as KubeResource;
+}
+
+function validateEdgeApplicationResource(resource: KubeResource): KubeResource {
+  if (!resource || typeof resource !== "object" || Array.isArray(resource)) {
+    throw new Error("YAML 内容必须是 Kubernetes 资源对象");
+  }
+  if (resource.kind !== "EdgeApplication") {
+    throw new Error("当前入口只支持创建 kind: EdgeApplication");
+  }
+  if (!resource.metadata?.name) {
+    throw new Error("EdgeApplication YAML 缺少 metadata.name");
+  }
+  if (!Array.isArray((resource.spec?.workloadTemplate as any)?.manifests)) {
+    throw new Error("EdgeApplication YAML 缺少 spec.workloadTemplate.manifests");
+  }
+  return {
+    ...resource,
+    metadata: {
+      ...(resource.metadata || {}),
+      namespace: resource.metadata?.namespace || "default",
+    },
+  };
 }
 
 function getWorkloadManifest(item: any): any {
@@ -481,6 +511,45 @@ export function EdgeApps() {
   const [editItem, setEditItem] = useState<EdgeApp | null>(null);
   const [editForm, setEditForm] = useState({ image: "", cpuLimit: "", memoryLimit: "", replicas: 1 });
   const [nodeGroupOptions, setNodeGroupOptions] = useState<string[]>([defaultTargetNodeGroupName]);
+  const [createMode, setCreateMode] = useState("form");
+  const [yamlText, setYamlText] = useState(`apiVersion: apps.kubeedge.io/v1alpha1
+kind: EdgeApplication
+metadata:
+  name: edge-nginx
+  namespace: default
+spec:
+  workloadTemplate:
+    manifests:
+    - apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: edge-nginx
+        namespace: default
+        labels:
+          app: edge-nginx
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: edge-nginx
+        template:
+          metadata:
+            labels:
+              app: edge-nginx
+          spec:
+            hostNetwork: true
+            dnsPolicy: ClusterFirstWithHostNet
+            containers:
+            - name: edge-nginx
+              image: nginx:latest
+              resources:
+                limits:
+                  cpu: 100m
+                  memory: 128Mi
+  workloadScope:
+    targetNodeGroups:
+    - name: ${defaultTargetNodeGroupName}
+      overrides: {}`);
 
   const [form, setForm] = useState({
     name: "",
@@ -671,6 +740,21 @@ export function EdgeApps() {
   };
 
   const handleCreate = async () => {
+    if (createMode === "yaml") {
+      setIsLoading(true);
+      setError("");
+      try {
+        await createEdgeApplicationResource(validateEdgeApplicationResource(parseSimpleYaml(yamlText)));
+        setCreateOpen(false);
+        await loadData();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "创建边缘应用失败");
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     const normalizedForm = {
       ...form,
       name: form.name.trim(),
@@ -803,7 +887,12 @@ export function EdgeApps() {
               <DialogHeader className="px-6 pt-6 pb-3">
                 <DialogTitle className="text-base">创建边缘应用</DialogTitle>
               </DialogHeader>
-              <div className="space-y-4 px-6 py-2 max-h-[62vh] overflow-y-auto">
+              <Tabs value={createMode} onValueChange={setCreateMode} className="min-h-0 overflow-hidden px-6">
+                <TabsList className="bg-[#F7F8FA] h-9">
+                  <TabsTrigger value="form" className="text-xs h-7">表单</TabsTrigger>
+                  <TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger>
+                </TabsList>
+                <TabsContent value="form" className="space-y-4 mt-4 max-h-[62vh] overflow-y-auto pr-1 pb-2">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <Label className="text-xs text-[#4E5969]">名称</Label>
@@ -921,10 +1010,19 @@ export function EdgeApps() {
                     </div>
                   )}
                 </div>
-              </div>
+                </TabsContent>
+                <TabsContent value="yaml" className="mt-4 max-h-[62vh] overflow-y-auto pb-2">
+                  <Textarea
+                    value={yamlText}
+                    onChange={(e) => setYamlText(e.target.value)}
+                    className="min-h-[520px] text-xs font-mono leading-relaxed"
+                    spellCheck={false}
+                  />
+                </TabsContent>
+              </Tabs>
               <DialogFooter className="border-t border-[#E5E6EB] px-6 py-4">
                 <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
-                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!createName || !!createNameError || !createImage}>创建</Button>
+                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={createMode === "form" ? (!createName || !!createNameError || !createImage) : !yamlText.trim()}>创建</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>

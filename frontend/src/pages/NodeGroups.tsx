@@ -23,6 +23,19 @@ interface NodeGroup {
   raw: KubeResource;
 }
 
+interface LabelRow {
+  key: string;
+  value: string;
+}
+
+interface NodeGroupForm {
+  name: string;
+  node: string;
+  matchLabels: LabelRow[];
+}
+
+const emptyLabelRow: LabelRow = { key: "", value: "" };
+
 function compactObject(value: unknown): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   return Object.fromEntries(
@@ -98,23 +111,36 @@ kind: NodeGroup
 metadata:
   name: ${n.name}
 spec:
-  matchLabels:
-${Object.entries(n.nodeSelector).map(([k, v]) => `    ${k}: ${v}`).join("\n")}
   nodes:
-${n.nodes.map((node) => `  - ${node}`).join("\n") || "  []"}`;
+${n.nodes.map((node) => `  - ${node}`).join("\n") || "  []"}
+  matchLabels:
+${Object.entries(n.nodeSelector).map(([k, v]) => `    ${k}: ${v}`).join("\n") || "    {}"}`;
 }
 
-function buildNodeGroupResource(form: { name: string; nodeType: string; policy: string }): KubeResource {
+function labelsToRows(labels: Record<string, string>): LabelRow[] {
+  const rows = Object.entries(labels).map(([key, value]) => ({ key, value }));
+  return rows.length > 0 ? rows : [{ ...emptyLabelRow }];
+}
+
+function rowsToLabels(rows: LabelRow[]): Record<string, string> {
+  return rows.reduce<Record<string, string>>((labels, row) => {
+    const key = row.key.trim();
+    if (key) labels[key] = row.value.trim();
+    return labels;
+  }, {});
+}
+
+function buildNodeGroupResource(form: NodeGroupForm): KubeResource {
+  const matchLabels = rowsToLabels(form.matchLabels);
   return {
     apiVersion: "apps.kubeedge.io/v1alpha1",
     kind: "NodeGroup",
     metadata: {
-      name: form.name,
+      name: form.name.trim(),
     },
     spec: {
-      matchLabels: {
-        nodeType: form.nodeType,
-      },
+      nodes: form.node ? [form.node] : [],
+      ...(Object.keys(matchLabels).length ? { matchLabels } : {}),
     },
   };
 }
@@ -131,9 +157,10 @@ export function NodeGroups() {
   const [editOpen, setEditOpen] = useState(false);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<NodeGroup | null>(null);
-  const [form, setForm] = useState({ name: "", nodeType: "edge", policy: "Spread" });
+  const [nodeOptions, setNodeOptions] = useState<string[]>([]);
+  const [form, setForm] = useState<NodeGroupForm>({ name: "", node: "", matchLabels: [{ ...emptyLabelRow }] });
   const [editItem, setEditItem] = useState<NodeGroup | null>(null);
-  const [editForm, setEditForm] = useState({ nodeType: "edge", policy: "Spread", spreadConstraints: true });
+  const [editForm, setEditForm] = useState<NodeGroupForm>({ name: "", node: "", matchLabels: [{ ...emptyLabelRow }] });
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -141,6 +168,7 @@ export function NodeGroups() {
     setError("");
     try {
       const [rows, allNodes] = await Promise.all([listNodeGroups(), listNodes()]);
+      setNodeOptions(allNodes.map((node) => node.name).filter(Boolean));
       const details = await Promise.all(
         rows.map(async (row) => {
           const name = row?.metadata?.name || row?.name;
@@ -191,11 +219,12 @@ export function NodeGroups() {
     try {
       const [detail, allNodes] = await Promise.all([getNodeGroup(n.name), listNodes()]);
       const row = toNodeGroup(detail, allNodes);
+      setNodeOptions(allNodes.map((node) => node.name).filter(Boolean));
       setEditItem(row);
       setEditForm({
-        nodeType: row.nodeSelector.nodeType || row.nodeSelector.role || "edge",
-        policy: row.allocationPolicy || "Spread",
-        spreadConstraints: row.spreadConstraints ?? true,
+        name: row.name,
+        node: row.nodes[0] || "",
+        matchLabels: labelsToRows(row.nodeSelector),
       });
       setEditOpen(true);
     } catch (err) {
@@ -231,7 +260,7 @@ export function NodeGroups() {
       }
       await createNodeGroupResource(buildNodeGroupResource({ ...form, name }));
       setCreateOpen(false);
-      setForm({ name: "", nodeType: "edge", policy: "Spread" });
+      setForm({ name: "", node: "", matchLabels: [{ ...emptyLabelRow }] });
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建节点组失败");
@@ -248,7 +277,8 @@ export function NodeGroups() {
         ...editItem.raw,
         spec: {
           ...(editItem.raw.spec || {}),
-          matchLabels: { nodeType: editForm.nodeType },
+          nodes: editForm.node ? [editForm.node] : [],
+          matchLabels: rowsToLabels(editForm.matchLabels),
         },
       };
       await updateNodeGroupResource(updated);
@@ -273,15 +303,26 @@ export function NodeGroups() {
             <DialogContent className="max-w-lg">
               <DialogHeader><DialogTitle className="text-base">创建节点组</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input placeholder="如 workergroup" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
-                  <Info label="作用域" value="集群级" />
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input placeholder="如 workergroup" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-[#4E5969]">节点</Label>
+                  <Select value={form.node || "none"} onValueChange={v => setForm({ ...form, node: v === "none" ? "" : v })}>
+                    <SelectTrigger className="h-9 text-sm w-full"><SelectValue placeholder="请选择节点" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none" className="text-sm">不指定节点</SelectItem>
+                      {nodeOptions.map((node) => <SelectItem key={node} value={node} className="text-sm">{node}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">节点选择器类型</Label><Input value={form.nodeType} onChange={e => setForm({ ...form, nodeType: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">分配策略</Label>
-                    <Select value={form.policy} onValueChange={v => setForm({ ...form, policy: v })}><SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Spread" className="text-sm">Spread</SelectItem><SelectItem value="Pack" className="text-sm">Pack</SelectItem></SelectContent></Select>
-                  </div>
+                <div className="space-y-2">
+                  {form.matchLabels.map((row, index) => (
+                    <div key={index} className="grid grid-cols-[1fr_1fr_36px] gap-2 items-end">
+                      <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">标签键</Label><Input value={row.key} onChange={e => setForm({ ...form, matchLabels: form.matchLabels.map((item, i) => i === index ? { ...item, key: e.target.value } : item) })} className="h-9 text-sm" /></div>
+                      <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">标签值</Label><Input value={row.value} onChange={e => setForm({ ...form, matchLabels: form.matchLabels.map((item, i) => i === index ? { ...item, value: e.target.value } : item) })} className="h-9 text-sm" /></div>
+                      <Button variant="ghost" size="sm" className="h-9 w-9 p-0 text-[#4E5969] hover:text-[#F53F3F]" onClick={() => setForm({ ...form, matchLabels: form.matchLabels.length > 1 ? form.matchLabels.filter((_, i) => i !== index) : [{ ...emptyLabelRow }] })}><Trash2 className="w-4 h-4" /></Button>
+                    </div>
+                  ))}
+                  <Button variant="ghost" size="sm" className="h-8 px-2 text-sm text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => setForm({ ...form, matchLabels: [...form.matchLabels, { ...emptyLabelRow }] })}>添加匹配标签</Button>
                 </div>
               </div>
               <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
@@ -292,15 +333,28 @@ export function NodeGroups() {
               <DialogHeader><DialogTitle className="text-base">编辑节点组</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
                 <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="作用域" value="集群级" /></div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">节点选择器类型</Label><Input value={editForm.nodeType} onChange={e => setEditForm({ ...editForm, nodeType: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">分配策略</Label>
-                    <Select value={editForm.policy} onValueChange={v => setEditForm({ ...editForm, policy: v })}><SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Spread" className="text-sm">Spread</SelectItem><SelectItem value="Pack" className="text-sm">Pack</SelectItem></SelectContent></Select>
-                  </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs text-[#4E5969]">节点</Label>
+                  <Select value={editForm.node || "none"} onValueChange={v => setEditForm({ ...editForm, node: v === "none" ? "" : v })}>
+                    <SelectTrigger className="h-9 text-sm w-full"><SelectValue placeholder="请选择节点" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none" className="text-sm">不指定节点</SelectItem>
+                      {nodeOptions.map((node) => <SelectItem key={node} value={node} className="text-sm">{node}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
                 </div>
-                <label className="flex items-center gap-2 text-sm text-[#4E5969]"><input type="checkbox" checked={editForm.spreadConstraints} onChange={e => setEditForm({ ...editForm, spreadConstraints: e.target.checked })} />启用分散约束</label>
+                <div className="space-y-2">
+                  {editForm.matchLabels.map((row, index) => (
+                    <div key={index} className="grid grid-cols-[1fr_1fr_36px] gap-2 items-end">
+                      <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">标签键</Label><Input value={row.key} onChange={e => setEditForm({ ...editForm, matchLabels: editForm.matchLabels.map((item, i) => i === index ? { ...item, key: e.target.value } : item) })} className="h-9 text-sm" /></div>
+                      <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">标签值</Label><Input value={row.value} onChange={e => setEditForm({ ...editForm, matchLabels: editForm.matchLabels.map((item, i) => i === index ? { ...item, value: e.target.value } : item) })} className="h-9 text-sm" /></div>
+                      <Button variant="ghost" size="sm" className="h-9 w-9 p-0 text-[#4E5969] hover:text-[#F53F3F]" onClick={() => setEditForm({ ...editForm, matchLabels: editForm.matchLabels.length > 1 ? editForm.matchLabels.filter((_, i) => i !== index) : [{ ...emptyLabelRow }] })}><Trash2 className="w-4 h-4" /></Button>
+                    </div>
+                  ))}
+                  <Button variant="ghost" size="sm" className="h-8 px-2 text-sm text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => setEditForm({ ...editForm, matchLabels: [...editForm.matchLabels, { ...emptyLabelRow }] })}>添加匹配标签</Button>
+                </div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || !editForm.nodeType}>保存</Button></DialogFooter>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem}>保存</Button></DialogFooter>
             </DialogContent>
           </Dialog>
         </div>

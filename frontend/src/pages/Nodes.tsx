@@ -24,6 +24,8 @@ interface Node {
   conditions?: Array<{ type: string; status: string; message: string }>;
 }
 
+const DEFAULT_CLOUDCORE_ADDRESS = import.meta.env.VITE_DEFAULT_CLOUDCORE_ADDRESS || "14.103.163.121:10000";
+
 function statusText(status: EdgeNodeView["status"]) {
   if (status === "Ready") return "就绪";
   if (status === "NotReady") return "未就绪";
@@ -140,7 +142,7 @@ export function Nodes() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [joinForm, setJoinForm] = useState({
     mode: "edge",
-    cloudCoreAddress: "",
+    cloudCoreAddress: DEFAULT_CLOUDCORE_ADDRESS,
     token: "",
     nodeName: "",
     kubeadmCommand: "",
@@ -275,7 +277,7 @@ export function Nodes() {
                 </div>
                 {joinForm.mode === "edge" ? (
                   <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5"><p className="text-xs text-[#4E5969]">CloudCore 地址</p><Input placeholder="如 192.168.16.52:10000" value={joinForm.cloudCoreAddress} onChange={(e) => setJoinForm({ ...joinForm, cloudCoreAddress: e.target.value })} className="h-9 text-sm" /></div>
+                    <div className="space-y-1.5"><p className="text-xs text-[#4E5969]">CloudCore 地址</p><Input placeholder={`如 ${DEFAULT_CLOUDCORE_ADDRESS}`} value={joinForm.cloudCoreAddress} onChange={(e) => setJoinForm({ ...joinForm, cloudCoreAddress: e.target.value })} className="h-9 text-sm" /></div>
                     <div className="space-y-1.5"><p className="text-xs text-[#4E5969]">边缘节点名称</p><Input placeholder="可选，如 k8s-laptop-edge" value={joinForm.nodeName} onChange={(e) => setJoinForm({ ...joinForm, nodeName: e.target.value })} className="h-9 text-sm" /></div>
                     <div className="col-span-2 space-y-1.5"><p className="text-xs text-[#4E5969]">CloudCore Token</p><Input placeholder="keadm gettoken 获取的 token" value={joinForm.token} onChange={(e) => setJoinForm({ ...joinForm, token: e.target.value })} className="h-9 text-sm" /></div>
                   </div>
