@@ -68,6 +68,7 @@ import {
   Eye,
   Copy,
 } from "lucide-react";
+import yaml from "js-yaml";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { formatMemory, listPodMetrics, type PodMetric } from "@/api/services/metrics";
@@ -176,112 +177,10 @@ function getObjectRecord(value: unknown): Record<string, string> {
   );
 }
 
-function parseYamlScalar(value: string): unknown {
-  const trimmed = value.trim();
-  if (!trimmed) return "";
-  if (trimmed === "null" || trimmed === "~") return null;
-  if (trimmed === "true") return true;
-  if (trimmed === "false") return false;
-  if (/^-?\d+(\.\d+)?$/.test(trimmed)) return Number(trimmed);
-  if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    return trimmed.slice(1, -1);
-  }
-  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-    const content = trimmed.slice(1, -1).trim();
-    return content ? content.split(",").map((item) => parseYamlScalar(item)) : [];
-  }
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-    const content = trimmed.slice(1, -1).trim();
-    if (!content) return {};
-    return Object.fromEntries(
-      content.split(",").map((part) => {
-        const [key, ...rest] = part.split(":");
-        return [key.trim(), parseYamlScalar(rest.join(":"))];
-      }),
-    );
-  }
-  return trimmed;
-}
-
-type YamlObject = Record<string, unknown>;
-type YamlNode = YamlObject | unknown[];
-
-function setYamlValue(parent: YamlNode, key: string, value: unknown): void {
-  if (Array.isArray(parent)) {
-    parent.push({ [key]: value });
-    return;
-  }
-  parent[key] = value;
-}
-
 function parseSimpleYaml(input: string): KubeResource {
   const jsonLike = input.trim();
   if (!jsonLike) throw new Error("请粘贴 Deployment YAML");
-  if (jsonLike.startsWith("{")) return JSON.parse(jsonLike);
-
-  const lines = input
-    .replace(/\t/g, "  ")
-    .split(/\r?\n/)
-    .filter((line) => line.trim() && !line.trimStart().startsWith("#") && line.trim() !== "---");
-  const root: YamlObject = {};
-  const stack: Array<{ indent: number; value: YamlNode }> = [{ indent: -1, value: root }];
-
-  lines.forEach((rawLine, index) => {
-    const indent = rawLine.match(/^ */)?.[0].length || 0;
-    const text = rawLine.trim();
-    const isListItem = text.startsWith("- ");
-    while (
-      stack.length > 1 &&
-      (indent < stack[stack.length - 1].indent || (!isListItem && indent <= stack[stack.length - 1].indent))
-    ) {
-      stack.pop();
-    }
-    const parent = stack[stack.length - 1].value;
-
-    if (isListItem) {
-      if (!Array.isArray(parent)) throw new Error(`无法解析 YAML 行：${rawLine}`);
-      const itemText = text.slice(2).trim();
-      if (!itemText) {
-        const item: YamlObject = {};
-        parent.push(item);
-        stack.push({ indent, value: item });
-        return;
-      }
-      const separator = itemText.indexOf(":");
-      if (separator > 0) {
-        const key = itemText.slice(0, separator).trim();
-        const rest = itemText.slice(separator + 1).trim();
-        const item: YamlObject = {};
-        const itemValue = rest ? parseYamlScalar(rest) : {};
-        item[key] = itemValue;
-        parent.push(item);
-        if (!rest) stack.push({ indent, value: itemValue as YamlNode });
-        else stack.push({ indent, value: item });
-        return;
-      }
-      parent.push(parseYamlScalar(itemText));
-      return;
-    }
-
-    const separator = text.indexOf(":");
-    if (separator < 0) throw new Error(`无法解析 YAML 行：${rawLine}`);
-    const key = text.slice(0, separator).trim();
-    const rest = text.slice(separator + 1).trim();
-    if (rest) {
-      setYamlValue(parent, key, parseYamlScalar(rest));
-      return;
-    }
-
-    const nextLine = lines.slice(index + 1).find((line) => (line.match(/^ */)?.[0].length || 0) > indent);
-    const value: YamlNode = nextLine?.trim().startsWith("- ") ? [] : {};
-    setYamlValue(parent, key, value);
-    stack.push({ indent, value });
-  });
-
-  return root;
+  return (jsonLike.startsWith("{") ? JSON.parse(jsonLike) : yaml.load(input)) as KubeResource;
 }
 
 function validateDeploymentResource(resource: KubeResource): KubeResource {
