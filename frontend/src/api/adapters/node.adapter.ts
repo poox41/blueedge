@@ -19,13 +19,53 @@ function getInternalIP(raw: KubeResource): string {
   return addresses.find((item) => item.type === "InternalIP")?.address || addresses[0]?.address || "-";
 }
 
+function getStringList(value: unknown): string[] {
+  if (typeof value === "string") return value.split(/[,\s]+/).filter(Boolean);
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+  return [];
+}
+
+function getLabelRecords(raw: KubeResource): Array<Record<string, string>> {
+  const records: Array<Record<string, string>> = [];
+  if (raw.metadata?.labels) records.push(raw.metadata.labels);
+
+  const flatLabels = (raw as Record<string, unknown>).labels;
+  if (flatLabels && typeof flatLabels === "object" && !Array.isArray(flatLabels)) {
+    records.push(flatLabels as Record<string, string>);
+  }
+
+  return records;
+}
+
 function isEdgeNode(raw: KubeResource): boolean {
   const name = getName(raw).toLowerCase();
   if (name.includes("edge")) return true;
 
-  const labels = raw.metadata?.labels || {};
-  return Object.keys(labels).some((key) => key.includes("edge") || key.includes("kubeedge")) ||
-    Object.values(labels).some((value) => value.includes("edge"));
+  const flat = raw as Record<string, unknown>;
+  const kubeletVersion = typeof flat.kubeletVersion === "string"
+    ? flat.kubeletVersion
+    : getNestedString(raw, ["status", "nodeInfo", "kubeletVersion"], "");
+  if (kubeletVersion.toLowerCase().includes("kubeedge")) return true;
+
+  const roles = [
+    ...getStringList(flat.roles),
+    ...getStringList(flat.role),
+    ...getStringList(flat.nodeRole),
+  ].map((item) => item.toLowerCase());
+  if (roles.some((role) => role === "edge" || role === "agent")) return true;
+
+  return getLabelRecords(raw).some((labels) => {
+    if ("node-role.kubernetes.io/edge" in labels || "node-role.kubernetes.io/agent" in labels) return true;
+    if (labels["blueedge.io/node-role"] === "edge" || labels.nodeType === "edge" || labels.role === "edge") return true;
+
+    return Object.entries(labels).some(([key, value]) => {
+      const normalizedKey = key.toLowerCase();
+      const normalizedValue = String(value).toLowerCase();
+      return normalizedKey.includes("edge") ||
+        normalizedKey.includes("kubeedge") ||
+        normalizedValue.split(/[,\s]+/).includes("edge");
+    });
+  });
 }
 
 export function normalizeNode(raw: KubeResource): EdgeNodeView {

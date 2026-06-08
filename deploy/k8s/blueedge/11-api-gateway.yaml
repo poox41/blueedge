@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blueedge-api-gateway
+  namespace: blueedge
+  labels:
+    app: blueedge-api-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blueedge-api-gateway
+  template:
+    metadata:
+      labels:
+        app: blueedge-api-gateway
+    spec:
+      serviceAccountName: blueedge-dashboard
+      nodeSelector:
+        kubernetes.io/hostname: k8s-master
+      containers:
+        - name: blueedge-api-gateway
+          image: blueedge-api-gateway:amd64
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "7001"
+          envFrom:
+            - configMapRef:
+                name: blueedge-config
+            - secretRef:
+                name: blueedge-secret
+          ports:
+            - name: http
+              containerPort: 7001
+              protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blueedge-api-gateway
+  namespace: blueedge
+  labels:
+    app: blueedge-api-gateway
+spec:
+  type: ClusterIP
+  selector:
+    app: blueedge-api-gateway
+  ports:
+    - name: http
+      port: 7001
+      targetPort: http

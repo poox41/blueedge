@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blueedge-bff
+  namespace: blueedge
+  labels:
+    app: blueedge-bff
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blueedge-bff
+  template:
+    metadata:
+      labels:
+        app: blueedge-bff
+    spec:
+      serviceAccountName: blueedge-dashboard
+      nodeSelector:
+        kubernetes.io/hostname: k8s-master
+      containers:
+        - name: blueedge-bff
+          image: blueedge-bff:amd64
+          imagePullPolicy: IfNotPresent
+          args:
+            - --apiserver-host=$(K8S_API_SERVER)
+            - --apiserver-skip-tls-verify=$(K8S_SKIP_TLS_VERIFY)
+            - --insecure-bind-address=0.0.0.0
+            - --insecure-port=8080
+          envFrom:
+            - configMapRef:
+                name: blueedge-config
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blueedge-bff
+  namespace: blueedge
+  labels:
+    app: blueedge-bff
+spec:
+  type: ClusterIP
+  selector:
+    app: blueedge-bff
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
