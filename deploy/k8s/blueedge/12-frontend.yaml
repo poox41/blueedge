@@ -21,7 +21,7 @@ spec:
         kubernetes.io/hostname: k8s-master
       containers:
         - name: blueedge-frontend
-          image: crpi-wte052aohcsqbtge.cn-hangzhou.personal.cr.aliyuncs.com/xk-private/blueedge:frontend-amd64
+          image: crpi-wte052aohcsqbtge.cn-hangzhou.personal.cr.aliyuncs.com/xk-private/blueedge:frontend-amd64-2026061003
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

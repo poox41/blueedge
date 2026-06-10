@@ -22,7 +22,7 @@ spec:
         kubernetes.io/hostname: k8s-master
       containers:
         - name: blueedge-bff
-          image: crpi-wte052aohcsqbtge.cn-hangzhou.personal.cr.aliyuncs.com/xk-private/blueedge:bff-amd64
+          image: crpi-wte052aohcsqbtge.cn-hangzhou.personal.cr.aliyuncs.com/xk-private/blueedge:bff-amd64-2026061002
           imagePullPolicy: IfNotPresent
           args:
             - --apiserver-host=$(K8S_API_SERVER)

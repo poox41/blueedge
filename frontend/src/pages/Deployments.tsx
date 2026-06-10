@@ -338,6 +338,14 @@ function buildDeploymentResource(form: {
   cpuRequest: string;
   memoryRequest: string;
   port: number;
+  hostPortEnabled: boolean;
+  hostPort: number;
+  hostNetwork: boolean;
+  imagePullSecret: string;
+  tolerationEnabled: boolean;
+  tolerationKey: string;
+  tolerationOperator: string;
+  tolerationEffect: string;
   schedulingMode: string;
   targetNode: string;
   nodeSelectorKey: string;
@@ -379,6 +387,21 @@ function buildDeploymentResource(form: {
       : form.schedulingMode === "nodeSelector" && nodeSelectorKey && nodeSelectorValue
         ? { nodeSelector: { [nodeSelectorKey]: nodeSelectorValue } }
         : {};
+  const hostPort = Number(form.hostPort);
+  const imagePullSecrets = form.imagePullSecret.trim()
+    ? form.imagePullSecret
+        .split(",")
+        .map((name) => name.trim())
+        .filter(Boolean)
+        .map((name) => ({ name }))
+    : undefined;
+  const tolerations = form.tolerationEnabled && form.tolerationKey.trim()
+    ? [{
+        key: form.tolerationKey.trim(),
+        operator: form.tolerationOperator || "Exists",
+        effect: form.tolerationEffect || "NoSchedule",
+      }]
+    : undefined;
   return {
     apiVersion: "apps/v1",
     kind: "Deployment",
@@ -398,11 +421,19 @@ function buildDeploymentResource(form: {
         },
         spec: {
           ...podScheduling,
+          hostNetwork: form.hostNetwork || undefined,
+          dnsPolicy: form.hostNetwork ? "ClusterFirstWithHostNet" : undefined,
+          imagePullSecrets,
+          tolerations,
           containers: [
             {
               name: form.name,
               image: form.image,
-              ports: form.port ? [{ containerPort: form.port, protocol: "TCP" }] : undefined,
+              ports: form.port ? [{
+                containerPort: form.port,
+                hostPort: form.hostPortEnabled && hostPort > 0 ? hostPort : undefined,
+                protocol: "TCP",
+              }] : undefined,
               volumeMounts,
               resources: {
                 limits: {
@@ -482,6 +513,14 @@ spec:
     cpuRequest: "50m",
     memoryRequest: "64Mi",
     port: 80,
+    hostPortEnabled: false,
+    hostPort: 80,
+    hostNetwork: false,
+    imagePullSecret: "",
+    tolerationEnabled: false,
+    tolerationKey: "node-role.kubernetes.io/edge",
+    tolerationOperator: "Exists",
+    tolerationEffect: "NoSchedule",
     schedulingMode: "auto",
     targetNode: "",
     nodeSelectorKey: "kubernetes.io/hostname",
@@ -658,6 +697,12 @@ spec:
       ) {
         throw new Error("使用节点选择器时需要填写标签键和值");
       }
+      if (createMode === "form" && form.hostPortEnabled && (!form.hostPort || form.hostPort < 1 || form.hostPort > 65535)) {
+        throw new Error("启用主机端口时需要填写 1-65535 范围内的端口");
+      }
+      if (createMode === "form" && form.tolerationEnabled && !form.tolerationKey.trim()) {
+        throw new Error("启用容忍配置时需要填写污点键");
+      }
       const resource = createMode === "yaml"
         ? validateDeploymentResource(parseSimpleYaml(yamlText))
         : buildDeploymentResource(form);
@@ -673,6 +718,14 @@ spec:
         cpuRequest: "50m",
         memoryRequest: "64Mi",
         port: 80,
+        hostPortEnabled: false,
+        hostPort: 80,
+        hostNetwork: false,
+        imagePullSecret: "",
+        tolerationEnabled: false,
+        tolerationKey: "node-role.kubernetes.io/edge",
+        tolerationOperator: "Exists",
+        tolerationEffect: "NoSchedule",
         schedulingMode: "auto",
         targetNode: "",
         nodeSelectorKey: "kubernetes.io/hostname",
@@ -773,7 +826,10 @@ spec:
                       <Input
                         type="number"
                         value={form.port}
-                        onChange={(e) => setForm({ ...form, port: Number(e.target.value) })}
+                        onChange={(e) => {
+                          const port = Number(e.target.value);
+                          setForm({ ...form, port, hostPort: form.hostPortEnabled ? form.hostPort : port });
+                        }}
                         className="h-9 text-sm"
                       />
                     </div>
@@ -786,6 +842,103 @@ spec:
                       onChange={(e) => setForm({ ...form, image: e.target.value })}
                       className="h-9 text-sm"
                     />
+                  </div>
+                  <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <Label className="text-xs text-[#4E5969]">访问与原生字段</Label>
+                        <div className="mt-1 text-xs text-[#86909C]">用于 hostPort、hostNetwork、imagePullSecrets 和 tolerations</div>
+                      </div>
+                      <label className="flex items-center gap-2 text-sm text-[#1D2129]">
+                        <input
+                          type="checkbox"
+                          checked={form.hostNetwork}
+                          onChange={(e) => setForm({ ...form, hostNetwork: e.target.checked })}
+                          className="h-4 w-4 accent-[#165DFF]"
+                        />
+                        主机网络
+                      </label>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className="flex items-center gap-2 text-sm text-[#1D2129]">
+                        <input
+                          type="checkbox"
+                          checked={form.hostPortEnabled}
+                          onChange={(e) => setForm({ ...form, hostPortEnabled: e.target.checked, hostPort: e.target.checked ? form.port : form.hostPort })}
+                          className="h-4 w-4 accent-[#165DFF]"
+                        />
+                        映射主机端口
+                      </label>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs text-[#4E5969]">主机端口</Label>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={65535}
+                          value={form.hostPort}
+                          onChange={(e) => setForm({ ...form, hostPort: Number(e.target.value) })}
+                          disabled={!form.hostPortEnabled}
+                          className="h-9 bg-white text-sm disabled:opacity-60"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-xs text-[#4E5969]">镜像拉取 Secret</Label>
+                      <Input
+                        value={form.imagePullSecret}
+                        onChange={(e) => setForm({ ...form, imagePullSecret: e.target.value })}
+                        className="h-9 bg-white text-sm"
+                        placeholder="如 my-registry-secret，多个用英文逗号分隔"
+                      />
+                    </div>
+                    <div className="space-y-3 rounded-md border border-[#E5E6EB] bg-white p-3">
+                      <label className="flex items-center gap-2 text-sm text-[#1D2129]">
+                        <input
+                          type="checkbox"
+                          checked={form.tolerationEnabled}
+                          onChange={(e) => setForm({ ...form, tolerationEnabled: e.target.checked })}
+                          className="h-4 w-4 accent-[#165DFF]"
+                        />
+                        添加容忍配置
+                      </label>
+                      {form.tolerationEnabled && (
+                        <div className="grid grid-cols-3 gap-3">
+                          <div className="space-y-1.5">
+                            <Label className="text-xs text-[#4E5969]">污点键</Label>
+                            <Input
+                              value={form.tolerationKey}
+                              onChange={(e) => setForm({ ...form, tolerationKey: e.target.value })}
+                              className="h-9 text-sm"
+                              placeholder="node-role.kubernetes.io/edge"
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs text-[#4E5969]">操作符</Label>
+                            <Select value={form.tolerationOperator} onValueChange={(v) => setForm({ ...form, tolerationOperator: v })}>
+                              <SelectTrigger className="h-9 text-sm">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="Exists" className="text-sm">Exists</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-xs text-[#4E5969]">效果</Label>
+                            <Select value={form.tolerationEffect} onValueChange={(v) => setForm({ ...form, tolerationEffect: v })}>
+                              <SelectTrigger className="h-9 text-sm">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="NoSchedule" className="text-sm">NoSchedule</SelectItem>
+                                <SelectItem value="PreferNoSchedule" className="text-sm">PreferNoSchedule</SelectItem>
+                                <SelectItem value="NoExecute" className="text-sm">NoExecute</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-1.5">
