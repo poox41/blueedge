@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    kant.io/app: ""
+  name: ov-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ov-web
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ov-web
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                - k8s-master
+      containers:
+      - name: ov-web
+        image: 183.95.195.121:31438/openvino/yolo-web:2026052901
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8008
+          hostPort: 8008
+          protocol: TCP
+      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: true
+      imagePullSecrets:
+      - name: my-registry-secret
+      restartPolicy: Always
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/edge
+        operator: Exists

@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -77,7 +77,7 @@ import {
   createDeploymentResource,
   deleteDeploymentResource,
   getDeployment,
-  listDeployments,
+  listDeploymentPage,
   listNodes,
   listPods,
   updateDeploymentResource,
@@ -99,6 +99,7 @@ interface PodSummary {
 interface Deployment {
   namespace: string;
   name: string;
+  raw: KubeResource;
   status: string;
   statusColor: string;
   pods: string;
@@ -119,7 +120,11 @@ interface Deployment {
   labels: Record<string, string>;
   annotations: Record<string, string>;
   restartCount: number;
-  ports: Array<{ name: string; containerPort: number; protocol: string }>;
+  ports: Array<{ name?: string; containerPort?: number; hostPort?: number; protocol?: string }>;
+  hostNetwork: boolean;
+  dnsPolicy: string;
+  imagePullSecrets: string[];
+  tolerations: string[];
   podItems: PodSummary[];
 }
 
@@ -229,9 +234,20 @@ function podMatchesDeployment(pod: any, deployment: WorkloadView, selector: Reco
   );
 }
 
+function formatToleration(toleration: Record<string, any>): string {
+  const parts = [
+    toleration.key || "(empty key)",
+    toleration.operator ? `op=${toleration.operator}` : "",
+    toleration.value ? `value=${toleration.value}` : "",
+    toleration.effect ? `effect=${toleration.effect}` : "",
+  ].filter(Boolean);
+  return parts.join(" ");
+}
+
 function toDeploymentRow(item: WorkloadView, pods: any[] = [], metricsByPod: Map<string, PodMetric> = new Map()): Deployment {
   const raw = item.raw as Record<string, any>;
-  const containers = raw.spec?.template?.spec?.containers || raw.containers || [];
+  const podSpec = raw.spec?.template?.spec || {};
+  const containers = podSpec.containers || raw.containers || [];
   const rawImages = raw.images || raw.image || raw.containerImages;
   const images = Array.isArray(containers)
     ? containers.map((container: any) => container.image).filter(Boolean)
@@ -243,6 +259,12 @@ function toDeploymentRow(item: WorkloadView, pods: any[] = [], metricsByPod: Map
   const labels = raw.metadata?.labels || raw.labels || {};
   const selector = getDeploymentSelector(raw);
   const ports = Array.isArray(containers) ? containers.flatMap((container: any) => container.ports || []) : [];
+  const imagePullSecrets = Array.isArray(podSpec.imagePullSecrets)
+    ? podSpec.imagePullSecrets.map((secret: any) => secret?.name).filter(Boolean)
+    : [];
+  const tolerations = Array.isArray(podSpec.tolerations)
+    ? podSpec.tolerations.map(formatToleration)
+    : [];
   const matchedPods = pods.filter((pod) => podMatchesDeployment(pod, item, selector));
   const runningPods = matchedPods.filter((pod) => getPodStatus(pod) === "Running").length;
   const podImages = Array.from(new Set(matchedPods.flatMap(getPodImages)));
@@ -272,6 +294,7 @@ function toDeploymentRow(item: WorkloadView, pods: any[] = [], metricsByPod: Map
   return {
     namespace: item.namespace,
     name: item.name,
+    raw: item.raw,
     status: isReady ? "运行中" : desiredReplicas === 0 ? "已停止" : "未就绪",
     statusColor: isReady ? "success" : desiredReplicas === 0 ? "default" : "warning",
     pods: `${availableReplicas}/${desiredReplicas}`,
@@ -293,42 +316,16 @@ function toDeploymentRow(item: WorkloadView, pods: any[] = [], metricsByPod: Map
     annotations: raw.metadata?.annotations || {},
     restartCount: podSummaries.reduce((sum, pod) => sum + pod.restartCount, 0),
     ports,
+    hostNetwork: Boolean(podSpec.hostNetwork),
+    dnsPolicy: podSpec.dnsPolicy || "-",
+    imagePullSecrets,
+    tolerations,
     podItems: podSummaries,
   };
 }
 
 function yamlTemplate(d: Deployment) {
-  return `apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: ${d.name}
-  namespace: ${d.namespace}
-  labels:
-${Object.entries(d.labels).map(([k, v]) => `    ${k}: ${v}`).join("\n")}
-spec:
-  replicas: ${d.desiredReplicas}
-  strategy:
-    type: ${d.strategy}
-  selector:
-    matchLabels:
-${Object.entries(d.selector).map(([k, v]) => `      ${k}: ${v}`).join("\n")}
-  template:
-    metadata:
-      labels:
-${Object.entries(d.labels).map(([k, v]) => `        ${k}: ${v}`).join("\n")}
-    spec:
-      containers:
-      - name: ${d.name}
-        image: ${d.images[0]}
-        ports:
-${d.ports.map(p => `        - containerPort: ${p.containerPort}`).join("\n") || "        []"}
-        resources:
-          limits:
-            cpu: ${d.cpuLimit}
-            memory: ${d.memoryLimit}
-          requests:
-            cpu: ${d.cpuRequest}
-            memory: ${d.memoryRequest}`;
+  return yaml.dump(d.raw, { noRefs: true });
 }
 
 function buildDeploymentResource(form: {
@@ -434,6 +431,7 @@ async function getCurrentDeploymentResource(namespace: string, name: string): Pr
 export function Deployments() {
   const namespaces = useNamespaceOptions();
   const [data, setData] = useState<Deployment[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
@@ -503,10 +501,14 @@ spec:
     setError("");
     try {
       const ns = namespace === "all" ? undefined : namespace;
-      const [rows, pods, metrics] = await Promise.all([listDeployments(ns), listPods(ns), listPodMetrics(ns)]);
+      const [pageResult, pods, metrics] = await Promise.all([
+        listDeploymentPage(ns, { page: currentPage, pageSize, search }),
+        listPods(ns),
+        listPodMetrics(ns),
+      ]);
       const metricsByPod = new Map(metrics.map((item) => [`${item.namespace}/${item.name}`, item]));
       const detailRows = await Promise.all(
-        rows.map(async (row) => {
+        pageResult.items.map(async (row) => {
           try {
             return await getDeployment(row.namespace, row.name);
           } catch {
@@ -515,14 +517,15 @@ spec:
         }),
       );
       setData(detailRows.map((row) => toDeploymentRow(row, pods, metricsByPod)));
-      setCurrentPage(1);
+      setTotalCount(pageResult.total);
     } catch (err) {
       setError(err instanceof Error ? err.message : "部署数据加载失败");
       setData([]);
+      setTotalCount(0);
     } finally {
       setIsLoading(false);
     }
-  }, [namespace]);
+  }, [currentPage, namespace, search]);
 
   useEffect(() => {
     void loadData();
@@ -543,23 +546,9 @@ spec:
     };
   }, []);
 
-  const filtered = useMemo(() => {
-    let result = data;
-    if (search.trim()) {
-      const s = search.toLowerCase();
-      result = result.filter(
-        (d) =>
-          d.name.toLowerCase().includes(s) ||
-          d.namespace.toLowerCase().includes(s) ||
-          d.images.some((img) => img.toLowerCase().includes(s))
-      );
-    }
-    return result;
-  }, [data, namespace, search]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const start = (currentPage - 1) * pageSize;
-  const paginated = filtered.slice(start, start + pageSize);
+  const paginated = data;
 
   const openDetail = async (d: Deployment) => {
     setSelected(d);
@@ -987,7 +976,7 @@ spec:
         <div className="relative w-[320px]">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" />
           <Input
-            placeholder="请输入名称或镜像搜索"
+            placeholder="请输入名称搜索"
             value={search}
             onChange={(e) => { setSearch(e.target.value); setCurrentPage(1); }}
             className="pl-9 h-9 text-sm border-[#C9CDD4] focus-visible:ring-[#165DFF] bg-white"
@@ -995,7 +984,7 @@ spec:
         </div>
         <div className="flex items-center gap-3">
           <NamespaceSelector value={namespace} onChange={(v) => { setNamespace(v); setCurrentPage(1); }} />
-          <span className="text-sm text-[#86909C]">共 {filtered.length} 条</span>
+          <span className="text-sm text-[#86909C]">共 {totalCount} 条</span>
         </div>
       </div>
 
@@ -1087,10 +1076,10 @@ spec:
       </div>
 
       {/* Pagination */}
-      {filtered.length > pageSize && (
+      {totalCount > pageSize && (
         <div className="flex items-center justify-between">
           <span className="text-sm text-[#86909C]">
-            显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条
+            显示 {start + 1}-{Math.min(start + data.length, totalCount)}，共 {totalCount} 条
           </span>
           <Pagination>
             <PaginationContent>
@@ -1150,6 +1139,8 @@ spec:
                   <InfoCard label="更新策略" value={selected.strategy} />
                   <InfoCard label="所在节点" value={selected.node} />
                   <InfoCard label="重启次数" value={String(selected.restartCount)} />
+                  <InfoCard label="主机网络" value={selected.hostNetwork ? "启用" : "未启用"} />
+                  <InfoCard label="DNS 策略" value={selected.dnsPolicy} />
                   <InfoCard label="CPU 限制" value={selected.cpuLimit} />
                   <InfoCard label="内存限制" value={selected.memoryLimit} />
                   <InfoCard label="CPU 请求" value={selected.cpuRequest} />
@@ -1164,7 +1155,32 @@ spec:
                     <h4 className="text-xs font-medium text-[#86909C] uppercase">端口</h4>
                     <div className="flex flex-wrap gap-2">
                       {selected.ports.map((p, i) => (
-                        <Badge key={i} variant="outline" className="text-xs font-normal">{p.name}: {p.containerPort}/{p.protocol}</Badge>
+                        <Badge key={i} variant="outline" className="text-xs font-normal">
+                          {p.name ? `${p.name}: ` : ""}
+                          container {p.containerPort ?? "-"}
+                          {p.hostPort ? ` -> host ${p.hostPort}` : ""}
+                          /{p.protocol || "TCP"}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {selected.imagePullSecrets.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-medium text-[#86909C] uppercase">镜像拉取 Secret</h4>
+                    <div className="flex flex-wrap gap-2">
+                      {selected.imagePullSecrets.map((name) => (
+                        <Badge key={name} variant="outline" className="text-xs font-normal">{name}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {selected.tolerations.length > 0 && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-medium text-[#86909C] uppercase">容忍配置</h4>
+                    <div className="flex flex-wrap gap-2">
+                      {selected.tolerations.map((item, i) => (
+                        <Badge key={i} variant="outline" className="text-xs font-normal max-w-full whitespace-normal text-left">{item}</Badge>
                       ))}
                     </div>
                   </div>

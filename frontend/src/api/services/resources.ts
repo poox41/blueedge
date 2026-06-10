@@ -138,6 +138,48 @@ export async function listDeployments(namespace?: string): Promise<WorkloadView[
   return normalizeDeploymentList(res.data);
 }
 
+export interface DeploymentListOptions {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+}
+
+export interface DeploymentListResult {
+  items: WorkloadView[];
+  total: number;
+  page: number;
+  pageSize: number;
+  hasNext: boolean;
+}
+
+export async function listDeploymentPage(namespace?: string, options: DeploymentListOptions = {}): Promise<DeploymentListResult> {
+  const path = namespace ? `/deployment/${namespace}` : "/deployment";
+  const search = options.search?.trim();
+  const res = await bffRequest<{
+    items?: unknown[];
+    total?: number;
+    page?: number;
+    pageSize?: number;
+    hasNext?: boolean;
+  }>(path, {
+    params: {
+      page: options.page || 1,
+      pageSize: options.pageSize || 20,
+      sort: "creationTimestamp",
+      order: "desc",
+      filter: search ? `name:*${search}*` : undefined,
+    },
+  });
+
+  return {
+    items: normalizeDeploymentList(res.data),
+    total: Number(res.data?.total ?? res.data?.items?.length ?? 0),
+    page: Number(res.data?.page ?? options.page ?? 1),
+    pageSize: Number(res.data?.pageSize ?? options.pageSize ?? 20),
+    hasNext: Boolean(res.data?.hasNext),
+  };
+}
+
 export async function getDeployment(namespace: string, name: string): Promise<WorkloadView> {
   const res = await bffRequest<unknown>(`/deployment/${encodePathPart(namespace)}/${encodePathPart(name)}`);
   return normalizeDeploymentList([res.data])[0];

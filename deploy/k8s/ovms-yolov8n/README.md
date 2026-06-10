@@ -1,18 +1,18 @@
 # OVMS YOLOv8n Manifests Deployment
 
-This guide deploys the three Kubernetes Deployment manifests provided outside the repo:
+This guide deploys the three Kubernetes Deployment manifests for validating BlueEdge YAML creation:
 
-- `/Users/xiongkai/Downloads/yolov8n-model.yaml`
-- `/Users/xiongkai/Downloads/yolov8n-web.yaml`
-- `/Users/xiongkai/Downloads/mapper.yaml`
+- `deploy/k8s/ovms-yolov8n/yolov8n-model.yaml`
+- `deploy/k8s/ovms-yolov8n/yolov8n-web.yaml`
+- `deploy/k8s/ovms-yolov8n/mapper.yaml`
 
-The manifests target the edge node whose label is:
+The manifests target the current test cluster node whose label is:
 
 ```text
-kubernetes.io/hostname=aipc-31
+kubernetes.io/hostname=k8s-master
 ```
 
-They also pull images from the private registry `183.95.195.121:31438` through the image pull secret `my-registry-secret`.
+They also validate that BlueEdge preserves native Kubernetes Deployment fields including `hostNetwork`, `imagePullSecrets`, `tolerations`, and `containers[].ports[].hostPort`. The images are pulled from the private registry `183.95.195.121:31438` through the image pull secret `my-registry-secret`.
 
 ## 1. Prepare Cluster Access
 
@@ -27,17 +27,17 @@ If the current context is empty or points to the wrong cluster, configure kubeco
 
 ## 2. Check The Target Edge Node
 
-The manifests require a node named or labelled as `aipc-31`:
+The manifests require a node named or labelled as `k8s-master`:
 
 ```bash
-kubectl get nodes --show-labels | grep aipc-31
-kubectl describe node aipc-31
+kubectl get nodes --show-labels | grep k8s-master
+kubectl describe node k8s-master
 ```
 
 If the node does not already have the required hostname label, confirm the actual node name with the team lead before changing it. When approved, label it with:
 
 ```bash
-kubectl label node <actual-node-name> kubernetes.io/hostname=aipc-31 --overwrite
+kubectl label node <actual-node-name> kubernetes.io/hostname=k8s-master --overwrite
 ```
 
 ## 3. Prepare The Image Pull Secret
@@ -59,7 +59,7 @@ If the secret already exists, do not recreate it unless the credentials are wron
 
 ## 4. Prepare The Host Path
 
-`yolov8n-model.yaml` mounts this host directory on node `aipc-31`:
+`yolov8n-model.yaml` mounts this host directory on node `k8s-master`:
 
 ```text
 /mnt/c/models
@@ -68,10 +68,10 @@ If the secret already exists, do not recreate it unless the credentials are wron
 Make sure it exists on the edge node before applying the manifest:
 
 ```bash
-ssh <edge-node-user>@aipc-31 'mkdir -p /mnt/c/models && ls -ld /mnt/c/models'
+ssh <node-user>@k8s-master 'mkdir -p /mnt/c/models && ls -ld /mnt/c/models'
 ```
 
-Use the edge node's reachable SSH address if `aipc-31` is not resolvable from your machine.
+Use the node's reachable SSH address if `k8s-master` is not resolvable from your machine.
 
 ## 5. Check Image Architecture
 
@@ -80,7 +80,7 @@ The edge node architecture must match the image architecture. For example, an `a
 Check the edge node architecture:
 
 ```bash
-kubectl get node aipc-31 -o jsonpath='{.metadata.name}{" "}{.status.nodeInfo.architecture}{"\n"}'
+kubectl get node k8s-master -o jsonpath='{.metadata.name}{" "}{.status.nodeInfo.architecture}{"\n"}'
 ```
 
 If the edge node is `arm64`, ask the image owner to provide `arm64` or multi-architecture images for:
@@ -96,9 +96,9 @@ If the edge node is `arm64`, ask the image owner to provide `arm64` or multi-arc
 Deploy the model copier first, then the web service, then the mapper:
 
 ```bash
-kubectl apply -f /Users/xiongkai/Downloads/yolov8n-model.yaml
-kubectl apply -f /Users/xiongkai/Downloads/yolov8n-web.yaml
-kubectl apply -f /Users/xiongkai/Downloads/mapper.yaml
+kubectl apply -f deploy/k8s/ovms-yolov8n/yolov8n-model.yaml
+kubectl apply -f deploy/k8s/ovms-yolov8n/yolov8n-web.yaml
+kubectl apply -f deploy/k8s/ovms-yolov8n/mapper.yaml
 ```
 
 Check rollout status:
@@ -126,10 +126,16 @@ kubectl logs deploy/ov-web -n default
 kubectl logs deploy/ovms-mapper -n default
 ```
 
-Because `ov-web` uses `hostNetwork: true` and exposes container port `8008`, test it from the edge node or any network that can reach the node:
+Because `ov-web` uses `hostNetwork: true` and maps `containerPort: 8008` to `hostPort: 8008`, test it from the node or any network that can reach the node:
 
 ```bash
-curl -i http://aipc-31:8008
+curl -i http://k8s-master:8008
+```
+
+Verify the native fields after creation:
+
+```bash
+kubectl get deploy ov-web -n default -o jsonpath='{.spec.template.spec.hostNetwork}{"\n"}{.spec.template.spec.containers[0].ports[0].hostPort}{"\n"}{.spec.template.spec.imagePullSecrets[0].name}{"\n"}{.spec.template.spec.tolerations[0].key}{"\n"}'
 ```
 
 ## 8. Verify From BlueEdge
@@ -164,9 +170,9 @@ http://127.0.0.1:3000
 
 If the edge node is `arm64` and the image is single-architecture `amd64`, the pod also fails during image pull. Use an `arm64` or multi-architecture image, or deploy to an `amd64` edge node.
 
-`0/.. nodes are available` usually means the node label `kubernetes.io/hostname=aipc-31` does not match any schedulable node, or the edge node taint/toleration setup is different.
+`0/.. nodes are available` usually means the node label `kubernetes.io/hostname=k8s-master` does not match any schedulable node, or the node taint/toleration setup is different.
 
-`CreateContainerConfigError` on `ov-model` can happen when `/mnt/c/models` does not exist on the edge node.
+`CreateContainerConfigError` on `ov-model` can happen when `/mnt/c/models` does not exist on the target node.
 
 `CrashLoopBackOff` requires logs and events:
 
@@ -180,7 +186,7 @@ kubectl logs <pod-name> -n default --previous
 Remove the three deployments:
 
 ```bash
-kubectl delete -f /Users/xiongkai/Downloads/mapper.yaml
-kubectl delete -f /Users/xiongkai/Downloads/yolov8n-web.yaml
-kubectl delete -f /Users/xiongkai/Downloads/yolov8n-model.yaml
+kubectl delete -f deploy/k8s/ovms-yolov8n/mapper.yaml
+kubectl delete -f deploy/k8s/ovms-yolov8n/yolov8n-web.yaml
+kubectl delete -f deploy/k8s/ovms-yolov8n/yolov8n-model.yaml
 ```

@@ -162,7 +162,7 @@ curl -i http://127.0.0.1:7001/overview
 
 TOKEN="$(curl -s http://127.0.0.1:7001/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"2026@bluedot","password":"2026@bluedot"}' \
+  -d '{"username":"admin","password":"2026@bluedot"}' \
   | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')"
 
 curl -i http://127.0.0.1:7001/overview \

@@ -84,7 +84,7 @@ async function http<T, TBody = unknown>(baseUrl: string, path: string, options: 
     signal: options.signal,
   });
 
-  if (response.status === 401 && window.location.hash !== "#/login") {
+  if (response.status === 401 && baseUrl === GATEWAY_BASE_URL && window.location.hash !== "#/login") {
     clearBlueEdgeToken();
     window.location.hash = "/login";
   }

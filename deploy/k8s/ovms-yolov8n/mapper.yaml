@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ovms-mapper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ovms-mapper
+  template:
+    metadata:
+      labels:
+        app: ovms-mapper
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                - k8s-master
+      containers:
+      - name: ovms-mapper
+        image: 183.95.195.121:31438/openvino/ovms-mapper:2026052903
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: WINDOWS_HOST
+          value: "127.0.0.1"
+        - name: WINDOWS_USER
+          value: "aipc01"
+        - name: WINDOWS_PASS
+          value: "aipc999"
+        - name: MQTT_BROKER
+          value: "127.0.0.1"
+        - name: MQTT_PORT
+          value: "1883"
+        - name: MQTT_USER
+          value: ""
+        - name: MQTT_PASS
+          value: ""
+        - name: SUB_TOPIC
+          value: "device/ovms/cmd"
+        - name: PUB_STATUS_TOPIC
+          value: "aipc31/device/ovms/status"
+      restartPolicy: Always
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      imagePullSecrets:
+      - name: my-registry-secret
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/edge
+        operator: Exists

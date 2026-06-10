@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    kant.io/app: ""
+  name: ov-model
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ov-model
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ov-model
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: kubernetes.io/hostname
+                operator: In
+                values:
+                - k8s-master
+      dnsPolicy: ClusterFirstWithHostNet
+      hostNetwork: true
+      imagePullSecrets:
+      - name: my-registry-secret
+      containers:
+      - name: model-copy
+        args:
+        - mkdir /model-repo/2;cp -rf /models/* /model-repo/2/;sleep infinity
+        command:
+        - /bin/sh
+        - -c
+        image: 183.95.195.121:31438/model/yolov8n:0.0.1
+        imagePullPolicy: IfNotPresent
+        volumeMounts:
+        - name: model-repo
+          mountPath: /model-repo
+      restartPolicy: Always
+      tolerations:
+      - effect: NoSchedule
+        key: node-role.kubernetes.io/edge
+        operator: Exists
+      volumes:
+      - name: model-repo
+        hostPath:
+          path: /mnt/c/models
+          type: DirectoryOrCreate
