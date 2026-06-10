@@ -16,11 +16,13 @@ spec:
         app: blueedge-api-gateway
     spec:
       serviceAccountName: blueedge-dashboard
+      imagePullSecrets:
+        - name: acr-pull-secret
       nodeSelector:
         kubernetes.io/hostname: k8s-master
       containers:
         - name: blueedge-api-gateway
-          image: blueedge-api-gateway:amd64
+          image: crpi-wte052aohcsqbtge.cn-hangzhou.personal.cr.aliyuncs.com/xk-private/blueedge:api-gateway-amd64
           imagePullPolicy: IfNotPresent
           env:
             - name: PORT
