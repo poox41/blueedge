@@ -511,6 +511,7 @@ spec:
     strategyType: "RollingUpdate",
     maxUnavailable: "25%",
     maxSurge: "25%",
+    revisionHistoryLimit: "10",
     minReadySeconds: "0",
     progressDeadlineSeconds: "600",
   });
@@ -827,9 +828,9 @@ spec:
       return;
     }
     if (normalizedForm.type === "Deployment") {
-      const durationFields = [normalizedForm.minReadySeconds, normalizedForm.progressDeadlineSeconds];
+      const durationFields = [normalizedForm.minReadySeconds, normalizedForm.progressDeadlineSeconds, normalizedForm.revisionHistoryLimit];
       if (durationFields.some((value) => value.trim() && (!Number.isInteger(Number(value)) || Number(value) < 0))) {
-        setError("Pod 可用最短时间和升级最大持续时间必须是非负整数");
+        setError("Pod 可用最短时间、升级最大持续时间和最大保留版本数必须是非负整数");
         return;
       }
       if (normalizedForm.strategyType === "RollingUpdate" && [normalizedForm.maxUnavailable, normalizedForm.maxSurge].some((value) => !/^(\d+|\d+%)$/.test(value.trim()))) {
@@ -881,6 +882,7 @@ spec:
         strategyType: "RollingUpdate",
         maxUnavailable: "25%",
         maxSurge: "25%",
+        revisionHistoryLimit: "10",
         minReadySeconds: "0",
         progressDeadlineSeconds: "600",
       });

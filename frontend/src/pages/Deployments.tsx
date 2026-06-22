@@ -85,6 +85,7 @@ import {
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, WorkloadView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { DeploymentCreateWizard, type DeploymentCreateForm } from "@/components/deployment/DeploymentCreateWizard";
 
 interface PodSummary {
   name: string;
@@ -328,36 +329,22 @@ function yamlTemplate(d: Deployment) {
   return yaml.dump(d.raw, { noRefs: true });
 }
 
-function buildDeploymentResource(form: {
-  name: string;
-  namespace: string;
-  replicas: number;
-  image: string;
-  cpuLimit: string;
-  memoryLimit: string;
-  cpuRequest: string;
-  memoryRequest: string;
-  port: number;
-  hostPortEnabled: boolean;
-  hostPort: number;
-  hostNetwork: boolean;
-  imagePullSecret: string;
-  tolerationEnabled: boolean;
-  tolerationKey: string;
-  tolerationOperator: string;
-  tolerationEffect: string;
-  schedulingMode: string;
-  targetNode: string;
-  nodeSelectorKey: string;
-  nodeSelectorValue: string;
-  storageEnabled: boolean;
-  volumeName: string;
-  claimName: string;
-  mountPath: string;
-  subPath: string;
-  readOnly: boolean;
-}): KubeResource {
-  const labels = { app: form.name };
+function parsePairs(text: string): Record<string, string> {
+  return Object.fromEntries(text.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+    const separator = line.indexOf("=");
+    return separator > 0 ? [line.slice(0, separator).trim(), line.slice(separator + 1).trim()] : [line, ""];
+  }).filter(([key, value]) => key && value));
+}
+
+function buildDeploymentResource(form: DeploymentCreateForm): KubeResource {
+  const labels = { app: form.name, ...parsePairs(form.workloadLabelsText) };
+  const podLabels = { app: form.name, ...parsePairs(form.podLabelsText) };
+  const annotations = {
+    ...parsePairs(form.workloadAnnotationsText),
+    ...(form.alias.trim() ? { "blueedge.io/alias": form.alias.trim() } : {}),
+    ...(form.description.trim() ? { "blueedge.io/description": form.description.trim() } : {}),
+  };
+  const podAnnotations = parsePairs(form.podAnnotationsText);
   const volumeName = form.volumeName.trim() || `${form.name}-data`;
   const claimName = form.claimName.trim();
   const mountPath = form.mountPath.trim();
@@ -402,6 +389,16 @@ function buildDeploymentResource(form: {
         effect: form.tolerationEffect || "NoSchedule",
       }]
     : undefined;
+  const command = form.commandText.split("\n").map((item) => item.trim()).filter(Boolean);
+  const args = form.argsText.split("\n").map((item) => item.trim()).filter(Boolean);
+  const env = Object.entries(parsePairs(form.envText)).map(([name, value]) => ({ name, value }));
+  const httpProbe = (path: string, port: number) => ({
+    httpGet: { path: path.trim() || "/", port: port || form.port },
+    initialDelaySeconds: 10,
+    periodSeconds: 10,
+    timeoutSeconds: 1,
+    failureThreshold: 3,
+  });
   return {
     apiVersion: "apps/v1",
     kind: "Deployment",
@@ -409,26 +406,57 @@ function buildDeploymentResource(form: {
       name: form.name,
       namespace: form.namespace,
       labels,
+      annotations: Object.keys(annotations).length ? annotations : undefined,
     },
     spec: {
       replicas: form.replicas,
+      strategy: {
+        type: form.strategyType,
+        rollingUpdate: form.strategyType === "RollingUpdate" ? {
+          maxUnavailable: form.maxUnavailable,
+          maxSurge: form.maxSurge,
+        } : undefined,
+      },
+      revisionHistoryLimit: Number(form.revisionHistoryLimit),
+      minReadySeconds: Number(form.minReadySeconds),
+      progressDeadlineSeconds: Number(form.progressDeadlineSeconds),
       selector: {
-        matchLabels: labels,
+        matchLabels: { app: form.name },
       },
       template: {
         metadata: {
-          labels,
+          labels: podLabels,
+          annotations: Object.keys(podAnnotations).length ? podAnnotations : undefined,
         },
         spec: {
           ...podScheduling,
-          hostNetwork: form.hostNetwork || undefined,
-          dnsPolicy: form.hostNetwork ? "ClusterFirstWithHostNet" : undefined,
+          hostNetwork: form.networkMode === "hostNetwork" || undefined,
+          dnsPolicy: form.networkMode === "hostNetwork" ? "ClusterFirstWithHostNet" : undefined,
+          terminationGracePeriodSeconds: Number(form.terminationGracePeriodSeconds),
           imagePullSecrets,
           tolerations,
           containers: [
             {
-              name: form.name,
+              name: form.containerName.trim() || form.name,
               image: form.image,
+              imagePullPolicy: form.imagePullPolicy,
+              command: command.length ? command : undefined,
+              args: args.length ? args : undefined,
+              env: env.length ? env : undefined,
+              lifecycle: form.postStartCommand.trim() || form.preStopCommand.trim() ? {
+                postStart: form.postStartCommand.trim() ? { exec: { command: ["/bin/sh", "-c", form.postStartCommand.trim()] } } : undefined,
+                preStop: form.preStopCommand.trim() ? { exec: { command: ["/bin/sh", "-c", form.preStopCommand.trim()] } } : undefined,
+              } : undefined,
+              livenessProbe: form.livenessEnabled ? httpProbe(form.livenessPath, form.livenessPort) : undefined,
+              readinessProbe: form.readinessEnabled ? httpProbe(form.readinessPath, form.readinessPort) : undefined,
+              startupProbe: form.startupEnabled ? httpProbe(form.startupPath, form.startupPort) : undefined,
+              securityContext: {
+                privileged: form.privileged || undefined,
+                runAsUser: form.runAsUser.trim() ? Number(form.runAsUser) : undefined,
+                runAsNonRoot: form.runAsNonRoot || undefined,
+                readOnlyRootFilesystem: form.readOnlyRootFilesystem || undefined,
+                allowPrivilegeEscalation: form.allowPrivilegeEscalation,
+              },
               ports: form.port ? [{
                 containerPort: form.port,
                 hostPort: form.hostPortEnabled && hostPort > 0 ? hostPort : undefined,
@@ -439,10 +467,12 @@ function buildDeploymentResource(form: {
                 limits: {
                   cpu: form.cpuLimit,
                   memory: form.memoryLimit,
+                  ...(form.gpuEnabled ? { "nvidia.com/gpu": form.gpuCount } : {}),
                 },
                 requests: {
                   cpu: form.cpuRequest,
                   memory: form.memoryRequest,
+                  ...(form.gpuEnabled ? { "nvidia.com/gpu": form.gpuCount } : {}),
                 },
               },
             },
@@ -503,19 +533,45 @@ spec:
         ports:
         - containerPort: 80`);
 
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<DeploymentCreateForm>({
     name: "",
+    alias: "",
+    description: "",
     namespace: "default",
     replicas: 1,
+    containerName: "container-1",
     image: "nginx:latest",
+    imagePullPolicy: "IfNotPresent",
+    privileged: false,
     cpuLimit: "100m",
     memoryLimit: "128Mi",
     cpuRequest: "50m",
     memoryRequest: "64Mi",
+    gpuEnabled: false,
+    gpuCount: 1,
+    commandText: "",
+    argsText: "",
+    envText: "",
+    postStartCommand: "",
+    preStopCommand: "",
+    livenessEnabled: false,
+    livenessPath: "/healthz",
+    livenessPort: 80,
+    readinessEnabled: false,
+    readinessPath: "/ready",
+    readinessPort: 80,
+    startupEnabled: false,
+    startupPath: "/healthz",
+    startupPort: 80,
+    runAsUser: "",
+    runAsNonRoot: false,
+    readOnlyRootFilesystem: false,
+    allowPrivilegeEscalation: true,
     port: 80,
     hostPortEnabled: false,
     hostPort: 80,
     hostNetwork: false,
+    networkMode: "none",
     imagePullSecret: "",
     tolerationEnabled: false,
     tolerationKey: "node-role.kubernetes.io/edge",
@@ -531,6 +587,17 @@ spec:
     mountPath: "/data",
     subPath: "",
     readOnly: false,
+    workloadLabelsText: "",
+    podLabelsText: "",
+    workloadAnnotationsText: "",
+    podAnnotationsText: "",
+    strategyType: "RollingUpdate",
+    maxUnavailable: "25%",
+    maxSurge: "25%",
+    revisionHistoryLimit: "10",
+    minReadySeconds: "0",
+    progressDeadlineSeconds: "600",
+    terminationGracePeriodSeconds: "30",
   });
 
   const pageSize = 10;
@@ -687,6 +754,9 @@ spec:
       if (createMode === "form" && form.storageEnabled && (!form.claimName.trim() || !form.mountPath.trim())) {
         throw new Error("启用存储挂载时需要填写 PVC 名称和挂载路径");
       }
+      if (createMode === "form" && (!form.name.trim() || !form.containerName.trim() || !form.image.trim())) {
+        throw new Error("请填写负载名称、容器名称和容器镜像");
+      }
       if (createMode === "form" && form.schedulingMode === "nodeName" && !form.targetNode.trim()) {
         throw new Error("指定节点时需要选择目标节点");
       }
@@ -703,6 +773,31 @@ spec:
       if (createMode === "form" && form.tolerationEnabled && !form.tolerationKey.trim()) {
         throw new Error("启用容忍配置时需要填写污点键");
       }
+      if (createMode === "form" && form.gpuEnabled && (!Number.isInteger(form.gpuCount) || form.gpuCount < 1)) {
+        throw new Error("GPU 配额必须是大于 0 的整数");
+      }
+      if (createMode === "form" && form.runAsUser.trim() && (!Number.isInteger(Number(form.runAsUser)) || Number(form.runAsUser) < 0)) {
+        throw new Error("运行用户 ID 必须是非负整数");
+      }
+      if (createMode === "form") {
+        const invalidPair = [form.workloadLabelsText, form.podLabelsText, form.workloadAnnotationsText, form.podAnnotationsText, form.envText]
+          .flatMap((text) => text.split("\n"))
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .find((line) => line.indexOf("=") <= 0 || !line.slice(line.indexOf("=") + 1).trim());
+        if (invalidPair) throw new Error(`标签、注解和环境变量必须使用 key=value 格式：${invalidPair}`);
+        const invalidProbe = [
+          form.livenessEnabled ? form.livenessPort : 80,
+          form.readinessEnabled ? form.readinessPort : 80,
+          form.startupEnabled ? form.startupPort : 80,
+        ].find((port) => !Number.isInteger(port) || port < 1 || port > 65535);
+        if (invalidProbe) throw new Error("健康检查端口必须在 1-65535 范围内");
+        const integerFields = [form.revisionHistoryLimit, form.minReadySeconds, form.progressDeadlineSeconds, form.terminationGracePeriodSeconds];
+        if (integerFields.some((value) => !/^\d+$/.test(value))) throw new Error("升级策略中的时间和版本数量必须是非负整数");
+        if (form.strategyType === "RollingUpdate" && [form.maxUnavailable, form.maxSurge].some((value) => !/^(\d+|\d+%)$/.test(value))) {
+          throw new Error("最大无效 Pod 数和最大浪涌必须是整数或百分比");
+        }
+      }
       const resource = createMode === "yaml"
         ? validateDeploymentResource(parseSimpleYaml(yamlText))
         : buildDeploymentResource(form);
@@ -710,17 +805,43 @@ spec:
       setCreateOpen(false);
       setForm({
         name: "",
+        alias: "",
+        description: "",
         namespace: "default",
         replicas: 1,
+        containerName: "container-1",
         image: "nginx:latest",
+        imagePullPolicy: "IfNotPresent",
+        privileged: false,
         cpuLimit: "100m",
         memoryLimit: "128Mi",
         cpuRequest: "50m",
         memoryRequest: "64Mi",
+        gpuEnabled: false,
+        gpuCount: 1,
+        commandText: "",
+        argsText: "",
+        envText: "",
+        postStartCommand: "",
+        preStopCommand: "",
+        livenessEnabled: false,
+        livenessPath: "/healthz",
+        livenessPort: 80,
+        readinessEnabled: false,
+        readinessPath: "/ready",
+        readinessPort: 80,
+        startupEnabled: false,
+        startupPath: "/healthz",
+        startupPort: 80,
+        runAsUser: "",
+        runAsNonRoot: false,
+        readOnlyRootFilesystem: false,
+        allowPrivilegeEscalation: true,
         port: 80,
         hostPortEnabled: false,
         hostPort: 80,
         hostNetwork: false,
+        networkMode: "none",
         imagePullSecret: "",
         tolerationEnabled: false,
         tolerationKey: "node-role.kubernetes.io/edge",
@@ -736,6 +857,17 @@ spec:
         mountPath: "/data",
         subPath: "",
         readOnly: false,
+        workloadLabelsText: "",
+        podLabelsText: "",
+        workloadAnnotationsText: "",
+        podAnnotationsText: "",
+        strategyType: "RollingUpdate",
+        maxUnavailable: "25%",
+        maxSurge: "25%",
+        revisionHistoryLimit: "10",
+        minReadySeconds: "0",
+        progressDeadlineSeconds: "600",
+        terminationGracePeriodSeconds: "30",
       });
       await loadData();
     } catch (err) {
@@ -771,7 +903,22 @@ spec:
                 创建部署
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-2xl max-h-[88vh] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 overflow-hidden">
+            <DialogContent className="h-screen w-screen max-w-none gap-0 overflow-hidden rounded-none border-0 p-0 [&>button]:hidden">
+              <DeploymentCreateWizard
+                form={form}
+                onChange={setForm}
+                namespaces={namespaces}
+                nodes={nodeOptions}
+                mode={createMode}
+                onModeChange={setCreateMode}
+                yamlText={yamlText}
+                onYamlChange={setYamlText}
+                error={error}
+                submitting={isLoading}
+                onCancel={() => setCreateOpen(false)}
+                onSubmit={handleCreate}
+              />
+              <div className="hidden">
               <DialogHeader className="px-6 pt-6 pb-3">
                 <DialogTitle className="text-base">创建部署</DialogTitle>
               </DialogHeader>
@@ -1119,6 +1266,7 @@ spec:
                 <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
                 <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={createMode === "form" ? !form.name : !yamlText.trim()}>创建</Button>
               </DialogFooter>
+              </div>
             </DialogContent>
           </Dialog>
         </div>

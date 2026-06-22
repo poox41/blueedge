@@ -137,6 +137,7 @@ export interface EdgeApplicationForm {
   strategyType: "RollingUpdate" | "Recreate";
   maxUnavailable: string;
   maxSurge: string;
+  revisionHistoryLimit: string;
   minReadySeconds: string;
   progressDeadlineSeconds: string;
 }
@@ -386,6 +387,7 @@ export function buildEdgeApplicationResource(form: EdgeApplicationForm): KubeRes
       } : undefined,
       minReadySeconds: form.type === "Deployment" && form.minReadySeconds.trim() ? Number(form.minReadySeconds) : undefined,
       progressDeadlineSeconds: form.type === "Deployment" && form.progressDeadlineSeconds.trim() ? Number(form.progressDeadlineSeconds) : undefined,
+      revisionHistoryLimit: form.type === "Deployment" && form.revisionHistoryLimit.trim() ? Number(form.revisionHistoryLimit) : undefined,
       template: { metadata: { labels: podLabels, annotations: Object.keys(podAnnotations).length ? podAnnotations : undefined }, spec: podSpec },
     },
   };

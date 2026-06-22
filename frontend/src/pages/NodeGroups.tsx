@@ -1,6 +1,7 @@
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
@@ -9,7 +10,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { createNodeGroupResource, deleteNodeGroupResource, getNodeGroup, listNodeGroups, listNodes, updateNodeGroupResource } from "@/api/services/resources";
@@ -30,7 +30,7 @@ interface LabelRow {
 
 interface NodeGroupForm {
   name: string;
-  node: string;
+  nodes: string[];
   matchLabels: LabelRow[];
 }
 
@@ -66,6 +66,14 @@ function extractNodes(item: any): string[] {
     item?.nodes ||
     item?.nodeNames;
 
+  if (!Array.isArray(rawNodes)) return [];
+  return rawNodes
+    .map((node: any) => typeof node === "string" ? node : node?.name || node?.nodeName)
+    .filter(Boolean);
+}
+
+function extractConfiguredNodes(item: any): string[] {
+  const rawNodes = item?.spec?.nodes || item?.spec?.nodeNames || item?.nodes || item?.nodeNames;
   if (!Array.isArray(rawNodes)) return [];
   return rawNodes
     .map((node: any) => typeof node === "string" ? node : node?.name || node?.nodeName)
@@ -139,10 +147,44 @@ function buildNodeGroupResource(form: NodeGroupForm): KubeResource {
       name: form.name.trim(),
     },
     spec: {
-      nodes: form.node ? [form.node] : [],
+      nodes: form.nodes,
       ...(Object.keys(matchLabels).length ? { matchLabels } : {}),
     },
   };
+}
+
+function NodeCheckboxGroup({ idPrefix, options, value, onChange }: {
+  idPrefix: string;
+  options: string[];
+  value: string[];
+  onChange: (nodes: string[]) => void;
+}) {
+  const allOptions = Array.from(new Set([...options, ...value]));
+  const toggleNode = (node: string, checked: boolean) => {
+    onChange(checked ? Array.from(new Set([...value, node])) : value.filter((item) => item !== node));
+  };
+
+  return (
+    <div className="rounded-md border border-[#C9CDD4] bg-white">
+      <div className="flex items-center justify-between border-b border-[#E5E6EB] px-3 py-2">
+        <span className="text-xs text-[#86909C]">已选择 {value.length} 个节点</span>
+        {value.length > 0 && <Button type="button" variant="ghost" size="sm" className="h-6 px-2 text-xs text-[#165DFF]" onClick={() => onChange([])}>清空</Button>}
+      </div>
+      <div className="max-h-44 space-y-1 overflow-y-auto p-2">
+        {allOptions.length === 0 ? (
+          <div className="px-2 py-4 text-center text-xs text-[#86909C]">暂无可选节点</div>
+        ) : allOptions.map((node) => {
+          const id = `${idPrefix}-${node}`;
+          return (
+            <label key={node} htmlFor={id} className="flex cursor-pointer items-center gap-2 rounded px-2 py-2 text-sm text-[#4E5969] hover:bg-[#F7F8FA]">
+              <Checkbox id={id} checked={value.includes(node)} onCheckedChange={(checked) => toggleNode(node, checked === true)} />
+              <span>{node}</span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 export function NodeGroups() {
@@ -158,9 +200,9 @@ export function NodeGroups() {
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<NodeGroup | null>(null);
   const [nodeOptions, setNodeOptions] = useState<string[]>([]);
-  const [form, setForm] = useState<NodeGroupForm>({ name: "", node: "", matchLabels: [{ ...emptyLabelRow }] });
+  const [form, setForm] = useState<NodeGroupForm>({ name: "", nodes: [], matchLabels: [{ ...emptyLabelRow }] });
   const [editItem, setEditItem] = useState<NodeGroup | null>(null);
-  const [editForm, setEditForm] = useState<NodeGroupForm>({ name: "", node: "", matchLabels: [{ ...emptyLabelRow }] });
+  const [editForm, setEditForm] = useState<NodeGroupForm>({ name: "", nodes: [], matchLabels: [{ ...emptyLabelRow }] });
   const pageSize = 10;
 
   const loadData = useCallback(async () => {
@@ -223,7 +265,7 @@ export function NodeGroups() {
       setEditItem(row);
       setEditForm({
         name: row.name,
-        node: row.nodes[0] || "",
+        nodes: extractConfiguredNodes(detail),
         matchLabels: labelsToRows(row.nodeSelector),
       });
       setEditOpen(true);
@@ -260,7 +302,7 @@ export function NodeGroups() {
       }
       await createNodeGroupResource(buildNodeGroupResource({ ...form, name }));
       setCreateOpen(false);
-      setForm({ name: "", node: "", matchLabels: [{ ...emptyLabelRow }] });
+      setForm({ name: "", nodes: [], matchLabels: [{ ...emptyLabelRow }] });
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建节点组失败");
@@ -277,7 +319,7 @@ export function NodeGroups() {
         ...editItem.raw,
         spec: {
           ...(editItem.raw.spec || {}),
-          nodes: editForm.node ? [editForm.node] : [],
+          nodes: editForm.nodes,
           matchLabels: rowsToLabels(editForm.matchLabels),
         },
       };
@@ -305,14 +347,8 @@ export function NodeGroups() {
               <div className="space-y-4 py-2">
                 <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input placeholder="如 workergroup" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-[#4E5969]">节点</Label>
-                  <Select value={form.node || "none"} onValueChange={v => setForm({ ...form, node: v === "none" ? "" : v })}>
-                    <SelectTrigger className="h-9 text-sm w-full"><SelectValue placeholder="请选择节点" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none" className="text-sm">不指定节点</SelectItem>
-                      {nodeOptions.map((node) => <SelectItem key={node} value={node} className="text-sm">{node}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                  <Label className="text-xs text-[#4E5969]">节点（可多选）</Label>
+                  <NodeCheckboxGroup idPrefix="create-node-group" options={nodeOptions} value={form.nodes} onChange={(nodes) => setForm({ ...form, nodes })} />
                 </div>
                 <div className="space-y-2">
                   {form.matchLabels.map((row, index) => (
@@ -334,14 +370,8 @@ export function NodeGroups() {
               <div className="space-y-4 py-2">
                 <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="作用域" value="集群级" /></div>
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-[#4E5969]">节点</Label>
-                  <Select value={editForm.node || "none"} onValueChange={v => setEditForm({ ...editForm, node: v === "none" ? "" : v })}>
-                    <SelectTrigger className="h-9 text-sm w-full"><SelectValue placeholder="请选择节点" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none" className="text-sm">不指定节点</SelectItem>
-                      {nodeOptions.map((node) => <SelectItem key={node} value={node} className="text-sm">{node}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                  <Label className="text-xs text-[#4E5969]">节点（可多选）</Label>
+                  <NodeCheckboxGroup idPrefix="edit-node-group" options={nodeOptions} value={editForm.nodes} onChange={(nodes) => setEditForm({ ...editForm, nodes })} />
                 </div>
                 <div className="space-y-2">
                   {editForm.matchLabels.map((row, index) => (
