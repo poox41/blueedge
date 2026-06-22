@@ -76,11 +76,16 @@ import {
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
-import { createEdgeApplicationResource, deleteEdgeApplicationResource, getEdgeApplication, listEdgeApplications, listNodeGroups, updateEdgeApplicationResource } from "@/api/services/resources";
+import { createEdgeApplicationResource, deleteEdgeApplicationResource, getDeployment, getEdgeApplication, listEdgeApplications, listNodeGroups, updateEdgeApplicationResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 import yaml from "js-yaml";
+import { ContainerEditor } from "@/components/edge-app/ContainerEditor";
+import { VolumeEditor } from "@/components/edge-app/VolumeEditor";
+import { EdgeAppCreateWizard } from "@/components/edge-app/EdgeAppCreateWizard";
+import { buildEdgeApplicationResource, emptyContainer } from "@/components/edge-app/container-model";
+import type { ContainerForm, EdgeApplicationForm, VolumeForm } from "@/components/edge-app/container-model";
 
 interface EdgeApp {
   namespace: string;
@@ -238,6 +243,48 @@ function toEdgeApp(item: any): EdgeApp {
   };
 }
 
+interface ContainedResourceRef {
+  kind?: string;
+  namespace?: string;
+  name?: string;
+}
+
+function getContainedResourceRefs(item: KubeResource): ContainedResourceRef[] {
+  const value = item.metadata?.annotations?.["apps.kubeedge.io/last-contained-resources"];
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+async function resolveEdgeAppRuntimeStatus(item: KubeResource, row: EdgeApp): Promise<EdgeApp> {
+  if (!["处理中", "Processing", "未就绪"].includes(row.status)) return row;
+  const deploymentRef = getContainedResourceRefs(item).find((ref) => ref.kind === "Deployment" && ref.name);
+  if (!deploymentRef?.name) return row;
+
+  try {
+    const deployment = await getDeployment(deploymentRef.namespace || row.namespace, deploymentRef.name);
+    const desired = deployment.replicas || row.desiredReplicas || 1;
+    const available = deployment.availableReplicas || 0;
+    if (desired > 0 && available >= desired) {
+      return {
+        ...row,
+        status: "运行中",
+        statusColor: "success",
+        pods: `${available}/${desired}`,
+        desiredReplicas: desired,
+        availableReplicas: available,
+      };
+    }
+  } catch {
+    // Keep the EdgeApplication controller status when the contained resource cannot be read.
+  }
+  return row;
+}
+
 function updateFirstContainer(raw: KubeResource, updates: Record<string, unknown>): KubeResource {
   const spec = { ...(raw.spec || {}) } as Record<string, any>;
   const manifests = Array.isArray(spec.workloadTemplate?.manifests) ? [...spec.workloadTemplate.manifests] : [];
@@ -357,140 +404,24 @@ function updateWorkloadTemplateMetadata(raw: KubeResource, annotations: Record<s
   return { ...raw, spec };
 }
 
-function yamlTemplateEdge(a: EdgeApp) {
-  const kind = a.type;
-  let spec = "";
-  if (kind === "Deployment" || kind === "DaemonSet") {
-    spec = `spec:
-  selector:
-    matchLabels:
-${Object.entries(a.labels).map(([k, v]) => `      ${k}: ${v}`).join("\n")}
-  template:
-    metadata:
-      labels:
-${Object.entries(a.labels).map(([k, v]) => `        ${k}: ${v}`).join("\n")}
-    spec:
-      containers:
-      - name: ${a.name}
-        image: ${a.images[0]}`;
-  } else if (kind === "Job") {
-    spec = `spec:
-  template:
-    spec:
-      containers:
-      - name: ${a.name}
-        image: ${a.images[0]}
-      restartPolicy: OnFailure`;
-  } else {
-    spec = `spec:
-  containers:
-  - name: ${a.name}
-    image: ${a.images[0]}`;
-  }
-  return `apiVersion: ${kind === "Deployment" ? "apps/v1" : kind === "DaemonSet" ? "apps/v1" : kind === "Job" ? "batch/v1" : "v1"}
-kind: ${kind}
-metadata:
-  name: ${a.name}
-  namespace: ${a.namespace}
-  labels:
-${Object.entries(a.labels).map(([k, v]) => `    ${k}: ${v}`).join("\n")}
-${spec}`;
-}
-
-function buildEdgeApplicationResource(form: {
-  name: string;
-  namespace: string;
-  type: string;
-  image: string;
-  cpuLimit: string;
-  memoryLimit: string;
-  replicas: number;
-  targetNodeGroup: string;
-  storageEnabled: boolean;
-  volumeName: string;
-  claimName: string;
-  mountPath: string;
-  subPath: string;
-  readOnly: boolean;
-}): KubeResource {
-  const labels = { app: form.name };
-  const volumeName = form.volumeName.trim() || `${form.name}-data`;
-  const claimName = form.claimName.trim();
-  const mountPath = form.mountPath.trim();
-  const volumeMounts = form.storageEnabled && claimName && mountPath
-    ? [{
-        name: volumeName,
-        mountPath,
-        subPath: form.subPath.trim() || undefined,
-        readOnly: form.readOnly || undefined,
-      }]
-    : undefined;
-  const volumes = form.storageEnabled && claimName
-    ? [{
-        name: volumeName,
-        persistentVolumeClaim: {
-          claimName,
-          readOnly: form.readOnly || undefined,
-        },
-      }]
-    : undefined;
-  const podSpec = {
-    hostNetwork: true,
-    dnsPolicy: "ClusterFirstWithHostNet",
-    containers: [
-      {
-        name: form.name,
-        image: form.image,
-        volumeMounts,
-        resources: {
-          limits: {
-            cpu: form.cpuLimit,
-            memory: form.memoryLimit,
-          },
-        },
-      },
-    ],
-    volumes,
-    restartPolicy: form.type === "Job" ? "OnFailure" : undefined,
-  };
-  const manifest: KubeResource = {
-    apiVersion: form.type === "Job" ? "batch/v1" : form.type === "Pod" ? "v1" : "apps/v1",
-    kind: form.type,
+function exportableEdgeApplicationYaml(a: EdgeApp): string {
+  const raw = a.raw || {};
+  const annotations = Object.fromEntries(
+    Object.entries(raw.metadata?.annotations || {})
+      .filter(([key]) => key !== "apps.kubeedge.io/last-contained-resources"),
+  );
+  const resource: KubeResource = {
+    apiVersion: raw.apiVersion || "apps.kubeedge.io/v1alpha1",
+    kind: raw.kind || "EdgeApplication",
     metadata: {
-      name: form.name,
-      namespace: form.namespace,
-      labels,
+      name: raw.metadata?.name || a.name,
+      namespace: raw.metadata?.namespace || a.namespace,
+      labels: raw.metadata?.labels,
+      annotations: Object.keys(annotations).length ? annotations : undefined,
     },
-    spec:
-      form.type === "Pod"
-        ? podSpec
-        : {
-            replicas: form.type === "Deployment" ? form.replicas : undefined,
-            selector: form.type === "Deployment" || form.type === "DaemonSet" ? { matchLabels: labels } : undefined,
-            template: {
-              metadata: { labels },
-              spec: podSpec,
-            },
-          },
+    spec: raw.spec,
   };
-
-  return {
-    apiVersion: "apps.kubeedge.io/v1alpha1",
-    kind: "EdgeApplication",
-    metadata: {
-      name: form.name,
-      namespace: form.namespace,
-      labels,
-    },
-    spec: {
-      workloadScope: {
-        targetNodeGroups: [{ name: form.targetNodeGroup || defaultTargetNodeGroupName }],
-      },
-      workloadTemplate: {
-        manifests: [manifest],
-      },
-    },
-  };
+  return yaml.dump(resource, { noRefs: true, noCompatMode: true, lineWidth: 120 });
 }
 
 export function EdgeApps() {
@@ -551,21 +482,37 @@ spec:
     - name: ${defaultTargetNodeGroupName}
       overrides: {}`);
 
-  const [form, setForm] = useState({
+  const [form, setForm] = useState<EdgeApplicationForm>({
     name: "",
     namespace: "default",
     type: "Deployment",
-    image: "nginx:latest",
-    cpuLimit: "100m",
-    memoryLimit: "128Mi",
     replicas: 1,
     targetNodeGroup: defaultTargetNodeGroupName,
-    storageEnabled: false,
-    volumeName: "data",
-    claimName: "",
-    mountPath: "/data",
-    subPath: "",
-    readOnly: false,
+    imagePullSecrets: "",
+    containers: [emptyContainer("edge-app", "nginx:latest")],
+    initContainers: [] as ContainerForm[],
+    volumes: [] as VolumeForm[],
+    hostNetwork: false,
+    networkMode: "none",
+    hostPID: false,
+    hostIPC: false,
+    shareProcessNamespace: false,
+    dnsPolicy: "ClusterFirst",
+    serviceAccountName: "",
+    runtimeClassName: "",
+    nodeSelectorText: "",
+    terminationGracePeriodSeconds: "30",
+    alias: "",
+    description: "",
+    workloadLabelsText: "",
+    podLabelsText: "",
+    workloadAnnotationsText: "",
+    podAnnotationsText: "",
+    strategyType: "RollingUpdate",
+    maxUnavailable: "25%",
+    maxSurge: "25%",
+    minReadySeconds: "0",
+    progressDeadlineSeconds: "600",
   });
 
   const pageSize = 10;
@@ -580,7 +527,8 @@ spec:
         rows.map(async (row) => {
           if (!row.name || row.name === "-") return row;
           try {
-            return toEdgeApp(await getEdgeApplication(row.namespace, row.name));
+            const detail = await getEdgeApplication(row.namespace, row.name);
+            return await resolveEdgeAppRuntimeStatus(detail, toEdgeApp(detail));
           } catch {
             return row;
           }
@@ -641,7 +589,8 @@ spec:
   const start = (currentPage - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
   const createName = form.name.trim();
-  const createImage = form.image.trim();
+  const createContainersValid = form.containers.length > 0 && form.containers.every((container) => container.name.trim() && container.image.trim());
+  const generatedFormYaml = useMemo(() => yaml.dump(buildEdgeApplicationResource({ ...form, name: createName || "edge-app" }), { noRefs: true, noCompatMode: true, lineWidth: 120 }), [form, createName]);
   const createNameError = createName && !isValidK8sName(createName)
     ? "名称只能包含小写字母、数字和中划线，且首尾必须是字母或数字"
     : "";
@@ -650,7 +599,8 @@ spec:
     setSelected(a);
     setDetailOpen(true);
     try {
-      setSelected(toEdgeApp(await getEdgeApplication(a.namespace, a.name)));
+      const detail = await getEdgeApplication(a.namespace, a.name);
+      setSelected(await resolveEdgeAppRuntimeStatus(detail, toEdgeApp(detail)));
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载边缘应用详情失败");
     }
@@ -758,24 +708,143 @@ spec:
     const normalizedForm = {
       ...form,
       name: form.name.trim(),
-      image: form.image.trim(),
-      cpuLimit: form.cpuLimit.trim(),
-      memoryLimit: form.memoryLimit.trim(),
+      containers: form.containers.map((container) => ({ ...container, name: container.name.trim(), image: container.image.trim() })),
+      initContainers: form.initContainers.map((container) => ({ ...container, name: container.name.trim(), image: container.image.trim() })),
     };
     if (!normalizedForm.name || !isValidK8sName(normalizedForm.name)) {
       setError("边缘应用名称只能包含小写字母、数字和中划线，且首尾必须是字母或数字");
       return;
     }
-    if (!normalizedForm.image) {
-      setError("镜像不能为空");
+    if (!normalizedForm.containers.length || normalizedForm.containers.some((container) => !container.name || !container.image)) {
+      setError("至少需要一个工作容器，并填写每个容器的名称和镜像");
+      return;
+    }
+    if (normalizedForm.initContainers.some((container) => !container.name || !container.image)) {
+      setError("请填写每个初始化容器的名称和镜像");
       return;
     }
     if (!normalizedForm.targetNodeGroup.trim()) {
       setError("请选择或填写目标节点组");
       return;
     }
-    if (normalizedForm.storageEnabled && (!normalizedForm.claimName.trim() || !normalizedForm.mountPath.trim())) {
-      setError("启用存储挂载时需要填写 PVC 名称和挂载路径");
+    const duplicateContainerNames = [...normalizedForm.containers, ...normalizedForm.initContainers].map((container) => container.name).filter((name, index, names) => names.indexOf(name) !== index);
+    if (duplicateContainerNames.length) {
+      setError(`容器名称不能重复：${duplicateContainerNames.join("、")}`);
+      return;
+    }
+    const invalidContainerName = [...normalizedForm.containers, ...normalizedForm.initContainers].find((container) => !isValidK8sName(container.name));
+    if (invalidContainerName) {
+      setError(`容器名称不符合 Kubernetes 命名规则：${invalidContainerName.name}`);
+      return;
+    }
+    const volumeNames = normalizedForm.volumes.map((volume) => volume.name.trim());
+    if (volumeNames.some((name) => !name || !isValidK8sName(name))) {
+      setError("请填写合法且非空的数据卷名称");
+      return;
+    }
+    const duplicateVolumeNames = volumeNames.filter((name, index) => volumeNames.indexOf(name) !== index);
+    if (duplicateVolumeNames.length) {
+      setError(`数据卷名称不能重复：${duplicateVolumeNames.join("、")}`);
+      return;
+    }
+    const invalidVolume = normalizedForm.volumes.find((volume) => {
+      if (volume.type === "persistentVolumeClaim" || volume.type === "configMap" || volume.type === "secret") return !volume.sourceName.trim();
+      if (volume.type === "hostPath") return !volume.hostPath.trim();
+      return false;
+    });
+    if (invalidVolume) {
+      setError(`数据卷 ${invalidVolume.name || "未命名"} 缺少来源配置`);
+      return;
+    }
+    const allContainers = [...normalizedForm.containers, ...normalizedForm.initContainers];
+    const invalidPort = allContainers.flatMap((container) => container.ports.map((port) => ({ container, port }))).find(({ port }) => {
+      const containerPort = Number(port.containerPort);
+      const hostPort = port.hostPort.trim() ? Number(port.hostPort) : undefined;
+      return !Number.isInteger(containerPort) || containerPort < 1 || containerPort > 65535 || (hostPort !== undefined && (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535));
+    });
+    if (invalidPort) {
+      setError(`容器 ${invalidPort.container.name} 的端口必须是 1 到 65535 之间的整数`);
+      return;
+    }
+    const invalidSecurity = allContainers.find((container) => [container.runAsUser, container.runAsGroup].some((value) => value.trim() && (!Number.isInteger(Number(value)) || Number(value) < 0)));
+    if (invalidSecurity) {
+      setError(`容器 ${invalidSecurity.name} 的 UID/GID 必须是非负整数`);
+      return;
+    }
+    const invalidGpu = allContainers.find((container) => container.gpuCount.trim() && (!Number.isInteger(Number(container.gpuCount)) || Number(container.gpuCount) < 1 || !container.gpuResourceName.trim()));
+    if (invalidGpu) {
+      setError(`容器 ${invalidGpu.name} 的 GPU 数量必须是正整数，并填写扩展资源名称`);
+      return;
+    }
+    const invalidProbe = allContainers.flatMap((container) => ([container.livenessProbe, container.readinessProbe, container.startupProbe].map((probe) => ({ container, probe })))).find(({ probe }) => probe.enabled && (probe.type === "exec" ? !probe.command.some((item) => item.trim()) : (!probe.port.trim() || (probe.type === "httpGet" && !probe.path.trim()))));
+    if (invalidProbe) {
+      setError(`容器 ${invalidProbe.container.name} 的健康检查配置不完整`);
+      return;
+    }
+    const invalidLifecycle = allContainers.flatMap((container) => ([container.postStart, container.preStop].map((action) => ({ container, action })))).find(({ action }) => action.enabled && (action.type === "exec" ? !action.command.some((item) => item.trim()) : !action.port.trim()));
+    if (invalidLifecycle) {
+      setError(`容器 ${invalidLifecycle.container.name} 的生命周期动作配置不完整`);
+      return;
+    }
+    const invalidMount = allContainers.flatMap((container) => container.volumeMounts.map((mount) => ({ container, mount }))).find(({ mount }) => !volumeNames.includes(mount.name.trim()) || !mount.mountPath.trim());
+    if (invalidMount) {
+      setError(`容器 ${invalidMount.container.name} 的挂载必须引用已定义的数据卷，并填写 mountPath`);
+      return;
+    }
+    const invalidEnv = allContainers.flatMap((container) => container.env.map((env) => ({ container, env }))).find(({ env }) => env.source !== "value" && (!env.resourceName.trim() || !env.key.trim()));
+    if (invalidEnv) {
+      setError(`容器 ${invalidEnv.container.name} 的环境变量 ${invalidEnv.env.name || "未命名"} 缺少资源名称或键`);
+      return;
+    }
+    const invalidEnvFrom = allContainers.flatMap((container) => container.envFrom.map((envFrom) => ({ container, envFrom }))).find(({ envFrom }) => !envFrom.name.trim());
+    if (invalidEnvFrom) {
+      setError(`容器 ${invalidEnvFrom.container.name} 的整体环境变量来源不能为空`);
+      return;
+    }
+    const invalidNodeSelector = normalizedForm.nodeSelectorText.split("\n").map((line) => line.trim()).filter(Boolean).find((line) => {
+      const separator = line.indexOf("=");
+      return separator <= 0 || !line.slice(separator + 1).trim();
+    });
+    if (invalidNodeSelector) {
+      setError(`节点选择器必须使用 key=value 格式：${invalidNodeSelector}`);
+      return;
+    }
+    const invalidPair = [
+      normalizedForm.workloadLabelsText,
+      normalizedForm.podLabelsText,
+      normalizedForm.workloadAnnotationsText,
+      normalizedForm.podAnnotationsText,
+    ].flatMap((text) => text.split("\n")).map((line) => line.trim()).filter(Boolean).find((line) => {
+      const separator = line.indexOf("=");
+      return separator <= 0 || !line.slice(separator + 1).trim();
+    });
+    if (invalidPair) {
+      setError(`标签和注解必须使用 key=value 格式：${invalidPair}`);
+      return;
+    }
+    if (normalizedForm.networkMode === "portMapping" && !normalizedForm.containers.some((container) => container.ports.some((port) => port.hostPort.trim()))) {
+      setError("选择端口映射时，至少需要为一个工作容器配置 hostPort");
+      return;
+    }
+    if (normalizedForm.type === "Deployment") {
+      const durationFields = [normalizedForm.minReadySeconds, normalizedForm.progressDeadlineSeconds];
+      if (durationFields.some((value) => value.trim() && (!Number.isInteger(Number(value)) || Number(value) < 0))) {
+        setError("Pod 可用最短时间和升级最大持续时间必须是非负整数");
+        return;
+      }
+      if (normalizedForm.strategyType === "RollingUpdate" && [normalizedForm.maxUnavailable, normalizedForm.maxSurge].some((value) => !/^(\d+|\d+%)$/.test(value.trim()))) {
+        setError("最大无效 Pod 数和最大浪涌必须填写整数或百分比，例如 1、25%");
+        return;
+      }
+    }
+    const gracePeriod = Number(normalizedForm.terminationGracePeriodSeconds);
+    if (normalizedForm.terminationGracePeriodSeconds.trim() && (!Number.isInteger(gracePeriod) || gracePeriod < 0)) {
+      setError("终止宽限时间必须是非负整数");
+      return;
+    }
+    const invalidPullSecret = normalizedForm.imagePullSecrets.split(",").map((name) => name.trim()).filter(Boolean).find((name) => !isValidK8sName(name));
+    if (invalidPullSecret) {
+      setError(`镜像仓库 Secret 名称不合法：${invalidPullSecret}`);
       return;
     }
     setIsLoading(true);
@@ -787,17 +856,33 @@ spec:
         name: "",
         namespace: "default",
         type: "Deployment",
-        image: "nginx:latest",
-        cpuLimit: "100m",
-        memoryLimit: "128Mi",
         replicas: 1,
         targetNodeGroup: defaultTargetNodeGroupName,
-        storageEnabled: false,
-        volumeName: "data",
-        claimName: "",
-        mountPath: "/data",
-        subPath: "",
-        readOnly: false,
+        imagePullSecrets: "",
+        containers: [emptyContainer("edge-app", "nginx:latest")],
+        initContainers: [],
+        volumes: [],
+        hostNetwork: false,
+        networkMode: "none",
+        hostPID: false,
+        hostIPC: false,
+        shareProcessNamespace: false,
+        dnsPolicy: "ClusterFirst",
+        serviceAccountName: "",
+        runtimeClassName: "",
+        nodeSelectorText: "",
+        terminationGracePeriodSeconds: "30",
+        alias: "",
+        description: "",
+        workloadLabelsText: "",
+        podLabelsText: "",
+        workloadAnnotationsText: "",
+        podAnnotationsText: "",
+        strategyType: "RollingUpdate",
+        maxUnavailable: "25%",
+        maxSurge: "25%",
+        minReadySeconds: "0",
+        progressDeadlineSeconds: "600",
       });
       await loadData();
     } catch (err) {
@@ -883,7 +968,24 @@ spec:
                 创建边缘应用
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-2xl max-h-[88vh] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 overflow-hidden">
+            <DialogContent className="h-screen w-screen max-w-none gap-0 overflow-hidden rounded-none border-0 p-0 [&>button]:hidden">
+              <EdgeAppCreateWizard
+                form={form}
+                onFormChange={setForm}
+                namespaces={namespaces}
+                nodeGroups={nodeGroupOptions}
+                mode={createMode}
+                onModeChange={setCreateMode}
+                yamlText={yamlText}
+                onYamlChange={setYamlText}
+                generatedYaml={generatedFormYaml}
+                error={error}
+                submitting={isLoading}
+                canSubmit={Boolean(createName && !createNameError && createContainersValid)}
+                onCancel={() => setCreateOpen(false)}
+                onSubmit={handleCreate}
+              />
+              <div className="hidden">
               <DialogHeader className="px-6 pt-6 pb-3">
                 <DialogTitle className="text-base">创建边缘应用</DialogTitle>
               </DialogHeader>
@@ -891,6 +993,7 @@ spec:
                 <TabsList className="bg-[#F7F8FA] h-9">
                   <TabsTrigger value="form" className="text-xs h-7">表单</TabsTrigger>
                   <TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger>
+                  <TabsTrigger value="preview" className="text-xs h-7">表单 YAML 预览</TabsTrigger>
                 </TabsList>
                 <TabsContent value="form" className="space-y-4 mt-4 max-h-[62vh] overflow-y-auto pr-1 pb-2">
                 <div className="grid grid-cols-2 gap-4">
@@ -931,10 +1034,6 @@ spec:
                     </div>
                   )}
                 </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs text-[#4E5969]">镜像</Label>
-                  <Input placeholder="如 nginx:latest" value={form.image} onChange={(e) => setForm({ ...form, image: e.target.value })} className="h-9 text-sm" />
-                </div>
                 <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3 space-y-3">
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
@@ -960,56 +1059,13 @@ spec:
                   </div>
                   <div className="text-xs text-[#86909C]">边缘应用会写入 workloadScope.targetNodeGroups，实际落到该节点组匹配的边缘节点。</div>
                 </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">CPU 限制</Label>
-                    <Input value={form.cpuLimit} onChange={(e) => setForm({ ...form, cpuLimit: e.target.value })} className="h-9 text-sm" />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">内存限制</Label>
-                    <Input value={form.memoryLimit} onChange={(e) => setForm({ ...form, memoryLimit: e.target.value })} className="h-9 text-sm" />
-                  </div>
-                </div>
-                <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3 space-y-3">
-                  <label className="flex items-center gap-2 text-sm text-[#1D2129]">
-                    <input
-                      type="checkbox"
-                      checked={form.storageEnabled}
-                      onChange={(e) => setForm({ ...form, storageEnabled: e.target.checked })}
-                      className="h-4 w-4 accent-[#165DFF]"
-                    />
-                    挂载持久卷声明（PVC）
-                  </label>
-                  {form.storageEnabled && (
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1.5">
-                        <Label className="text-xs text-[#4E5969]">PVC 名称</Label>
-                        <Input value={form.claimName} onChange={(e) => setForm({ ...form, claimName: e.target.value })} className="h-9 bg-white text-sm" placeholder="如 edge-app-data" />
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label className="text-xs text-[#4E5969]">卷名称</Label>
-                        <Input value={form.volumeName} onChange={(e) => setForm({ ...form, volumeName: e.target.value })} className="h-9 bg-white text-sm" />
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label className="text-xs text-[#4E5969]">挂载路径</Label>
-                        <Input value={form.mountPath} onChange={(e) => setForm({ ...form, mountPath: e.target.value })} className="h-9 bg-white text-sm" placeholder="/data" />
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label className="text-xs text-[#4E5969]">子路径</Label>
-                        <Input value={form.subPath} onChange={(e) => setForm({ ...form, subPath: e.target.value })} className="h-9 bg-white text-sm" placeholder="可选" />
-                      </div>
-                      <label className="col-span-2 flex items-center gap-2 text-sm text-[#4E5969]">
-                        <input
-                          type="checkbox"
-                          checked={form.readOnly}
-                          onChange={(e) => setForm({ ...form, readOnly: e.target.checked })}
-                          className="h-4 w-4 accent-[#165DFF]"
-                        />
-                        只读挂载
-                      </label>
-                    </div>
-                  )}
-                </div>
+                <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3 space-y-3"><div className="text-sm font-medium">Pod 运行设置</div><div className="grid grid-cols-2 gap-3"><Select value={form.dnsPolicy} onValueChange={(dnsPolicy) => setForm({ ...form, dnsPolicy })}><SelectTrigger className="h-9 bg-white text-sm"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ClusterFirst">ClusterFirst</SelectItem><SelectItem value="ClusterFirstWithHostNet">ClusterFirstWithHostNet</SelectItem><SelectItem value="Default">Default</SelectItem><SelectItem value="None">None</SelectItem></SelectContent></Select><Input className="h-9 bg-white text-sm" value={form.terminationGracePeriodSeconds} placeholder="终止宽限秒数" onChange={(e)=>setForm({...form,terminationGracePeriodSeconds:e.target.value})}/><Input className="h-9 bg-white text-sm" value={form.serviceAccountName} placeholder="ServiceAccount（可选）" onChange={(e)=>setForm({...form,serviceAccountName:e.target.value})}/><Input className="h-9 bg-white text-sm" value={form.runtimeClassName} placeholder="RuntimeClass（可选，如 nvidia）" onChange={(e)=>setForm({...form,runtimeClassName:e.target.value})}/></div><div className="flex flex-wrap gap-4">{([['hostNetwork','使用主机网络'],['hostPID','共享主机 PID'],['hostIPC','共享主机 IPC'],['shareProcessNamespace','容器间共享进程命名空间']] as const).map(([key,label])=><label key={key} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={form[key]} onChange={(e)=>setForm({...form,[key]:e.target.checked,...(key === 'hostNetwork' && e.target.checked && form.dnsPolicy === 'ClusterFirst' ? {dnsPolicy:'ClusterFirstWithHostNet'} : {})})}/>{label}</label>)}</div><div><Label className="text-xs text-[#4E5969]">节点选择器</Label><Textarea className="mt-1 min-h-20 bg-white font-mono text-xs" value={form.nodeSelectorText} onChange={(e)=>setForm({...form,nodeSelectorText:e.target.value})} placeholder={'每行 key=value，例如：\nnvidia.com/gpu.product=A100'}/></div></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">镜像仓库密钥</Label><Input value={form.imagePullSecrets} onChange={(e) => setForm({ ...form, imagePullSecrets: e.target.value })} className="h-9 text-sm" placeholder="多个 Secret 用逗号分隔" /></div>
+                <div className="flex items-center justify-between"><div><h3 className="text-sm font-medium">工作容器</h3><p className="text-xs text-[#86909C]">支持添加多个容器，配置能力与初始化容器一致。</p></div><Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...form, containers: [...form.containers, emptyContainer(`container-${form.containers.length + 1}`, "")] })}><Plus className="mr-1 h-3.5 w-3.5"/>添加工作容器</Button></div>
+                {form.containers.map((container, index) => <ContainerEditor key={container.id} title={`工作容器 ${index + 1}`} value={container} onChange={(next) => setForm({ ...form, containers: form.containers.map((item) => item.id === container.id ? next : item) })} onRemove={form.containers.length > 1 ? () => setForm({ ...form, containers: form.containers.filter((item) => item.id !== container.id) }) : undefined}/>) }
+                <div className="flex items-center justify-between border-t pt-4"><div><h3 className="text-sm font-medium">初始化容器</h3><p className="text-xs text-[#86909C]">按顺序运行，可添加任意多个，拥有与工作容器相同的配置能力。</p></div><Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...form, initContainers: [...form.initContainers, emptyContainer(`init-${form.initContainers.length + 1}`, "busybox:latest")] })}><Plus className="mr-1 h-3.5 w-3.5"/>添加初始化容器</Button></div>
+                {form.initContainers.map((container, index) => <ContainerEditor key={container.id} title={`初始化容器 ${index + 1}`} isInit value={container} onChange={(next) => setForm({ ...form, initContainers: form.initContainers.map((item) => item.id === container.id ? next : item) })} onRemove={() => setForm({ ...form, initContainers: form.initContainers.filter((item) => item.id !== container.id) })}/>) }
+                <VolumeEditor values={form.volumes} onChange={(volumes) => setForm({ ...form, volumes })}/>
                 </TabsContent>
                 <TabsContent value="yaml" className="mt-4 max-h-[62vh] overflow-y-auto pb-2">
                   <Textarea
@@ -1019,11 +1075,13 @@ spec:
                     spellCheck={false}
                   />
                 </TabsContent>
+                <TabsContent value="preview" className="mt-4 max-h-[62vh] overflow-y-auto pb-2"><Textarea value={generatedFormYaml} readOnly className="min-h-[520px] bg-[#F7F8FA] text-xs font-mono leading-relaxed" spellCheck={false}/></TabsContent>
               </Tabs>
               <DialogFooter className="border-t border-[#E5E6EB] px-6 py-4">
                 <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
-                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={createMode === "form" ? (!createName || !!createNameError || !createImage) : !yamlText.trim()}>创建</Button>
+                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={createMode === "yaml" ? !yamlText.trim() : (!createName || !!createNameError || !createContainersValid)}>创建</Button>
               </DialogFooter>
+              </div>
             </DialogContent>
           </Dialog>
           <Dialog open={editOpen} onOpenChange={setEditOpen}>
@@ -1242,7 +1300,7 @@ spec:
                 <TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger>
                 <TabsTrigger value="resource" className="text-xs h-7">资源</TabsTrigger>
                 {selected.type === "Pod" && <TabsTrigger value="logs" className="text-xs h-7">日志</TabsTrigger>}
-                <TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger>
+                <TabsTrigger value="yaml" className="text-xs h-7">完整 YAML</TabsTrigger>
               </TabsList>
               <TabsContent value="overview" className="mt-3 space-y-4">
                 <div className="grid grid-cols-2 gap-3">
@@ -1339,8 +1397,8 @@ spec:
               )}
               <TabsContent value="yaml" className="mt-3">
                 <div className="relative">
-                  <pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-x-auto leading-relaxed">{yamlTemplateEdge(selected)}</pre>
-                  <Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(yamlTemplateEdge(selected))}>
+                  <pre className="max-h-[640px] overflow-auto whitespace-pre bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono leading-relaxed">{exportableEdgeApplicationYaml(selected)}</pre>
+                  <Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(exportableEdgeApplicationYaml(selected))}>
                     <Copy className="w-3.5 h-3.5" />
                   </Button>
                 </div>
