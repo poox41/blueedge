@@ -86,6 +86,7 @@ import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, WorkloadView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 import { DeploymentCreateWizard, type DeploymentCreateForm } from "@/components/deployment/DeploymentCreateWizard";
+import { buildContainer, buildVolume, emptyContainer } from "@/components/edge-app/container-model";
 
 interface PodSummary {
   name: string;
@@ -336,7 +337,7 @@ function parsePairs(text: string): Record<string, string> {
   }).filter(([key, value]) => key && value));
 }
 
-function buildDeploymentResource(form: DeploymentCreateForm): KubeResource {
+export function buildDeploymentResource(form: DeploymentCreateForm): KubeResource {
   const labels = { app: form.name, ...parsePairs(form.workloadLabelsText) };
   const podLabels = { app: form.name, ...parsePairs(form.podLabelsText) };
   const annotations = {
@@ -435,7 +436,8 @@ function buildDeploymentResource(form: DeploymentCreateForm): KubeResource {
           terminationGracePeriodSeconds: Number(form.terminationGracePeriodSeconds),
           imagePullSecrets,
           tolerations,
-          containers: [
+          initContainers: form.initContainers.length ? form.initContainers.map(buildContainer) : undefined,
+          containers: form.containers.length ? form.containers.map(buildContainer) : [
             {
               name: form.containerName.trim() || form.name,
               image: form.image,
@@ -467,17 +469,17 @@ function buildDeploymentResource(form: DeploymentCreateForm): KubeResource {
                 limits: {
                   cpu: form.cpuLimit,
                   memory: form.memoryLimit,
-                  ...(form.gpuEnabled ? { "nvidia.com/gpu": form.gpuCount } : {}),
+                  ...(form.gpuEnabled ? { [form.gpuResourceName.trim()]: form.gpuCount } : {}),
                 },
                 requests: {
                   cpu: form.cpuRequest,
                   memory: form.memoryRequest,
-                  ...(form.gpuEnabled ? { "nvidia.com/gpu": form.gpuCount } : {}),
+                  ...(form.gpuEnabled ? { [form.gpuResourceName.trim()]: form.gpuCount } : {}),
                 },
               },
             },
           ],
-          volumes,
+          volumes: form.volumes.length ? form.volumes.map(buildVolume) : volumes,
         },
       },
     },
@@ -548,7 +550,11 @@ spec:
     cpuRequest: "50m",
     memoryRequest: "64Mi",
     gpuEnabled: false,
+    gpuResourceName: "nvidia.com/gpu",
     gpuCount: 1,
+    containers: [emptyContainer("container-1", "nginx:latest")],
+    initContainers: [],
+    volumes: [],
     commandText: "",
     argsText: "",
     envText: "",
@@ -754,8 +760,8 @@ spec:
       if (createMode === "form" && form.storageEnabled && (!form.claimName.trim() || !form.mountPath.trim())) {
         throw new Error("启用存储挂载时需要填写 PVC 名称和挂载路径");
       }
-      if (createMode === "form" && (!form.name.trim() || !form.containerName.trim() || !form.image.trim())) {
-        throw new Error("请填写负载名称、容器名称和容器镜像");
+      if (createMode === "form" && (!form.name.trim() || !form.containers.length || form.containers.some((container) => !container.name.trim() || !container.image.trim()))) {
+        throw new Error("请填写负载名称，并至少配置一个名称和镜像完整的工作容器");
       }
       if (createMode === "form" && form.schedulingMode === "nodeName" && !form.targetNode.trim()) {
         throw new Error("指定节点时需要选择目标节点");
@@ -773,8 +779,36 @@ spec:
       if (createMode === "form" && form.tolerationEnabled && !form.tolerationKey.trim()) {
         throw new Error("启用容忍配置时需要填写污点键");
       }
-      if (createMode === "form" && form.gpuEnabled && (!Number.isInteger(form.gpuCount) || form.gpuCount < 1)) {
-        throw new Error("GPU 配额必须是大于 0 的整数");
+      if (createMode === "form" && form.initContainers.some((container) => !container.name.trim() || !container.image.trim())) {
+        throw new Error("初始化容器的名称和镜像不能为空");
+      }
+      const allContainers = [...form.containers, ...form.initContainers];
+      const duplicateContainerNames = allContainers.map((container) => container.name.trim()).filter((name, index, names) => name && names.indexOf(name) !== index);
+      if (createMode === "form" && duplicateContainerNames.length) {
+        throw new Error(`容器名称不能重复：${duplicateContainerNames[0]}`);
+      }
+      const volumeNames = form.volumes.map((volume) => volume.name.trim());
+      if (createMode === "form" && volumeNames.some((name) => !name)) {
+        throw new Error("数据卷名称不能为空");
+      }
+      if (createMode === "form" && volumeNames.some((name, index) => volumeNames.indexOf(name) !== index)) {
+        throw new Error("数据卷名称不能重复");
+      }
+      const invalidVolume = form.volumes.find((volume) => {
+        if (["persistentVolumeClaim", "configMap", "secret"].includes(volume.type)) return !volume.sourceName.trim();
+        if (volume.type === "hostPath") return !volume.hostPath.trim();
+        return false;
+      });
+      if (createMode === "form" && invalidVolume) {
+        throw new Error(`数据卷 ${invalidVolume.name || "未命名"} 缺少来源配置`);
+      }
+      const invalidMount = allContainers.flatMap((container) => container.volumeMounts.map((mount) => ({ container, mount }))).find(({ mount }) => !volumeNames.includes(mount.name.trim()) || !mount.mountPath.trim());
+      if (createMode === "form" && invalidMount) {
+        throw new Error(`容器 ${invalidMount.container.name} 的挂载必须引用已定义的数据卷，并填写 mountPath`);
+      }
+      const invalidGpu = allContainers.find((container) => container.gpuCount.trim() && (!container.gpuResourceName.trim() || !Number.isInteger(Number(container.gpuCount)) || Number(container.gpuCount) < 1));
+      if (createMode === "form" && invalidGpu) {
+        throw new Error(`容器 ${invalidGpu.name} 的 GPU 数量必须是正整数，并填写扩展资源名称`);
       }
       if (createMode === "form" && form.runAsUser.trim() && (!Number.isInteger(Number(form.runAsUser)) || Number(form.runAsUser) < 0)) {
         throw new Error("运行用户 ID 必须是非负整数");
@@ -818,7 +852,11 @@ spec:
         cpuRequest: "50m",
         memoryRequest: "64Mi",
         gpuEnabled: false,
+        gpuResourceName: "nvidia.com/gpu",
         gpuCount: 1,
+        containers: [emptyContainer("container-1", "nginx:latest")],
+        initContainers: [],
+        volumes: [],
         commandText: "",
         argsText: "",
         envText: "",
