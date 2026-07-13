@@ -1,9 +1,6 @@
-import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import yaml from "js-yaml";
+import { Download, Edit3, ExternalLink, FileCode2, Info, Maximize2, Minimize2, MoreHorizontal, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, Upload, X } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,321 +11,964 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ChevronLeft, ChevronRight, Copy, Eye, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
-import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { formatLabels, getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
+import { cn } from "@/lib/utils";
 import {
   createConfigMapResource,
+  createSecretResource,
   deleteConfigMapResource,
-  getConfigMap,
+  deleteSecretResource,
   listConfigMaps,
+  listSecrets,
   updateConfigMapResource,
+  updateSecretResource,
 } from "@/api/services/resources";
-import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
-import { cn } from "@/lib/utils";
 import type { KubeResource } from "@/types/kubeedge";
 
-interface ConfigMapRow {
-  namespace: string;
+type ConfigType = "配置项" | "密钥";
+
+type KvPair = {
+  id: string;
+  key: string;
+  value: string;
+};
+
+type ConfigItem = {
+  id: string;
   name: string;
-  keys: string[];
-  labels: string;
-  createdAt: string;
-  raw: KubeResource;
-}
+  alias: string;
+  type: ConfigType;
+  namespace: string;
+  labels: Record<string, string>;
+  createTime: string;
+  dataCount: number;
+  mountTargets: string[];
+  description?: string;
+  data?: Record<string, string>;
+  raw?: KubeResource;
+};
 
-function toRecord(value: unknown): Record<string, string> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value as Record<string, unknown>)
-      .filter(([, item]) => typeof item === "string" || typeof item === "number" || typeof item === "boolean")
-      .map(([key, item]) => [key, String(item)]),
-  );
-}
+type ConfigForm = {
+  name: string;
+  alias: string;
+  namespace: string;
+  description: string;
+  dataPairs: KvPair[];
+  labels: KvPair[];
+  annotations: KvPair[];
+};
 
-function parseKeyValues(text: string): Record<string, string> {
-  return Object.fromEntries(
-    text
-      .split(/\n+/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const index = line.indexOf("=");
-        return index === -1 ? [line, ""] : [line.slice(0, index).trim(), line.slice(index + 1)];
-      })
-      .filter(([key]) => key),
-  );
-}
+const namespaces = ["aipc31", "default", "riscv", "kube-system", "blueedge", "emqx"];
+const namePattern = /^[a-z0-9]([a-z0-9-.]{0,61}[a-z0-9])?$/;
 
-function formatKeyValues(data: Record<string, string>): string {
-  return Object.entries(data).map(([key, value]) => `${key}=${value}`).join("\n");
-}
+const emptyForm = (): ConfigForm => ({
+  name: "",
+  alias: "",
+  namespace: "aipc31",
+  description: "",
+  dataPairs: [],
+  labels: [],
+  annotations: [],
+});
 
-function toConfigMap(item: any): ConfigMapRow {
-  const data = toRecord(item?.data);
-  const binaryData = toRecord(item?.binaryData);
+const formatLabels = (labels: Record<string, string>) => {
+  const text = Object.entries(labels).map(([key, value]) => `${key}=${value}`).join(", ");
+  return text || "-";
+};
+
+const pairsToRecord = (pairs: KvPair[]) =>
+  Object.fromEntries(pairs.filter((pair) => pair.key.trim()).map((pair) => [pair.key.trim(), pair.value]));
+
+const recordToPairs = (record: Record<string, string> | undefined, prefix: string): KvPair[] =>
+  Object.entries(record || {}).map(([key, value], index) => ({ id: `${prefix}-${index}-${key}`, key, value }));
+
+const asRecord = (value: unknown): Record<string, unknown> =>
+  value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+
+const stringifyRecord = (record: Record<string, unknown>): Record<string, string> =>
+  Object.fromEntries(Object.entries(record).map(([key, value]) => [key, typeof value === "string" ? value : JSON.stringify(value)]));
+
+const getMetadata = (resource: KubeResource) => asRecord(resource.metadata);
+
+const getCreatedAt = (resource: KubeResource) => String(resource.metadata?.creationTimestamp || "-");
+
+const getAnnotations = (resource: KubeResource): Record<string, string> => stringifyRecord(asRecord(resource.metadata?.annotations));
+
+const getLabels = (resource: KubeResource): Record<string, string> => stringifyRecord(asRecord(resource.metadata?.labels));
+
+const maskSecretData = (resource: KubeResource): Record<string, string> => {
+  const keys = new Set([
+    ...Object.keys(asRecord((resource as any).data)),
+    ...Object.keys(asRecord((resource as any).stringData)),
+  ]);
+  return Object.fromEntries(Array.from(keys).map((key) => [key, "******"]));
+};
+
+const toConfigItem = (resource: KubeResource, type: ConfigType): ConfigItem => {
+  const metadata = getMetadata(resource);
+  const annotations = getAnnotations(resource);
+  const data = type === "密钥"
+    ? maskSecretData(resource)
+    : stringifyRecord(asRecord((resource as any).data));
+  const name = String(metadata.name || resource.name || "-");
+  const namespace = String(metadata.namespace || resource.namespace || "default");
   return {
-    namespace: getResourceNamespace(item),
-    name: getResourceName(item),
-    keys: [...Object.keys(data), ...Object.keys(binaryData)],
-    labels: formatLabels(item?.metadata?.labels),
-    createdAt: getResourceCreatedAt(item),
-    raw: item,
+    id: `${type}/${namespace}/${name}`,
+    name,
+    alias: annotations["blueedge.io/alias"] || annotations.alias || "",
+    type,
+    namespace,
+    labels: getLabels(resource),
+    createTime: getCreatedAt(resource),
+    dataCount: Object.keys(data).length,
+    mountTargets: [],
+    description: annotations["blueedge.io/description"] || annotations.description || "",
+    data,
+    raw: resource,
   };
-}
+};
 
-function buildConfigMapResource(form: { name: string; namespace: string; dataText: string }, base?: KubeResource): KubeResource {
+const buildConfigYaml = (item: ConfigItem) => yaml.dump({
+  apiVersion: "v1",
+  kind: item.type === "密钥" ? "Secret" : "ConfigMap",
+  metadata: {
+    name: item.name,
+    namespace: item.namespace,
+    ...(Object.keys(item.labels).length > 0 ? { labels: item.labels } : {}),
+  },
+  ...(item.type === "密钥"
+    ? { type: "Opaque", stringData: Object.fromEntries(Object.keys(item.data || {}).map((key) => [key, ""])) }
+    : { data: item.data || {} }),
+}, { lineWidth: -1, noRefs: true });
+
+const buildConfigResource = (form: ConfigForm, type: ConfigType): KubeResource => {
+  const labels = pairsToRecord(form.labels);
+  const annotations = {
+    ...(form.alias.trim() ? { "blueedge.io/alias": form.alias.trim() } : {}),
+    ...(form.description.trim() ? { "blueedge.io/description": form.description.trim() } : {}),
+    ...pairsToRecord(form.annotations),
+  };
+  const data = pairsToRecord(form.dataPairs);
+
   return {
     apiVersion: "v1",
-    kind: "ConfigMap",
+    kind: type === "密钥" ? "Secret" : "ConfigMap",
     metadata: {
-      ...base?.metadata,
-      name: form.name,
-      namespace: form.namespace,
+      name: form.name.trim(),
+      namespace: form.namespace || "default",
+      ...(Object.keys(labels).length ? { labels } : {}),
+      ...(Object.keys(annotations).length ? { annotations } : {}),
     },
-    data: parseKeyValues(form.dataText),
+    ...(type === "密钥"
+      ? { type: "Opaque", stringData: data }
+      : { data }),
   };
-}
+};
 
-function yaml(row: ConfigMapRow) {
-  const data = toRecord(row.raw.data);
-  return `apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: ${row.name}
-  namespace: ${row.namespace}
-${row.labels !== "-" ? `  labels:\n    ${row.labels}` : ""}
-data:
-${Object.entries(data).map(([key, value]) => `  ${key}: ${JSON.stringify(value)}`).join("\n") || "  {}"}`;
-}
+const parseResourceYaml = (source: string, fallbackType: ConfigType): { resource: KubeResource; type: ConfigType } => {
+  const parsed = yaml.load(source) as KubeResource;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("YAML 内容必须是 Kubernetes ConfigMap 或 Secret 对象");
+  }
+  const kind = String(parsed.kind || "");
+  const normalizedKind = kind.toLowerCase();
+  const type: ConfigType = normalizedKind === "secret"
+    ? "密钥"
+    : normalizedKind === "configmap"
+      ? "配置项"
+      : fallbackType;
+  if (kind && normalizedKind !== "configmap" && normalizedKind !== "secret") {
+    throw new Error("当前只支持 ConfigMap 或 Secret");
+  }
+  return {
+    type,
+    resource: {
+      ...parsed,
+      kind: type === "密钥" ? "Secret" : "ConfigMap",
+      metadata: {
+        ...(parsed.metadata || {}),
+        namespace: parsed.metadata?.namespace || "default",
+      },
+    },
+  };
+};
+
+const downloadTextFile = (filename: string, content: string) => {
+  const blob = new Blob([content], { type: "text/yaml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
+const escapeHtml = (value: string): string => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+const highlightYamlValue = (value: string): string => {
+  const leading = value.match(/^\s*/)?.[0] || "";
+  const raw = value.slice(leading.length);
+  if (!raw) return escapeHtml(value);
+  const color = /^(true|false|null|~)$/i.test(raw)
+    ? "#569CD6"
+    : /^-?\d+(\.\d+)?$/.test(raw)
+      ? "#B5CEA8"
+      : "#CE9178";
+  return `${escapeHtml(leading)}<span style="color:${color}">${escapeHtml(raw)}</span>`;
+};
+
+const highlightYamlLine = (line: string): string => {
+  const commentIndex = line.indexOf("#");
+  const source = commentIndex >= 0 ? line.slice(0, commentIndex) : line;
+  const comment = commentIndex >= 0 ? line.slice(commentIndex) : "";
+  const keyMatch = source.match(/^(\s*-\s*|\s*)([A-Za-z_][A-Za-z0-9_-]*)(:\s*)(.*)$/);
+  if (keyMatch) {
+    const [, prefix, key, colon, rest] = keyMatch;
+    return `${escapeHtml(prefix)}<span style="color:#9CDCFE">${escapeHtml(key)}</span>${escapeHtml(colon)}${highlightYamlValue(rest)}${comment ? `<span style="color:#6A9955">${escapeHtml(comment)}</span>` : ""}`;
+  }
+  const listMatch = source.match(/^(\s*-\s+)(.*)$/);
+  if (listMatch) {
+    const [, prefix, rest] = listMatch;
+    return `${escapeHtml(prefix)}${highlightYamlValue(rest)}${comment ? `<span style="color:#6A9955">${escapeHtml(comment)}</span>` : ""}`;
+  }
+  return `${escapeHtml(source)}${comment ? `<span style="color:#6A9955">${escapeHtml(comment)}</span>` : ""}`;
+};
+
+const highlightYaml = (code: string): string => code.split("\n").map(highlightYamlLine).join("\n");
 
 export function ConfigMaps() {
-  const namespaces = useNamespaceOptions();
-  const [data, setData] = useState<ConfigMapRow[]>([]);
+  const [items, setItems] = useState<ConfigItem[]>([]);
+  const [activeTab, setActiveTab] = useState<"config" | "secret">("config");
+  const [search, setSearch] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
-  const [search, setSearch] = useState("");
-  const [namespace, setNamespace] = useState("all");
-  const [page, setPage] = useState(1);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [selected, setSelected] = useState<ConfigMapRow | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
-  const [deleteItem, setDeleteItem] = useState<ConfigMapRow | null>(null);
-  const [editItem, setEditItem] = useState<ConfigMapRow | null>(null);
-  const [form, setForm] = useState({ name: "", namespace: "default", dataText: "key=value" });
-  const [editForm, setEditForm] = useState({ name: "", namespace: "default", dataText: "" });
-  const pageSize = 10;
+  const [yamlOpen, setYamlOpen] = useState(false);
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [yamlTarget, setYamlTarget] = useState<ConfigItem | null>(null);
+  const [updateTarget, setUpdateTarget] = useState<ConfigItem | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ConfigItem | null>(null);
+
+  const currentType: ConfigType = activeTab === "config" ? "配置项" : "密钥";
+  const filtered = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    return items
+      .filter((item) => item.type === currentType)
+      .filter((item) => !keyword || [item.name, item.alias, item.namespace, formatLabels(item.labels)].some((value) => value.toLowerCase().includes(keyword)));
+  }, [currentType, items, search]);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setError("");
     try {
-      const items = await listConfigMaps(namespace === "all" ? undefined : namespace);
-      setData(items.map(toConfigMap));
-      setPage(1);
+      const [configMaps, secrets] = await Promise.all([listConfigMaps(), listSecrets()]);
+      setItems([
+        ...configMaps.map((item) => toConfigItem(item, "配置项")),
+        ...secrets.map((item) => toConfigItem(item, "密钥")),
+      ]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载配置字典失败");
+      setError(err instanceof Error ? err.message : "加载配置项与密钥失败");
+      setItems([]);
     } finally {
       setIsLoading(false);
     }
-  }, [namespace]);
+  }, []);
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
 
-  const filtered = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
-    if (!keyword) return data;
-    return data.filter((item) =>
-      item.name.toLowerCase().includes(keyword) ||
-      item.namespace.toLowerCase().includes(keyword) ||
-      item.keys.some((key) => key.toLowerCase().includes(keyword)),
-    );
-  }, [data, search]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const start = (page - 1) * pageSize;
-  const paginated = filtered.slice(start, start + pageSize);
-
-  const openDetail = async (row: ConfigMapRow) => {
-    setSelected(row);
-    setDetailOpen(true);
-    try {
-      setSelected(toConfigMap(await getConfigMap(row.namespace, row.name)));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载配置字典详情失败");
-    }
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    await loadData();
+    setRefreshing(false);
   };
 
-  const openEdit = async (row: ConfigMapRow) => {
+  const handleCreate = async (form: ConfigForm) => {
     setIsLoading(true);
     setError("");
     try {
-      const detail = toConfigMap(await getConfigMap(row.namespace, row.name));
-      setEditItem(detail);
-      setEditForm({
-        name: detail.name,
-        namespace: detail.namespace,
-        dataText: formatKeyValues(toRecord(detail.raw.data)),
-      });
-      setEditOpen(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载配置字典详情失败");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleCreate = async () => {
-    setIsLoading(true);
-    setError("");
-    try {
-      await createConfigMapResource(buildConfigMapResource(form));
+      const resource = buildConfigResource(form, currentType);
+      if (currentType === "密钥") {
+        await createSecretResource(resource);
+      } else {
+        await createConfigMapResource(resource);
+      }
       setCreateOpen(false);
-      setForm({ name: "", namespace: "default", dataText: "key=value" });
       await loadData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "创建配置字典失败");
+      setError(err instanceof Error ? err.message : `创建${currentType}失败`);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleUpdate = async () => {
-    if (!editItem) return;
+  const handleUpdate = async (_id: string, form: ConfigForm) => {
+    if (!updateTarget) return;
     setIsLoading(true);
     setError("");
     try {
-      await updateConfigMapResource(editItem.namespace, buildConfigMapResource(editForm, editItem.raw));
-      setEditOpen(false);
-      setEditItem(null);
+      const resource = buildConfigResource(form, updateTarget.type);
+      if (updateTarget.type === "密钥") {
+        await updateSecretResource(form.namespace, resource);
+      } else {
+        await updateConfigMapResource(form.namespace, resource);
+      }
+      setUpdateTarget(null);
       await loadData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "更新配置字典失败");
+      setError(err instanceof Error ? err.message : `更新${updateTarget.type}失败`);
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleYamlUpdate = async (target: ConfigItem, source: string) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const { resource, type } = parseResourceYaml(source, target.type);
+      const namespace = resource.metadata?.namespace || target.namespace;
+      if (type === "密钥") {
+        await updateSecretResource(namespace, resource);
+      } else {
+        await updateConfigMapResource(namespace, resource);
+      }
+      setYamlTarget(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "YAML 更新失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const requestDelete = (item: ConfigItem) => {
+    setDeleteTarget(item);
+    setMenuOpenId(null);
   };
 
   const confirmDelete = async () => {
-    if (!deleteItem) return;
+    if (!deleteTarget) return;
     setIsLoading(true);
     setError("");
     try {
-      await deleteConfigMapResource(deleteItem.namespace, deleteItem.name);
-      setDeleteOpen(false);
-      setDeleteItem(null);
+      if (deleteTarget.type === "密钥") {
+        await deleteSecretResource(deleteTarget.namespace, deleteTarget.name);
+      } else {
+        await deleteConfigMapResource(deleteTarget.namespace, deleteTarget.name);
+      }
+      setDeleteTarget(null);
       await loadData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "删除配置字典失败");
+      setError(err instanceof Error ? err.message : `删除${deleteTarget.type}失败`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleExport = (item: ConfigItem) => {
+    downloadTextFile(`${item.name}.yaml`, buildConfigYaml(item));
+    setMenuOpenId(null);
+  };
+
+  const handleYamlCreate = async (source: string) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const { resource, type } = parseResourceYaml(source, currentType);
+      if (type === "密钥") {
+        await createSecretResource(resource);
+      } else {
+        await createConfigMapResource(resource);
+      }
+      setYamlOpen(false);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "YAML 创建失败");
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-[#1D2129]">配置字典</h1>
+    <div className="blueedge-page space-y-5">
+      <div>
+        <h1 className="mb-1 text-lg font-semibold text-[#111827]">配置项与密钥</h1>
+        <p className="text-xs text-[var(--color-text-secondary)]">管理配置数据和敏感凭证</p>
+      </div>
+
+      <div className="flex items-center justify-between gap-4">
+        <div className="segmented-filter">
+          <button type="button" onClick={() => setActiveTab("config")} className={cn("segmented-filter-item", activeTab === "config" && "is-active")}>配置项</button>
+          <button type="button" onClick={() => setActiveTab("secret")} className={cn("segmented-filter-item", activeTab === "secret" && "is-active")}>密钥</button>
+        </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}>
-            <RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />
-            刷新
+          <div className="toolbar-search relative w-[240px]">
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={activeTab === "config" ? "搜索配置项..." : "搜索密钥..."} className="h-9 bg-white pl-9 text-sm" />
+          </div>
+          <button type="button" onClick={handleRefresh} className="action-button h-9 w-9" title="刷新">
+            <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+          </button>
+          <Button type="button" variant="outline" onClick={() => setYamlOpen(true)} className="h-9 rounded-xl px-4 text-xs font-semibold">YAML 创建</Button>
+          <Button type="button" onClick={() => setCreateOpen(true)} className="h-9 rounded-xl bg-[#0f172a] px-4 text-xs font-semibold text-white hover:bg-[#172033]">
+            <Plus className="mr-1.5 h-3.5 w-3.5" />
+            {activeTab === "config" ? "创建配置项" : "创建密钥"}
           </Button>
-          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建配置</Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-lg">
-              <DialogHeader><DialogTitle className="text-base">创建配置字典</DialogTitle></DialogHeader>
-              <ConfigMapForm form={form} setForm={setForm} namespaces={namespaces} />
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
-            </DialogContent>
-          </Dialog>
-          <Dialog open={editOpen} onOpenChange={setEditOpen}>
-            <DialogContent className="max-w-lg">
-              <DialogHeader><DialogTitle className="text-base">编辑配置字典</DialogTitle></DialogHeader>
-              <ConfigMapForm form={editForm} setForm={setEditForm} namespaces={namespaces} readonly />
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleUpdate}>保存</Button></DialogFooter>
-            </DialogContent>
-          </Dialog>
         </div>
       </div>
-      <div className="flex items-center justify-between gap-4">
-        <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称或 Key 搜索" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
-        <div className="flex items-center gap-3"><NamespaceSelector value={namespace} onChange={(value) => { setNamespace(value); setPage(1); }} /><span className="text-sm text-[#86909C]">共 {filtered.length} 条</span></div>
+
+      {error && (
+        <div className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">
+          {error}
+        </div>
+      )}
+
+      <div className="table-card overflow-visible">
+        <Table>
+          <TableHeader>
+            <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+              {activeTab === "config" ? (
+                <>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">配置项名称</TableHead>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">配置项别名</TableHead>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">标签</TableHead>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">命名空间</TableHead>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
+                </>
+              ) : (
+                <>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">密钥名称</TableHead>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">密钥别名</TableHead>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">命名空间</TableHead>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">标签</TableHead>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">类型</TableHead>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">数据数量</TableHead>
+                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
+                </>
+              )}
+              <TableHead className="w-[90px] px-4 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={activeTab === "config" ? 6 : 8} className="py-14 text-center">
+                  <div className="flex flex-col items-center">
+                    <RefreshCw className="mb-3 h-8 w-8 animate-spin text-[var(--color-text-tertiary)]" />
+                    <p className="text-sm text-[var(--color-text-secondary)]">加载中...</p>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : filtered.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={activeTab === "config" ? 6 : 8} className="py-14 text-center">
+                  <div className="flex flex-col items-center">
+                    <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--color-bg-soft)]">
+                      {activeTab === "config" ? <FileCode2 className="h-6 w-6 text-[var(--color-text-tertiary)]" /> : <ShieldCheck className="h-6 w-6 text-[var(--color-text-tertiary)]" />}
+                    </div>
+                    <p className="text-sm text-[var(--color-text-secondary)]">{activeTab === "config" ? "暂无配置项" : "暂无密钥"}</p>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : filtered.map((row) => (
+              <TableRow key={row.id} className="h-[72px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
+                <TableCell className="px-4 py-3 text-sm font-medium text-[#1e6bff]">{row.name}</TableCell>
+                <TableCell className="px-4 py-3 text-xs text-[#374151]">{row.alias || "-"}</TableCell>
+                {activeTab === "secret" && <TableCell className="px-4 py-3 text-xs text-[#374151]">{row.namespace}</TableCell>}
+                <TableCell className="max-w-[360px] truncate px-4 py-3 text-xs text-[var(--color-text-secondary)]" title={formatLabels(row.labels)}>{formatLabels(row.labels)}</TableCell>
+                {activeTab === "config" && <TableCell className="px-4 py-3 text-xs text-[#374151]">{row.namespace}</TableCell>}
+                {activeTab === "secret" && <TableCell className="px-4 py-3"><span className="rounded-md bg-[var(--color-warning-soft)] px-2 py-0.5 text-xs text-[var(--color-warning)]">Opaque</span></TableCell>}
+                {activeTab === "secret" && <TableCell className="px-4 py-3 text-xs text-[var(--color-text-secondary)]">{row.dataCount} Keys</TableCell>}
+                <TableCell className="px-4 py-3 text-xs text-[var(--color-text-tertiary)]">{row.createTime}</TableCell>
+                <TableCell className="relative px-4 py-3 text-right">
+                  <ConfigRowActions
+                    open={menuOpenId === row.id}
+                    onOpenChange={(open) => setMenuOpenId(open ? row.id : null)}
+                    type={row.type}
+                    onEditYaml={() => {
+                      setYamlTarget(row);
+                      setMenuOpenId(null);
+                    }}
+                    onUpdate={() => {
+                      setUpdateTarget(row);
+                      setMenuOpenId(null);
+                    }}
+                    onExport={() => handleExport(row)}
+                    onDelete={() => requestDelete(row)}
+                  />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </div>
-      {error && <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
-      <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
-        <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">命名空间</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">名称</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">Key 数</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">标签</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[150px]">操作</TableHead>
-        </TableRow></TableHeader>
-        <TableBody>{isLoading ? (<TableRow><TableCell colSpan={6} className="text-center py-16 text-[#86909C] text-sm">正在加载配置字典...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={6} className="text-center py-16 text-[#86909C] text-sm">暂无配置字典数据</TableCell></TableRow>) : paginated.map((row) => (
-          <TableRow key={`${row.namespace}/${row.name}`} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
-            <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
-            <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
-            <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.keys.length}</TableCell>
-            <TableCell className="text-sm text-[#4E5969] px-4 py-3 max-w-[260px] truncate">{row.labels}</TableCell>
-            <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => { setDeleteItem(row); setDeleteOpen(true); }}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
-          </TableRow>
-        ))}</TableBody></Table>
-      </div>
-      {filtered.length > pageSize && <Pager page={page} totalPages={totalPages} start={start} pageSize={pageSize} total={filtered.length} setPage={setPage} />}
-      <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
-        <SheetContent className="w-[620px] sm:max-w-[620px] overflow-y-auto">
-          <SheetHeader className="pb-4 border-b border-[#E5E6EB]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle><Badge variant="outline" className="text-xs font-normal w-fit mt-2">{selected?.namespace}</Badge></SheetHeader>
-          {selected && (<Tabs defaultValue="overview" className="mt-4"><TabsList className="bg-[#F7F8FA] h-9"><TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger><TabsTrigger value="data" className="text-xs h-7">数据</TabsTrigger><TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger></TabsList>
-            <TabsContent value="overview" className="mt-3"><div className="grid grid-cols-2 gap-3"><Info label="名称" value={selected.name} /><Info label="命名空间" value={selected.namespace} /><Info label="Key 数" value={String(selected.keys.length)} /><Info label="标签" value={selected.labels} /></div></TabsContent>
-            <TabsContent value="data" className="mt-3 space-y-2">{Object.entries(toRecord(selected.raw.data)).map(([key, value]) => (<div key={key} className="bg-[#F7F8FA] rounded-md p-3"><p className="text-sm font-medium text-[#1D2129]">{key}</p><pre className="mt-2 text-xs text-[#4E5969] whitespace-pre-wrap break-words">{value}</pre></div>)) || null}</TabsContent>
-            <TabsContent value="yaml" className="mt-3"><div className="relative"><pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-x-auto">{yaml(selected)}</pre><Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(yaml(selected))}><Copy className="w-3.5 h-3.5" /></Button></div></TabsContent>
-          </Tabs>)}
-        </SheetContent>
-      </Sheet>
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle className="text-base">确认删除配置字典？</AlertDialogTitle><AlertDialogDescription className="text-sm">即将删除配置字典 <span className="font-medium text-[#1D2129]">{deleteItem?.name}</span>（命名空间：{deleteItem?.namespace}），此操作不可恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel><AlertDialogAction className="h-8 text-sm bg-[#F53F3F] text-white hover:bg-[#F53F3F]/90" onClick={confirmDelete}>确认删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+
+      <CreateConfigItemDialog open={createOpen} type={currentType} onOpenChange={setCreateOpen} onSubmit={handleCreate} />
+      <YamlCreateDialog open={yamlOpen} title={activeTab === "config" ? "YAML 创建配置项" : "YAML 创建密钥"} type={currentType} onOpenChange={setYamlOpen} onSubmit={handleYamlCreate} />
+      <YamlCreateDialog
+        open={!!yamlTarget}
+        title={yamlTarget ? `编辑 YAML - ${yamlTarget.name}` : "编辑 YAML"}
+        type={yamlTarget?.type || currentType}
+        defaultValue={yamlTarget ? buildConfigYaml(yamlTarget) : undefined}
+        onOpenChange={(open) => !open && setYamlTarget(null)}
+        onSubmit={(source) => yamlTarget && handleYamlUpdate(yamlTarget, source)}
+      />
+      <CreateConfigItemDialog
+        open={!!updateTarget}
+        type={updateTarget?.type || currentType}
+        mode="update"
+        initialItem={updateTarget}
+        onOpenChange={(open) => !open && setUpdateTarget(null)}
+        onSubmit={(form) => updateTarget && handleUpdate(updateTarget.id, form)}
+      />
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent className="max-w-[520px] rounded-[24px]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>确认删除{deleteTarget?.type}？</AlertDialogTitle>
+            <AlertDialogDescription>
+              即将删除 <span className="font-medium text-[var(--color-text-primary)]">{deleteTarget?.name}</span>
+              {deleteTarget?.mountTargets.length ? `，当前已被 ${deleteTarget.mountTargets.join("、")} 引用，删除后相关工作负载可能无法读取配置或凭证。` : "，删除成功后将重新拉取最新列表。"}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="h-9 rounded-xl">取消</AlertDialogCancel>
+            <AlertDialogAction className="h-9 rounded-xl bg-[#ff4d4f] text-white hover:bg-[#dc2626]" onClick={confirmDelete}>删除</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
       </AlertDialog>
     </div>
   );
 }
 
-function ConfigMapForm({ form, setForm, namespaces, readonly = false }: { form: { name: string; namespace: string; dataText: string }; setForm: (form: { name: string; namespace: string; dataText: string }) => void; namespaces: Array<{ value: string; label: string }>; readonly?: boolean }) {
+function ConfigRowActions({ open, onOpenChange, type, onEditYaml, onUpdate, onExport, onDelete }: { open: boolean; onOpenChange: (open: boolean) => void; type: ConfigType; onEditYaml: () => void; onUpdate: () => void; onExport: () => void; onDelete: () => void }) {
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+
+  const toggleMenu = () => {
+    if (!open && buttonRef.current) {
+      const rect = buttonRef.current.getBoundingClientRect();
+      const menuWidth = 164;
+      const menuHeight = 206;
+      const viewportPadding = 12;
+      const gap = 8;
+      const canOpenDown = rect.bottom + gap + menuHeight <= window.innerHeight - viewportPadding;
+      setMenuPosition({
+        top: canOpenDown ? rect.bottom + gap : Math.max(viewportPadding, rect.top - gap - menuHeight),
+        left: Math.max(16, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 16)),
+      });
+    }
+    onOpenChange(!open);
+  };
+
   return (
-    <div className="space-y-4 py-2">
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input placeholder="如 app-config" value={form.name} disabled={readonly} onChange={(e) => setForm({ ...form, name: e.target.value })} className={cn("h-9 text-sm", readonly && "bg-[#F7F8FA]")} /></div>
-        <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">命名空间</Label><select value={form.namespace} disabled={readonly} onChange={(e) => setForm({ ...form, namespace: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4] disabled:bg-[#F7F8FA]">{namespaces.filter((item) => item.value !== "all").map((item) => (<option key={item.value} value={item.value}>{item.label}</option>))}</select></div>
+    <div className="inline-block text-left">
+      <button ref={buttonRef} type="button" onClick={toggleMenu} className="action-button ml-auto h-9 w-9" title="更多操作">
+        <MoreHorizontal className="h-4 w-4" />
+      </button>
+      {open && (
+        <>
+          <button type="button" className="fixed inset-0 z-30 cursor-default" onClick={() => onOpenChange(false)} aria-label="关闭菜单" />
+          <ConfigActionMenu top={menuPosition.top} left={menuPosition.left} type={type} onEditYaml={onEditYaml} onUpdate={onUpdate} onExport={onExport} onDelete={onDelete} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function ConfigActionMenu({ top, left, type, onEditYaml, onUpdate, onExport, onDelete }: { top: number; left: number; type: ConfigType; onEditYaml: () => void; onUpdate: () => void; onExport: () => void; onDelete: () => void }) {
+  return (
+    <div className="fixed z-40 w-[164px] overflow-hidden rounded-xl border border-[#e5e7eb] bg-white py-2 text-left shadow-[0_18px_45px_rgba(15,23,42,0.16)]" style={{ top, left }}>
+      <button type="button" onClick={onEditYaml} className="flex w-full items-center gap-3 px-4 py-2.5 text-sm font-medium text-[#374151] hover:bg-[#f8fafc]"><Edit3 className="h-4 w-4 text-[#94a3b8]" />编辑 YAML</button>
+      <button type="button" onClick={onUpdate} className="flex w-full items-center gap-3 px-4 py-2.5 text-sm font-medium text-[#374151] hover:bg-[#f8fafc]"><Pencil className="h-4 w-4 text-[#94a3b8]" />更新</button>
+      <div className="my-1 border-t border-[#eef2f7]" />
+      <button type="button" onClick={onExport} className="flex w-full items-center gap-3 px-4 py-2.5 text-sm font-medium text-[#374151] hover:bg-[#f8fafc]"><Download className="h-4 w-4 text-[#94a3b8]" />导出{type}</button>
+      <div className="my-1 border-t border-[#eef2f7]" />
+      <button type="button" onClick={onDelete} className="flex w-full items-center gap-3 px-4 py-2.5 text-sm font-medium text-[#ff4d4f] hover:bg-[#fff5f5]"><Trash2 className="h-4 w-4" />删除</button>
+    </div>
+  );
+}
+
+function CreateConfigItemDialog({
+  open,
+  type,
+  mode = "create",
+  initialItem,
+  onOpenChange,
+  onSubmit,
+}: {
+  open: boolean;
+  type: ConfigType;
+  mode?: "create" | "update";
+  initialItem?: ConfigItem | null;
+  onOpenChange: (open: boolean) => void;
+  onSubmit: (form: ConfigForm) => void;
+}) {
+  const buildInitialForm = (): ConfigForm => initialItem ? {
+    name: initialItem.name,
+    alias: initialItem.alias,
+    namespace: initialItem.namespace,
+    description: initialItem.description || "",
+    dataPairs: initialItem.type === "密钥"
+      ? Object.keys(initialItem.data || {}).map((key, index) => ({ id: `data-${index}-${key}`, key, value: "" }))
+      : recordToPairs(initialItem.data, "data"),
+    labels: recordToPairs(initialItem.labels, "label"),
+    annotations: [],
+  } : emptyForm();
+  const [form, setForm] = useState<ConfigForm>(() => buildInitialForm());
+  const [submitted, setSubmitted] = useState(false);
+  const [refreshingNs, setRefreshingNs] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const isConfig = type === "配置项";
+  const nameError = !form.name.trim()
+    ? "请输入名称"
+    : form.name.length > 63 || !namePattern.test(form.name)
+      ? "名称最长 63 个字符，必须由小写字母、数字字符、“-” 或 “.” 组成，并以小写字母或数字开头及结尾"
+      : "";
+  const dataValid = validatePairs(form.dataPairs);
+  const canSubmit = !nameError && Boolean(form.namespace) && dataValid;
+
+  const update = (patch: Partial<ConfigForm>) => setForm((current) => ({ ...current, ...patch }));
+  const close = () => onOpenChange(false);
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen) {
+      setForm(buildInitialForm());
+      setSubmitted(false);
+      onOpenChange(true);
+      return;
+    }
+    close();
+  };
+
+  const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (readerEvent) => {
+      update({ dataPairs: [...form.dataPairs, { id: `data-${Date.now()}`, key: file.name, value: String(readerEvent.target?.result || "") }] });
+    };
+    reader.readAsText(file);
+    event.target.value = "";
+  };
+
+  const handleSubmit = () => {
+    setSubmitted(true);
+    if (!canSubmit) return;
+    onSubmit(form);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    setForm(buildInitialForm());
+    setSubmitted(false);
+  }, [initialItem, open]);
+
+  return (
+    <Dialog open={open} onOpenChange={handleOpenChange}>
+      <DialogContent
+        className="!flex max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_32px_80px_rgba(0,0,0,0.2)] sm:max-w-none"
+        style={{ width: "min(860px, calc(100vw - 48px))", height: "min(720px, calc(100vh - 48px))" }}
+        showCloseButton={false}
+      >
+        <DialogHeader className="h-14 shrink-0 border-b border-[#f0f1f3] px-7 py-0">
+          <div className="flex h-full items-center justify-between">
+            <DialogTitle className="text-lg font-semibold text-[#111827]">{mode === "update" ? `更新${type}` : isConfig ? "创建配置项" : "创建密钥"}</DialogTitle>
+            <button type="button" onClick={close} className="flex h-10 w-10 items-center justify-center rounded-xl border border-[#e5e7eb] text-[#64748b] hover:bg-[#f8fafc]">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+        </DialogHeader>
+
+        <div className="min-h-0 flex-1 overflow-y-auto px-7 py-6">
+          <div className="space-y-5">
+            <div>
+              <CreateLabel label="名称" required />
+              <Input value={form.name} onChange={(event) => update({ name: event.target.value })} placeholder="请输入名称" className={cn("h-11 rounded-[12px] border-2 border-[#e2e8f0] px-4 text-sm shadow-sm focus-visible:ring-0", submitted && nameError && "border-[#ef4444]")} />
+              <p className="mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">名称最长 63 个字符；必须由小写字母、数字字符、“-” 或 “.” 组成；必须以小写字母或数字字符开头及结尾。</p>
+              {submitted && nameError && <p className="mt-1 text-xs text-[#ef4444]">{nameError}</p>}
+            </div>
+
+            <div className="grid grid-cols-[1fr_1fr] gap-5">
+              <div>
+                <CreateLabel label={isConfig ? "配置项别名" : "密钥别名"} />
+                <Input value={form.alias} onChange={(event) => update({ alias: event.target.value })} className="h-11 rounded-[12px] border-2 border-[#e2e8f0] px-4 text-sm shadow-sm focus-visible:ring-0" />
+              </div>
+              <div>
+                <CreateLabel label="命名空间" required />
+                <div className="flex gap-2">
+                  <select value={form.namespace} onChange={(event) => update({ namespace: event.target.value })} className="blueedge-native-select h-11 flex-1 rounded-[12px] border-2 px-4 text-sm">
+                    {namespaces.map((namespace) => <option key={namespace} value={namespace}>{namespace}</option>)}
+                  </select>
+                  <button type="button" onClick={() => { setRefreshingNs(true); window.setTimeout(() => setRefreshingNs(false), 500); }} className="action-button h-11 w-11 rounded-[12px]" title="刷新命名空间">
+                    <RefreshCw className={cn("h-4 w-4", refreshingNs && "animate-spin")} />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <CreateLabel label="描述" />
+              <Textarea value={form.description} onChange={(event) => update({ description: event.target.value })} placeholder="请输入描述信息" className="h-[112px] min-h-[112px] rounded-[12px] border-2 border-[#e2e8f0] px-4 py-3 text-sm shadow-sm focus-visible:ring-0" />
+            </div>
+
+            <ConfigSection
+              title={isConfig ? "配置数据" : "密钥数据"}
+              action={(
+                <>
+                  <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
+                  <button type="button" onClick={() => fileInputRef.current?.click()} className="inline-flex h-10 items-center gap-2 rounded-[12px] border border-[#dfe5ee] bg-white px-5 text-sm font-semibold text-[#111827] hover:bg-[#f8fafc]">
+                    <Upload className="h-4 w-4" />
+                    上传文件
+                  </button>
+                </>
+              )}
+            >
+              <KvEditor pairs={form.dataPairs} onChange={(pairs) => update({ dataPairs: pairs })} />
+              {submitted && !dataValid && <p className="mt-2 text-xs text-[#ef4444]">存在未填写完整的数据，且 key 不允许重复</p>}
+            </ConfigSection>
+
+            <ConfigSection title="标签">
+              <KvEditor pairs={form.labels} onChange={(pairs) => update({ labels: pairs })} />
+            </ConfigSection>
+
+            <ConfigSection title="注解">
+              <KvEditor pairs={form.annotations} onChange={(pairs) => update({ annotations: pairs })} />
+            </ConfigSection>
+          </div>
+        </div>
+
+        <DialogFooter className="h-16 shrink-0 border-t border-[#f0f1f3] bg-white px-7 py-0">
+          <div className="flex w-full justify-end gap-3">
+            <button type="button" onClick={close} className="h-10 rounded-xl border border-[#dfe5ee] bg-white px-6 text-sm font-semibold text-[#111827] hover:bg-[#f8fafc]">取消</button>
+            <button type="button" onClick={handleSubmit} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033] disabled:cursor-not-allowed disabled:bg-[#9ca3af]" disabled={!canSubmit}>{mode === "update" ? "更新" : "创建"}</button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CreateLabel({ label, required }: { label: string; required?: boolean }) {
+  return (
+    <Label className="mb-2 block text-sm font-semibold text-[#111827]">
+      {label}
+      {required && <span className="ml-1 text-[#ff4d4f]">*</span>}
+    </Label>
+  );
+}
+
+function ConfigSection({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h3 className="text-base font-semibold text-[#111827]">{title}</h3>
+        {action}
       </div>
-      <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">数据（每行一组 key=value）</Label><Textarea value={form.dataText} onChange={(e) => setForm({ ...form, dataText: e.target.value })} className="min-h-40 text-sm font-mono" /></div>
-    </div>
+      {children}
+    </section>
   );
 }
 
-function Pager({ page, totalPages, start, pageSize, total, setPage }: { page: number; totalPages: number; start: number; pageSize: number; total: number; setPage: Dispatch<SetStateAction<number>> }) {
+function KvEditor({ pairs, onChange }: { pairs: KvPair[]; onChange: (pairs: KvPair[]) => void }) {
+  const duplicate = hasDuplicateKeys(pairs);
+  const add = () => onChange([...pairs, { id: `kv-${Date.now()}`, key: "", value: "" }]);
+  const remove = (id: string) => onChange(pairs.filter((pair) => pair.id !== id));
+  const update = (id: string, patch: Partial<KvPair>) => onChange(pairs.map((pair) => pair.id === id ? { ...pair, ...patch } : pair));
+
   return (
-    <div className="flex items-center justify-between">
-      <span className="text-sm text-[#86909C]">显示 {start + 1}-{Math.min(start + pageSize, total)}，共 {total} 条</span>
-      <Pagination><PaginationContent>
-        <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page === 1} className="h-7 w-7 p-0 border-[#C9CDD4]"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
-        {Array.from({ length: totalPages }, (_, index) => index + 1).map((item) => (<PaginationItem key={item}><Button variant={page === item ? "default" : "outline"} size="sm" onClick={() => setPage(item)} className={cn("h-7 w-7 p-0 text-xs", page === item ? "bg-[#165DFF] text-white" : "border-[#C9CDD4] text-[#4E5969]")}>{item}</Button></PaginationItem>))}
-        <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page === totalPages} className="h-7 w-7 p-0 border-[#C9CDD4]"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
-      </PaginationContent></Pagination>
+    <div className="space-y-3">
+      {pairs.length === 0 ? (
+        <div className="rounded-[14px] border border-dashed border-[#d1d5db] bg-[#fafbfc] px-3 py-11 text-center">
+          <span className="text-sm text-[var(--color-text-tertiary)]">暂无数据</span>
+        </div>
+      ) : pairs.map((pair) => {
+        const incomplete = Boolean(pair.key.trim()) !== Boolean(pair.value.trim());
+        return (
+          <div key={pair.id} className="space-y-1">
+            <div className="grid grid-cols-[1fr_1fr_44px] gap-3">
+              <Input value={pair.key} onChange={(event) => update(pair.id, { key: event.target.value })} placeholder="键" className={cn("h-11 rounded-[12px] border-2 border-[#e2e8f0] bg-[#f8fafc] px-4 text-sm shadow-sm focus-visible:ring-0", incomplete && "border-[#ef4444]")} />
+              <Input value={pair.value} onChange={(event) => update(pair.id, { value: event.target.value })} placeholder="值" className={cn("h-11 rounded-[12px] border-2 border-[#e2e8f0] bg-[#f8fafc] px-4 text-sm shadow-sm focus-visible:ring-0", incomplete && "border-[#ef4444]")} />
+              <button type="button" onClick={() => remove(pair.id)} className="action-button h-11 w-11 rounded-[12px]"><Trash2 className="h-4 w-4" /></button>
+            </div>
+            {incomplete && <p className="text-xs text-[#ef4444]">未填写完整</p>}
+          </div>
+        );
+      })}
+      {duplicate && <p className="text-xs text-[#ef4444]">同一分组内 key 不允许重复</p>}
+      <button type="button" onClick={add} className="mt-2 inline-flex items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium text-[#4b5563] hover:bg-[#f8fafc]">
+        <Plus className="h-4 w-4" />
+        添加
+      </button>
     </div>
   );
 }
 
-function Info({ label, value }: { label: string; value: string }) {
-  return (<div className="bg-[#F7F8FA] rounded-md px-3 py-2"><p className="text-xs text-[#86909C] mb-0.5">{label}</p><p className="text-sm text-[#1D2129] font-medium truncate">{value}</p></div>);
+function hasDuplicateKeys(pairs: KvPair[]) {
+  const keys = pairs.map((pair) => pair.key.trim()).filter(Boolean);
+  return new Set(keys).size !== keys.length;
+}
+
+function validatePairs(pairs: KvPair[]) {
+  if (hasDuplicateKeys(pairs)) return false;
+  return pairs.every((pair) => {
+    if (!pair.key.trim() && !pair.value.trim()) return true;
+    return Boolean(pair.key.trim() && pair.value.trim());
+  });
+}
+
+const defaultConfigYaml = `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: default
+data:
+  key1: value1`;
+
+const defaultSecretYaml = `apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+  namespace: default
+type: Opaque
+stringData:
+  username: admin
+  password: changeme`;
+
+function YamlCreateDialog({
+  open,
+  title,
+  type,
+  defaultValue,
+  onOpenChange,
+  onSubmit,
+}: {
+  open: boolean;
+  title: string;
+  type: ConfigType;
+  defaultValue?: string;
+  onOpenChange: (open: boolean) => void;
+  onSubmit: (yaml: string) => void;
+}) {
+  const [yaml, setYaml] = useState(defaultValue || (type === "密钥" ? defaultSecretYaml : defaultConfigYaml));
+  const [fullscreen, setFullscreen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const lineGutterRef = useRef<HTMLDivElement>(null);
+  const previewRef = useRef<HTMLPreElement>(null);
+  const lineCount = Math.max(19, yaml.split("\n").length);
+
+  useEffect(() => {
+    if (open) setYaml(defaultValue || (type === "密钥" ? defaultSecretYaml : defaultConfigYaml));
+  }, [defaultValue, open, type]);
+
+  const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setYaml(String(reader.result || ""));
+    reader.readAsText(file);
+    event.target.value = "";
+  };
+
+  const handleDownload = () => {
+    const blob = new Blob([yaml], { type: "text/yaml" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = type === "密钥" ? "secret.yaml" : "configmap.yaml";
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="!flex max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_32px_80px_rgba(0,0,0,0.2)] sm:max-w-none"
+        style={fullscreen ? { width: "calc(100vw - 32px)", height: "calc(100vh - 32px)" } : { width: "min(920px, calc(100vw - 48px))", height: "min(720px, calc(100vh - 48px))" }}
+        showCloseButton={false}
+      >
+        <DialogHeader className="h-14 shrink-0 border-b border-[#f0f1f3] px-5 py-0">
+          <div className="flex h-full items-center justify-between">
+            <DialogTitle className="text-base font-semibold text-[#111827]">{title}</DialogTitle>
+            <div className="flex shrink-0 items-center gap-1">
+              <input ref={fileInputRef} type="file" accept=".yaml,.yml" className="hidden" onChange={handleUpload} />
+              <button type="button" onClick={() => fileInputRef.current?.click()} className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-[#4b5563] hover:bg-[#f8fafc]">
+                <Upload className="h-3.5 w-3.5" />
+                上传
+              </button>
+              <button type="button" onClick={handleDownload} className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-[#4b5563] hover:bg-[#f8fafc]">
+                <Download className="h-3.5 w-3.5" />
+                下载
+              </button>
+              <button type="button" onClick={() => setFullscreen((current) => !current)} className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-[#4b5563] hover:bg-[#f8fafc]">
+                {fullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+                {fullscreen ? "退出全屏" : "全屏"}
+              </button>
+              <div className="mx-1 h-5 w-px bg-[#e5e7eb]" />
+              <button type="button" onClick={() => onOpenChange(false)} className="flex h-8 w-8 items-center justify-center rounded-lg text-[#9ca3af] hover:bg-[#f8fafc] hover:text-[#64748b]">
+                <X className="h-[18px] w-[18px]" />
+              </button>
+            </div>
+          </div>
+        </DialogHeader>
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-5 py-4">
+          <div className="mb-3 flex shrink-0 items-center gap-3 rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3 text-sm text-[#1d4ed8]">
+            <Info className="h-[18px] w-[18px] text-[#3b82f6]" />
+            <span>为保证工作负载能被正常调度，请先阅读</span>
+            <a href="https://docs.daocloud.io/kant/user-guide/edge-app/create-app.html#yaml" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-[#2563eb] hover:underline">
+              YAML 创建须知 <ExternalLink className="h-3 w-3" />
+            </a>
+          </div>
+
+          <div className="min-h-0 flex-1 overflow-hidden rounded-xl bg-[#1e1e1e]">
+            <div className="flex h-full min-h-0 overflow-hidden">
+              <div className="w-12 shrink-0 select-none overflow-hidden text-right font-mono text-xs leading-6 text-[#858585]">
+                <div ref={lineGutterRef} className="py-3">
+                  {Array.from({ length: lineCount }, (_, index) => <div key={index} className="px-2">{index + 1}</div>)}
+                </div>
+              </div>
+              <div className="relative min-w-0 flex-1">
+                <pre
+                  ref={previewRef}
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 h-full w-full overflow-hidden p-3 font-mono text-xs leading-6"
+                  style={{ color: "#d4d4d4", whiteSpace: "pre", overflowWrap: "normal", tabSize: 2, zIndex: 1 }}
+                  dangerouslySetInnerHTML={{ __html: highlightYaml(yaml) }}
+                />
+                <textarea
+                  value={yaml}
+                  onChange={(event) => setYaml(event.target.value)}
+                  onScroll={(event) => {
+                    if (lineGutterRef.current) lineGutterRef.current.style.transform = `translateY(-${event.currentTarget.scrollTop}px)`;
+                    if (previewRef.current) {
+                      previewRef.current.scrollTop = event.currentTarget.scrollTop;
+                      previewRef.current.scrollLeft = event.currentTarget.scrollLeft;
+                    }
+                  }}
+                  spellCheck={false}
+                  wrap="off"
+                  className="absolute inset-0 h-full w-full resize-none overflow-auto border-0 bg-transparent p-3 font-mono text-xs leading-6 outline-none"
+                  style={{ color: "transparent", caretColor: "#d4d4d4", whiteSpace: "pre", overflowWrap: "normal", tabSize: 2, zIndex: 2 }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+        <DialogFooter className="h-16 shrink-0 border-t border-[#f0f1f3] bg-white px-5 py-0">
+          <div className="flex w-full justify-end gap-3">
+            <button type="button" onClick={() => onOpenChange(false)} className="h-10 rounded-xl bg-[#f8fafc] px-6 text-sm font-semibold text-[#111827] hover:bg-[#eef2f7]">取消</button>
+            <button type="button" onClick={() => onSubmit(yaml)} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">确定</button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
 }
