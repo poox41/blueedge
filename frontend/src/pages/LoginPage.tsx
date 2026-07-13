@@ -33,7 +33,7 @@ function FloatingNode({
 }) {
   return (
     <div
-      className="absolute animate-float opacity-20"
+      className="absolute animate-float opacity-60"
       style={{
         top,
         left,
@@ -41,7 +41,7 @@ function FloatingNode({
       }}
     >
       <Icon
-        className="text-[#165DFF]"
+        className="text-[var(--color-brand)]"
         style={{ width: size, height: size }}
       />
     </div>
@@ -63,14 +63,14 @@ function ConnectionLine({
 }) {
   return (
     <div
-      className="absolute h-[1px] bg-gradient-to-r from-transparent via-[#165DFF] to-transparent animate-pulse-line"
+      className="absolute h-px animate-pulse-line bg-gradient-to-r from-transparent via-[var(--color-brand)] to-transparent"
       style={{
         top,
         left,
         width,
         transform: `rotate(${angle}deg)`,
         animationDelay: `${delay}s`,
-        opacity: 0.3,
+        opacity: 0.22,
       }}
     />
   );
@@ -138,7 +138,7 @@ export function LoginPage() {
             ctx.beginPath();
             ctx.moveTo(particles[i].x, particles[i].y);
             ctx.lineTo(particles[j].x, particles[j].y);
-            ctx.strokeStyle = `rgba(22, 93, 255, ${0.15 * (1 - dist / 150)})`;
+            ctx.strokeStyle = `rgba(30, 107, 255, ${0.12 * (1 - dist / 150)})`;
             ctx.lineWidth = 1;
             ctx.stroke();
           }
@@ -149,7 +149,7 @@ export function LoginPage() {
       particles.forEach((p) => {
         ctx.beginPath();
         ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(22, 93, 255, ${p.opacity})`;
+        ctx.fillStyle = `rgba(30, 107, 255, ${p.opacity})`;
         ctx.fill();
 
         p.x += p.vx;
@@ -188,21 +188,19 @@ export function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen w-full flex bg-[#0A1628]">
-      {/* Left side - Tech decorative area */}
-      <div className="hidden lg:flex lg:w-[55%] relative overflow-hidden">
+    <div className="flex min-h-screen w-full bg-[var(--color-bg-page)]">
+      <div className="relative hidden overflow-hidden border-r border-[var(--color-border)] bg-white lg:flex lg:w-[54%]">
         <canvas
           ref={canvasRef}
           className="absolute inset-0 w-full h-full"
-          style={{ opacity: 0.8 }}
+          style={{ opacity: 0.4 }}
         />
 
-        {/* Grid background */}
         <div
-          className="absolute inset-0 opacity-[0.04]"
+          className="absolute inset-0 opacity-[0.35]"
           style={{
-            backgroundImage: `linear-gradient(rgba(22,93,255,0.5) 1px, transparent 1px), linear-gradient(90deg, rgba(22,93,255,0.5) 1px, transparent 1px)`,
-            backgroundSize: "60px 60px",
+            backgroundImage: `linear-gradient(rgba(17,24,39,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(17,24,39,0.06) 1px, transparent 1px)`,
+            backgroundSize: "56px 56px",
           }}
         />
 
@@ -220,37 +218,33 @@ export function LoginPage() {
         <ConnectionLine top="52%" left="30%" width={140} angle={40} delay={1.5} />
         <ConnectionLine top="68%" left="45%" width={110} angle={-30} delay={2.0} />
 
-        {/* Glowing orbs */}
-        <div className="absolute top-[20%] left-[30%] w-64 h-64 bg-[#165DFF] rounded-full blur-[120px] opacity-10" />
-        <div className="absolute bottom-[20%] right-[20%] w-48 h-48 bg-[#00B42A] rounded-full blur-[100px] opacity-8" />
-        <div className="absolute top-[50%] left-[50%] w-32 h-32 bg-[#165DFF] rounded-full blur-[80px] opacity-10" />
+        <div className="absolute right-12 top-12 h-28 w-28 rounded-[24px] border border-[var(--color-border)] bg-[var(--color-bg-soft)]" />
+        <div className="absolute bottom-16 left-12 h-20 w-36 rounded-[18px] border border-[var(--color-border)] bg-[var(--color-bg-soft)]" />
 
-        {/* Content overlay */}
-        <div className="relative z-10 flex flex-col justify-center px-16">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="w-12 h-12 rounded-xl bg-[#165DFF]/20 border border-[#165DFF]/30 flex items-center justify-center backdrop-blur-sm">
-              <Hexagon className="w-6 h-6 text-[#165DFF]" />
+        <div className="relative z-10 flex max-w-3xl flex-col justify-center px-16">
+          <div className="mb-8 flex items-center gap-3">
+            <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-[var(--color-border)] bg-[var(--color-text-primary)] shadow-sm">
+              <Hexagon className="h-6 w-6 text-white" />
             </div>
-            <span className="text-2xl font-bold text-white tracking-wide">
+            <span className="text-2xl font-semibold text-[var(--color-text-primary)]">
               BlueEdge
             </span>
           </div>
-          <h2 className="text-4xl font-bold text-white mb-4 leading-tight">
-            云边协同
+          <h2 className="mb-5 text-5xl font-semibold leading-tight text-[var(--color-text-primary)]">
+            云边协同平台
             <br />
-            <span className="text-[#165DFF]">边缘智能平台</span>
+            <span className="text-[var(--color-brand)]">统一管理边缘资源</span>
           </h2>
-          <p className="text-[#86909C] text-base leading-relaxed max-w-md">
+          <p className="max-w-xl text-base leading-7 text-[var(--color-text-secondary)]">
             基于 Kubernetes 的云原生边缘计算解决方案，实现云端与边缘节点的统一调度、设备管理与数据流转。
           </p>
 
-          {/* Feature badges */}
-          <div className="flex flex-wrap gap-3 mt-8">
+          <div className="mt-9 flex flex-wrap gap-3">
             {["统一调度", "边缘自治", "设备孪生", "轻量化部署"].map(
               (tag) => (
                 <span
                   key={tag}
-                  className="px-3 py-1.5 rounded-md text-xs text-[#165DFF] bg-[#165DFF]/10 border border-[#165DFF]/20"
+                  className="rounded-lg border border-[var(--color-border)] bg-white px-3 py-1.5 text-xs font-medium text-[var(--color-text-secondary)] shadow-sm"
                 >
                   {tag}
                 </span>
@@ -258,33 +252,42 @@ export function LoginPage() {
             )}
           </div>
 
-          {/* Version info */}
-          <div className="mt-12 flex items-center gap-6 text-xs text-[#4E5969]">
+          <div className="mt-12 grid max-w-lg grid-cols-3 gap-3">
+            {[
+              ["128", "边缘节点"],
+              ["42", "节点组"],
+              ["99.9%", "在线率"],
+            ].map(([value, label]) => (
+              <div key={label} className="rounded-xl border border-[var(--color-border)] bg-white p-4 shadow-sm">
+                <div className="text-xl font-semibold text-[var(--color-text-primary)]">{value}</div>
+                <div className="mt-1 text-xs text-[var(--color-text-tertiary)]">{label}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-10 flex items-center gap-6 text-xs text-[var(--color-text-tertiary)]">
             <span>Kubernetes v1.28.0</span>
-            <span className="w-1 h-1 rounded-full bg-[#4E5969]" />
+            <span className="h-1 w-1 rounded-full bg-[var(--color-text-tertiary)]" />
             <span>BlueEdge v0.1.0</span>
           </div>
         </div>
       </div>
 
-      {/* Right side - Login form */}
-      <div className="flex-1 flex items-center justify-center px-8 py-12 relative">
-        {/* Subtle gradient on mobile */}
-        <div className="absolute inset-0 lg:hidden bg-gradient-to-br from-[#0A1628] via-[#0D1D33] to-[#0A1628]" />
+      <div className="relative flex flex-1 items-center justify-center px-6 py-12">
+        <div className="absolute inset-0 lg:hidden bg-[var(--color-bg-page)]" />
 
         <div className="relative z-10 w-full max-w-[400px]">
-          {/* Mobile logo */}
-          <div className="lg:hidden flex items-center gap-3 mb-8 justify-center">
-            <div className="w-10 h-10 rounded-lg bg-[#165DFF]/20 border border-[#165DFF]/30 flex items-center justify-center">
-              <Hexagon className="w-5 h-5 text-[#165DFF]" />
+          <div className="mb-8 flex items-center justify-center gap-3 lg:hidden">
+            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[var(--color-text-primary)]">
+              <Hexagon className="h-5 w-5 text-white" />
             </div>
-            <span className="text-xl font-bold text-white">BlueEdge</span>
+            <span className="text-xl font-semibold text-[var(--color-text-primary)]">BlueEdge</span>
           </div>
 
-          <div className="bg-[#111E2E]/80 backdrop-blur-md rounded-xl border border-[#1D3555] p-8 shadow-2xl">
+          <div className="rounded-2xl border border-[var(--color-border)] bg-white p-8 shadow-[var(--shadow-lg)]">
             <div className="mb-6">
-              <h3 className="text-xl font-semibold text-white mb-1">欢迎登录</h3>
-              <p className="text-sm text-[#86909C]">
+              <h3 className="mb-1 text-xl font-semibold text-[var(--color-text-primary)]">欢迎登录</h3>
+              <p className="text-sm text-[var(--color-text-tertiary)]">
                 请输入账号密码访问管理平台
               </p>
             </div>
@@ -293,12 +296,12 @@ export function LoginPage() {
               <div className="space-y-2">
                 <Label
                   htmlFor="username"
-                  className="text-sm text-[#C9CDD4] font-medium"
+                  className="text-sm font-medium text-[var(--color-text-secondary)]"
                 >
                   账号
                 </Label>
                 <div className="relative">
-                  <Server className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#4E5969]" />
+                  <Server className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
                   <Input
                     id="username"
                     type="text"
@@ -308,7 +311,7 @@ export function LoginPage() {
                       setUsername(e.target.value);
                       setError("");
                     }}
-                    className="pl-10 h-11 bg-[#0A1628] border-[#1D3555] text-white placeholder:text-[#4E5969] focus-visible:ring-[#165DFF] focus-visible:border-[#165DFF] transition-all"
+                    className="h-11 pl-10 text-sm"
                   />
                 </div>
               </div>
@@ -316,12 +319,12 @@ export function LoginPage() {
               <div className="space-y-2">
                 <Label
                   htmlFor="password"
-                  className="text-sm text-[#C9CDD4] font-medium"
+                  className="text-sm font-medium text-[var(--color-text-secondary)]"
                 >
                   密码
                 </Label>
                 <div className="relative">
-                  <Shield className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#4E5969]" />
+                  <Shield className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
                   <Input
                     id="password"
                     type={showPassword ? "text" : "password"}
@@ -331,12 +334,12 @@ export function LoginPage() {
                       setPassword(e.target.value);
                       setError("");
                     }}
-                    className="pl-10 pr-10 h-11 bg-[#0A1628] border-[#1D3555] text-white placeholder:text-[#4E5969] focus-visible:ring-[#165DFF] focus-visible:border-[#165DFF] transition-all"
+                    className="h-11 pl-10 pr-10 text-sm"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[#4E5969] hover:text-[#86909C] transition-colors"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-[var(--color-text-tertiary)] transition-colors hover:text-[var(--color-text-primary)]"
                   >
                     {showPassword ? (
                       <EyeOff className="w-4 h-4" />
@@ -349,8 +352,8 @@ export function LoginPage() {
 
               {/* Error message */}
               {error && (
-                <div className="flex items-center gap-2 text-sm text-[#F53F3F] bg-[#F53F3F]/10 border border-[#F53F3F]/20 rounded-md px-3 py-2.5 animate-shake">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <div className="flex animate-shake items-center gap-2 rounded-lg border border-[var(--color-danger)]/20 bg-[var(--color-danger-soft)] px-3 py-2.5 text-sm text-[var(--color-danger)]">
+                  <AlertCircle className="h-4 w-4 flex-shrink-0" />
                   <span>{error}</span>
                 </div>
               )}
@@ -358,7 +361,7 @@ export function LoginPage() {
               <Button
                 type="submit"
                 disabled={isLoading || !username || !password}
-                className="w-full h-11 bg-[#165DFF] hover:bg-[#165DFF]/90 text-white font-medium text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                className="h-11 w-full text-sm font-medium"
               >
                 {isLoading ? (
                   <span className="flex items-center gap-2">
@@ -386,7 +389,7 @@ export function LoginPage() {
                 ) : (
                   <span className="flex items-center gap-2 justify-center">
                     登录
-                    <ArrowRight className="w-4 h-4" />
+                    <ArrowRight className="h-4 w-4" />
                   </span>
                 )}
               </Button>
@@ -395,7 +398,7 @@ export function LoginPage() {
           </div>
 
           {/* Footer */}
-          <p className="text-xs text-[#4E5969] text-center mt-6">
+          <p className="mt-6 text-center text-xs text-[var(--color-text-tertiary)]">
             BlueEdge · 云边协同与边缘应用管理平台
           </p>
         </div>

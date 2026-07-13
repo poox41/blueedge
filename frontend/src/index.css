@@ -4,6 +4,32 @@
 
 @layer base {
   :root {
+    --color-bg-page: #f7f8fa;
+    --color-bg-panel: #ffffff;
+    --color-bg-soft: #f3f5f8;
+    --color-bg-hover: #f6f7f9;
+    --color-bg-active: #eef2f7;
+    --color-text-primary: #111827;
+    --color-text-secondary: #4b5563;
+    --color-text-tertiary: #9ca3af;
+    --color-border: #eef0f3;
+    --color-border-strong: #e5e7eb;
+    --color-input-border: #e6eaf0;
+    --color-input-border-hover: #d8dee8;
+    --color-brand: #1e6bff;
+    --color-brand-dark: #000000;
+    --color-brand-light: #eaf2ff;
+    --color-success: #28c76f;
+    --color-success-soft: #eafbf2;
+    --color-warning: #ffb020;
+    --color-warning-soft: #fff6e5;
+    --color-danger: #ff4d4f;
+    --color-danger-soft: #fff0f0;
+    --color-info: #3b82f6;
+    --color-info-soft: #eff6ff;
+    --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+    --shadow-md: 0 8px 24px rgba(16, 24, 40, 0.08);
+    --shadow-lg: 0 24px 60px rgba(16, 24, 40, 0.1);
     --background: 0 0% 100%;
     --foreground: 220 14% 13%;
     --card: 0 0% 100%;
@@ -44,9 +70,292 @@
   }
 
   body {
-    @apply bg-background text-foreground;
-    font-family: "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+    @apply text-foreground;
+    background: var(--color-bg-page);
+    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  input[type="checkbox"],
+  input[type="radio"] {
+    accent-color: var(--color-brand);
+  }
+}
+
+@layer utilities {
+  .blueedge-page {
+    width: 100%;
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 32px 32px 56px;
+  }
+
+  .blueedge-card {
+    background: var(--color-bg-panel);
+    border: 1px solid var(--color-border);
+    border-radius: 16px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .blueedge-card-hover {
+    transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+  }
+
+  .blueedge-card-hover:hover {
+    border-color: var(--color-border-strong);
+    box-shadow: var(--shadow-md);
+    transform: translateY(-1px);
+  }
+
+  .blueedge-icon-button {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--color-text-secondary);
+    transition: background 120ms ease, color 120ms ease;
+  }
+
+  .blueedge-icon-button:hover {
+    background: var(--color-bg-hover);
+    color: var(--color-text-primary);
+  }
+
+  .blueedge-primary-button {
+    height: 36px;
+    padding: 0 16px;
+    border-radius: 10px;
+    background: var(--color-text-primary);
+    color: #ffffff;
+    font-size: 13px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: background 120ms ease, transform 120ms ease;
+  }
+
+  .blueedge-primary-button:hover {
+    background: var(--color-brand-dark);
+  }
+
+  .blueedge-primary-button:active {
+    transform: scale(0.98);
+  }
+
+  .blueedge-muted-button {
+    height: 36px;
+    padding: 0 14px;
+    border-radius: 10px;
+    background: #ffffff;
+    border: 1px solid var(--color-border-strong);
+    color: var(--color-text-primary);
+    font-size: 13px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+
+  .blueedge-muted-button:hover {
+    background: var(--color-bg-hover);
+    border-color: var(--color-input-border-hover);
+  }
+
+  .blueedge-info-card {
+    border-radius: 12px;
+    border: 1px solid var(--color-border);
+    background: var(--color-bg-soft);
+    padding: 12px 14px;
+  }
+
+  .blueedge-info-card-label {
+    margin-bottom: 4px;
+    font-size: 12px;
+    line-height: 16px;
+    color: var(--color-text-tertiary);
+  }
+
+  .blueedge-info-card-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 14px;
+    line-height: 20px;
+    font-weight: 500;
+    color: var(--color-text-primary);
+  }
+
+  .blueedge-code-block {
+    border-radius: 12px;
+    background: #0b1220;
+    color: #d7deea;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 12px;
+    line-height: 1.7;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
+
+  .blueedge-native-select {
+    height: 36px;
+    width: 100%;
+    border-radius: 10px;
+    border: 2px solid var(--color-input-border);
+    background: #ffffff;
+    padding: 0 10px;
+    font-size: 14px;
+    color: var(--color-text-primary);
+    outline: none;
+    transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+  }
+
+  .blueedge-native-select:focus {
+    border-color: var(--color-text-primary);
+    box-shadow: 0 0 0 2px rgba(17, 24, 39, 0.1);
+  }
+
+  .blueedge-native-select:disabled {
+    background: var(--color-bg-soft);
+    color: var(--color-text-tertiary);
+  }
+
+  .page-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 44px;
+    margin-bottom: 8px;
+  }
+
+  .table-card {
+    overflow: hidden;
+    border-radius: 16px;
+    border: 1px solid var(--color-border);
+    background: #ffffff;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .action-group {
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .action-button {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    border: 1px solid #e8ecf3;
+    border-radius: 12px;
+    background: #ffffff;
+    color: #64748b;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    box-sizing: border-box;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  }
+
+  .action-button:hover {
+    background: #f8fafc;
+    border-color: #d8dee8;
+    color: var(--color-text-primary);
+  }
+
+  .action-button.is-danger {
+    color: var(--color-danger);
+  }
+
+  .action-button.is-danger:hover {
+    background: var(--color-danger-soft);
+    border-color: var(--color-danger);
+    color: var(--color-danger);
+  }
+
+  .detail-action-button {
+    height: 36px;
+    padding: 0 14px;
+    border: 1px solid #dfe5ee;
+    border-radius: 12px;
+    background: #ffffff;
+    color: #334155;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  }
+
+  .detail-action-button:hover {
+    background: #f8fafc;
+    border-color: #d8dee8;
+    color: #111827;
+  }
+
+  .blueedge-empty-state {
+    display: flex;
+    min-height: 180px;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: var(--color-text-tertiary);
+  }
+
+  .blueedge-empty-state-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 12px;
+    background: var(--color-bg-soft);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+  }
+
+  .blueedge-empty-state-icon::before {
+    content: "";
+    width: 22px;
+    height: 18px;
+    border: 1.5px solid var(--color-text-tertiary);
+    border-radius: 5px;
+    opacity: 0.7;
+  }
+
+  .blueedge-empty-state-icon::after {
+    content: "";
+    position: absolute;
+    width: 18px;
+    height: 1.5px;
+    border-radius: 999px;
+    background: var(--color-text-tertiary);
+    opacity: 0.55;
+    transform: translateY(-3px);
+  }
+
+  .toolbar-search {
+    width: 240px;
+    transition: width 220ms ease, border-color 160ms ease, box-shadow 160ms ease;
+  }
+
+  .toolbar-search:focus-within {
+    width: 300px;
+  }
+
+  @media (max-width: 768px) {
+    .toolbar-search,
+    .toolbar-search:focus-within {
+      width: 100%;
+    }
   }
 }

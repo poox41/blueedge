@@ -8,11 +8,11 @@ interface StatusBadgeProps {
 }
 
 const statusMap: Record<string, { bg: string; text: string; dot: string }> = {
-  success: { bg: "bg-[#E8FFEA]", text: "text-[#00B42A]", dot: "bg-[#00B42A]" },
-  warning: { bg: "bg-[#FFF7E8]", text: "text-[#FF7D00]", dot: "bg-[#FF7D00]" },
-  error: { bg: "bg-[#FFECE8]", text: "text-[#F53F3F]", dot: "bg-[#F53F3F]" },
-  info: { bg: "bg-[#E8F3FF]", text: "text-[#165DFF]", dot: "bg-[#165DFF]" },
-  default: { bg: "bg-[#F2F3F5]", text: "text-[#4E5969]", dot: "bg-[#C9CDD4]" },
+  success: { bg: "bg-[var(--color-success-soft)]", text: "text-[var(--color-success)]", dot: "bg-[var(--color-success)]" },
+  warning: { bg: "bg-[var(--color-warning-soft)]", text: "text-[var(--color-warning)]", dot: "bg-[var(--color-warning)]" },
+  error: { bg: "bg-[var(--color-danger-soft)]", text: "text-[var(--color-danger)]", dot: "bg-[var(--color-danger)]" },
+  info: { bg: "bg-[var(--color-brand-light)]", text: "text-[var(--color-brand)]", dot: "bg-[var(--color-brand)]" },
+  default: { bg: "bg-[var(--color-bg-soft)]", text: "text-[var(--color-text-secondary)]", dot: "bg-[var(--color-text-tertiary)]" },
 };
 
 export function StatusBadge({ status, color, className }: StatusBadgeProps) {

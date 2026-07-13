@@ -65,12 +65,12 @@ export function ResourceList({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-[#1D2129]">{title}</h1>
+        <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">{title}</h1>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
-            className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]"
+            className="h-8 px-3 text-sm"
           >
             <RefreshCw className="w-3.5 h-3.5 mr-1" />
             刷新
@@ -79,7 +79,7 @@ export function ResourceList({
             <Button
               size="sm"
               onClick={onAdd}
-              className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"
+              className="h-8 px-3 text-sm bg-[var(--color-text-primary)] hover:bg-[var(--color-brand-dark)] text-white"
             >
               <Plus className="w-3.5 h-3.5 mr-1" />
               {addLabel}
@@ -89,8 +89,8 @@ export function ResourceList({
       </div>
 
       <div className="flex items-center justify-between gap-4">
-        <div className="relative w-[320px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" />
+        <div className="toolbar-search relative">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-tertiary)]" />
           <Input
             placeholder="请输入名称搜索"
             value={searchValue}
@@ -98,28 +98,28 @@ export function ResourceList({
               setSearchValue(e.target.value);
               setCurrentPage(1);
             }}
-            className="pl-9 h-9 text-sm border-[#C9CDD4] focus-visible:ring-[#165DFF] bg-white"
+            className="pl-9 h-9 text-sm bg-white"
           />
         </div>
-        <span className="text-sm text-[#86909C]">
+        <span className="text-sm text-[var(--color-text-tertiary)]">
           共 {filteredData.length} 条
         </span>
       </div>
 
-      <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
+      <div className="overflow-hidden rounded-xl border border-[var(--color-border)] bg-white shadow-sm">
         <Table>
           <TableHeader>
-            <TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
+            <TableRow className="bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
               {columns.map((col) => (
                 <TableHead
                   key={col.key}
-                  className="text-sm font-medium text-[#1D2129] h-10 px-4"
+                  className="h-10 px-4 text-sm font-medium text-[var(--color-text-primary)]"
                   style={col.width ? { width: col.width } : undefined}
                 >
                   {col.title}
                 </TableHead>
               ))}
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[120px]">
+              <TableHead className="h-10 w-[120px] px-4 text-sm font-medium text-[var(--color-text-primary)]">
                 操作
               </TableHead>
             </TableRow>
@@ -129,7 +129,7 @@ export function ResourceList({
               <TableRow>
                 <TableCell
                   colSpan={columns.length + 1}
-                  className="text-center py-16 text-[#86909C] text-sm"
+                  className="text-center py-16 text-[var(--color-text-tertiary)] text-sm"
                 >
                   {emptyText}
                 </TableCell>
@@ -138,10 +138,10 @@ export function ResourceList({
               paginatedData.map((row, index) => (
                 <TableRow
                   key={String(row[rowKey]) + index}
-                  className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]"
+                  className="border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]"
                 >
                   {columns.map((col) => (
-                    <TableCell key={col.key} className="text-sm text-[#4E5969] px-4 py-3">
+                    <TableCell key={col.key} className="text-sm text-[var(--color-text-secondary)] px-4 py-3">
                       {col.render ? col.render(row) : row[col.key]}
                     </TableCell>
                   ))}
@@ -150,7 +150,7 @@ export function ResourceList({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-7 px-2 text-xs text-[#165DFF] hover:text-[#165DFF] hover:bg-[#E8F3FF]"
+                        className="h-7 px-2 text-xs text-[var(--color-brand)] hover:bg-[var(--color-brand-light)] hover:text-[var(--color-brand)]"
                       >
                         <FileText className="w-3.5 h-3.5 mr-1" />
                         YAML
@@ -158,7 +158,7 @@ export function ResourceList({
                       <Button
                         variant="ghost"
                         size="sm"
-                        className="h-7 px-2 text-xs text-[#F53F3F] hover:text-[#F53F3F] hover:bg-[#FFECE8]"
+                        className="h-7 px-2 text-xs text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)] hover:text-[var(--color-danger)]"
                       >
                         <Trash2 className="w-3.5 h-3.5 mr-1" />
                         删除
@@ -174,7 +174,7 @@ export function ResourceList({
 
       {filteredData.length > pageSize && (
         <div className="flex items-center justify-between">
-          <span className="text-sm text-[#86909C]">
+          <span className="text-sm text-[var(--color-text-tertiary)]">
             显示 {start + 1}-{Math.min(start + pageSize, filteredData.length)}，共 {filteredData.length} 条
           </span>
           <Pagination>
@@ -185,7 +185,7 @@ export function ResourceList({
                   size="sm"
                   onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                   disabled={currentPage === 1}
-                  className="h-7 w-7 p-0 border-[#C9CDD4]"
+                  className="h-7 w-7 p-0"
                 >
                   <ChevronLeft className="w-4 h-4" />
                 </Button>
@@ -199,8 +199,8 @@ export function ResourceList({
                     className={cn(
                       "h-7 w-7 p-0 text-xs",
                       currentPage === page
-                        ? "bg-[#165DFF] text-white hover:bg-[#165DFF]/90"
-                        : "border-[#C9CDD4] text-[#4E5969]"
+                        ? "bg-[var(--color-text-primary)] text-white hover:bg-[var(--color-brand-dark)]"
+                        : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]"
                     )}
                   >
                     {page}
@@ -213,7 +213,7 @@ export function ResourceList({
                   size="sm"
                   onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                   disabled={currentPage === totalPages}
-                  className="h-7 w-7 p-0 border-[#C9CDD4]"
+                  className="h-7 w-7 p-0"
                 >
                   <ChevronRight className="w-4 h-4" />
                 </Button>

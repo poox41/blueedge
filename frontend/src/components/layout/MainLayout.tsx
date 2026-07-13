@@ -8,16 +8,16 @@ export function MainLayout() {
   const [collapsed, setCollapsed] = useState(false);
 
   return (
-    <div className="min-h-screen bg-[#F7F8FA]">
+    <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-bg-page)]">
       <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} />
       <div
         className={cn(
-          "transition-all duration-300 ease-in-out",
-          collapsed ? "ml-16" : "ml-56"
+          "flex min-w-0 flex-1 flex-col transition-all duration-300 ease-in-out",
+          collapsed ? "ml-[72px]" : "ml-[240px]"
         )}
       >
         <Header />
-        <main className="p-6">
+        <main className="min-h-0 flex-1 overflow-y-auto">
           <Outlet />
         </main>
       </div>
