@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,11 +15,12 @@ import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/p
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Copy, Eye, RefreshCw, Search, Terminal, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
+import { Copy, Eye, Terminal, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
+import { PageHeader } from "@/components/common/PageHeader";
 import { formatMemory, listPodMetrics, type PodMetric } from "@/api/services/metrics";
-import { getPodLogs, listClusterEvents, type ClusterEvent } from "@/api/services/product";
+import { getPodSummary, getResourceLogs, type ClusterEvent } from "@/api/services/product";
 import { deletePodResource, listPods } from "@/api/services/resources";
 import { cn } from "@/lib/utils";
 import type { KubeResource } from "@/types/kubeedge";
@@ -144,10 +144,6 @@ function toPodRow(pod: KubeResource, metricsByPod: Map<string, PodMetric>): PodR
   };
 }
 
-function eventMatchesPod(event: ClusterEvent, pod: PodRow): boolean {
-  return event.namespace === pod.namespace && event.involvedObject?.name === pod.name;
-}
-
 function toYaml(value: unknown, indent = 0): string {
   const padding = " ".repeat(indent);
   if (Array.isArray(value)) {
@@ -232,17 +228,31 @@ export function Pods() {
     setLogs("");
     setDetailOpen(true);
     try {
-      const clusterEvents = await listClusterEvents(pod.namespace);
-      setEvents(clusterEvents.filter((event) => eventMatchesPod(event, pod)));
+      const { item, warnings } = await getPodSummary(pod.namespace, pod.name, { tailLines: 100 });
+      if (warnings?.length) setError(warnings.map((warning) => warning.message).join("；"));
+      const metricContainers = item.metrics.available ? item.metrics.containers : [];
+      const cpuMillicores = metricContainers.reduce((sum, container) => sum + Number(container.cpuUsage || 0), 0);
+      const memoryBytes = metricContainers.reduce((sum, container) => sum + Number(container.memoryUsage || 0), 0);
+      const next = toPodRow(item.raw as KubeResource, new Map([[`${item.namespace}/${item.name}`, {
+        namespace: item.namespace,
+        name: item.name,
+        cpuMillicores,
+        memoryBytes,
+      }]]));
+      setSelected(next);
+      setEvents(item.events as ClusterEvent[]);
+      setLogs(item.recentLogs.available ? item.recentLogs.content : "");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载 Pod 事件失败");
+      setError(err instanceof Error ? err.message : "加载 Pod 详情失败");
     }
   };
 
   const loadLogs = async (pod: PodRow) => {
     setLogs("正在加载日志...");
     try {
-      setLogs(await getPodLogs(pod.namespace, pod.name, 200));
+      const res = await getResourceLogs("pod", pod.namespace, pod.name, { tailLines: 200 });
+      const first = res.item.pods.find((item) => item.available);
+      setLogs(first?.content || res.warnings?.map((item) => item.message).join("\n") || "暂无可用日志");
     } catch (err) {
       setLogs(err instanceof Error ? err.message : "加载 Pod 日志失败");
     }
@@ -270,64 +280,62 @@ export function Pods() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-[#1D2129]">Pods</h1>
-        <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}>
-          <RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />
-          刷新
-        </Button>
-      </div>
+    <div className="blueedge-page space-y-4">
+      <PageHeader
+        title="Pods"
+        searchValue={search}
+        onSearchChange={(value) => {
+          setSearch(value);
+          setPage(1);
+        }}
+        onRefresh={loadData}
+      />
 
-      <div className="flex items-center justify-between gap-4">
-        <div className="relative w-[320px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" />
-          <Input placeholder="请输入名称、节点或镜像搜索" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" />
-        </div>
+      <div className="flex items-center justify-end gap-4">
         <div className="flex items-center gap-3">
           <NamespaceSelector value={namespace} onChange={(value) => { setNamespace(value); setPage(1); }} />
-          <span className="text-sm text-[#86909C]">共 {filtered.length} 条</span>
+          <span className="text-sm text-[var(--color-text-tertiary)]">共 {filtered.length} 条</span>
         </div>
       </div>
 
-      {error && <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
+      {error && <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
 
-      <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
+      <div className="table-card">
         <Table>
           <TableHeader>
-            <TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">命名空间</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">名称</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">状态</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">Ready</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">重启</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">CPU / 内存</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">所在节点</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">Pod IP</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[160px]">操作</TableHead>
+            <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">命名空间</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">名称</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">状态</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">Ready</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">重启</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">CPU / 内存</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">所在节点</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">Pod IP</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
+              <TableHead className="w-[160px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
-              <TableRow><TableCell colSpan={10} className="text-center py-16 text-[#86909C] text-sm">正在加载 Pod 数据...</TableCell></TableRow>
+              <TableRow><TableCell colSpan={10}><div className="blueedge-empty-state"><span className="blueedge-empty-state-icon" aria-hidden="true" /><span className="text-sm">正在加载 Pod 数据...</span></div></TableCell></TableRow>
             ) : paginated.length === 0 ? (
-              <TableRow><TableCell colSpan={10} className="text-center py-16 text-[#86909C] text-sm">暂无 Pod 数据</TableCell></TableRow>
+              <TableRow><TableCell colSpan={10}><div className="blueedge-empty-state"><span className="blueedge-empty-state-icon" aria-hidden="true" /><span className="text-sm">暂无 Pod 数据</span></div></TableCell></TableRow>
             ) : paginated.map((pod) => (
-              <TableRow key={`${pod.namespace}/${pod.name}`} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
-                <TableCell className="text-sm text-[#4E5969] px-4 py-3">{pod.namespace}</TableCell>
-                <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(pod)}>{pod.name}</TableCell>
+              <TableRow key={`${pod.namespace}/${pod.name}`} className="h-[69px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
+                <TableCell className="text-sm text-[var(--color-text-secondary)] px-4 py-3">{pod.namespace}</TableCell>
+                <TableCell className="cursor-pointer px-4 py-3 text-sm font-medium text-[var(--color-brand)] hover:underline" onClick={() => openDetail(pod)}>{pod.name}</TableCell>
                 <TableCell className="px-4 py-3"><StatusBadge status={pod.status} color={pod.statusColor} /></TableCell>
-                <TableCell className="text-sm text-[#4E5969] px-4 py-3">{pod.ready}</TableCell>
-                <TableCell className="text-sm text-[#4E5969] px-4 py-3">{pod.restarts}</TableCell>
-                <TableCell className="text-sm text-[#4E5969] px-4 py-3"><div className="flex flex-col gap-0.5"><span>{pod.cpu}</span><span className="text-[#86909C]">{pod.memory}</span></div></TableCell>
-                <TableCell className="text-sm text-[#4E5969] px-4 py-3"><Badge variant="outline" className="text-xs font-normal border-[#E5E6EB] text-[#4E5969]">{pod.node}</Badge></TableCell>
-                <TableCell className="text-sm text-[#4E5969] px-4 py-3 font-mono">{pod.podIP}</TableCell>
-                <TableCell className="text-sm text-[#86909C] px-4 py-3">{pod.createdAt}</TableCell>
+                <TableCell className="text-sm text-[var(--color-text-secondary)] px-4 py-3">{pod.ready}</TableCell>
+                <TableCell className="text-sm text-[var(--color-text-secondary)] px-4 py-3">{pod.restarts}</TableCell>
+                <TableCell className="text-sm text-[var(--color-text-secondary)] px-4 py-3"><div className="flex flex-col gap-0.5"><span>{pod.cpu}</span><span className="text-[var(--color-text-tertiary)]">{pod.memory}</span></div></TableCell>
+                <TableCell className="text-sm text-[var(--color-text-secondary)] px-4 py-3"><Badge variant="outline" className="text-xs font-normal border-[var(--color-border-strong)] text-[var(--color-text-secondary)]">{pod.node}</Badge></TableCell>
+                <TableCell className="text-sm text-[var(--color-text-secondary)] px-4 py-3 font-mono">{pod.podIP}</TableCell>
+                <TableCell className="text-sm text-[var(--color-text-tertiary)] px-4 py-3">{pod.createdAt}</TableCell>
                 <TableCell className="px-4 py-3">
-                  <div className="flex items-center gap-1">
-                    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(pod)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button>
-                    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDelete(pod)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button>
+                  <div className="action-group">
+                    <button type="button" className="action-button" title="查看详情" onClick={() => openDetail(pod)}><Eye className="h-3.5 w-3.5" /></button>
+                    <button type="button" className="action-button is-danger" title="删除" onClick={() => openDelete(pod)}><Trash2 className="h-3.5 w-3.5" /></button>
                   </div>
                 </TableCell>
               </TableRow>
@@ -338,20 +346,20 @@ export function Pods() {
 
       {filtered.length > pageSize && (
         <div className="flex items-center justify-between">
-          <span className="text-sm text-[#86909C]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
+          <span className="text-sm text-[var(--color-text-tertiary)]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
           <Pagination><PaginationContent>
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page === 1} className="h-7 w-7 p-0 border-[#C9CDD4]"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
+            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page === 1} className="h-7 w-7 p-0"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
             {Array.from({ length: totalPages }, (_, index) => index + 1).map((item) => (
-              <PaginationItem key={item}><Button variant={page === item ? "default" : "outline"} size="sm" onClick={() => setPage(item)} className={cn("h-7 w-7 p-0 text-xs", page === item ? "bg-[#165DFF] text-white" : "border-[#C9CDD4] text-[#4E5969]")}>{item}</Button></PaginationItem>
+              <PaginationItem key={item}><Button variant={page === item ? "default" : "outline"} size="sm" onClick={() => setPage(item)} className={cn("h-7 w-7 p-0 text-xs", page === item ? "bg-[var(--color-text-primary)] text-white" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}>{item}</Button></PaginationItem>
             ))}
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page === totalPages} className="h-7 w-7 p-0 border-[#C9CDD4]"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
+            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page === totalPages} className="h-7 w-7 p-0"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
           </PaginationContent></Pagination>
         </div>
       )}
 
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
         <SheetContent className="w-[640px] sm:max-w-[640px] overflow-y-auto">
-          <SheetHeader className="pb-4 border-b border-[#E5E6EB]">
+          <SheetHeader className="pb-4 border-b border-[var(--color-border-strong)]">
             <SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle>
             <div className="flex items-center gap-2 mt-2">
               <StatusBadge status={selected?.status || ""} color={selected?.statusColor || "default"} />
@@ -360,7 +368,7 @@ export function Pods() {
           </SheetHeader>
           {selected && (
             <Tabs defaultValue="overview" className="mt-4">
-              <TabsList className="bg-[#F7F8FA] h-9">
+              <TabsList className="bg-[var(--color-bg-soft)] h-9">
                 <TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger>
                 <TabsTrigger value="containers" className="text-xs h-7">容器</TabsTrigger>
                 <TabsTrigger value="logs" className="text-xs h-7">日志</TabsTrigger>
@@ -386,15 +394,15 @@ export function Pods() {
               </TabsContent>
               <TabsContent value="containers" className="mt-3 space-y-2">
                 {selected.containers.map((container) => (
-                  <div key={container.name} className="bg-[#F7F8FA] rounded-md p-3">
+                  <div key={container.name} className="bg-[var(--color-bg-soft)] rounded-md p-3">
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-[#1D2129]">{container.name}</p>
-                        <p className="text-xs text-[#86909C] truncate">{container.image}</p>
+                        <p className="text-sm font-medium text-[var(--color-text-primary)]">{container.name}</p>
+                        <p className="text-xs text-[var(--color-text-tertiary)] truncate">{container.image}</p>
                       </div>
                       <div className="flex items-center gap-2">
                         <Badge variant="outline" className="text-xs font-normal">{container.state}</Badge>
-                        <span className="text-xs text-[#86909C]">重启 {container.restartCount}</span>
+                        <span className="text-xs text-[var(--color-text-tertiary)]">重启 {container.restartCount}</span>
                       </div>
                     </div>
                   </div>
@@ -405,11 +413,11 @@ export function Pods() {
                   <Terminal className="w-3.5 h-3.5 mr-1" />
                   加载日志
                 </Button>
-                <pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-auto min-h-[260px] max-h-[420px] whitespace-pre-wrap">{logs || "点击加载日志查看最近 200 行"}</pre>
+                <pre className="blueedge-code-block p-4 overflow-auto min-h-[260px] max-h-[420px] whitespace-pre-wrap">{logs || "点击加载日志查看最近 200 行"}</pre>
               </TabsContent>
               <TabsContent value="yaml" className="mt-3">
                 <div className="relative">
-                  <pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-x-auto leading-relaxed">{toYaml(selected.raw)}</pre>
+                  <pre className="blueedge-code-block p-4 overflow-x-auto leading-relaxed">{toYaml(selected.raw)}</pre>
                   <Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(toYaml(selected.raw))}>
                     <Copy className="w-3.5 h-3.5" />
                   </Button>
@@ -417,14 +425,14 @@ export function Pods() {
               </TabsContent>
               <TabsContent value="events" className="mt-3 space-y-2">
                 {events.length === 0 ? (
-                  <div className="bg-[#F7F8FA] rounded-lg p-4 text-center text-sm text-[#86909C]">暂无关联事件</div>
+                  <div className="bg-[var(--color-bg-soft)] rounded-lg p-4 text-center text-sm text-[var(--color-text-tertiary)]">暂无关联事件</div>
                 ) : events.map((event) => (
-                  <div key={event.name} className="flex items-start gap-3 p-3 rounded-md bg-[#F7F8FA]">
-                    <Badge className={cn("text-xs font-normal flex-shrink-0", event.type === "Normal" ? "bg-[#E8FFEA] text-[#00B42A]" : "bg-[#FFECE8] text-[#F53F3F]")}>{event.type}</Badge>
+                  <div key={event.name} className="flex items-start gap-3 p-3 rounded-md bg-[var(--color-bg-soft)]">
+                    <Badge className={cn("text-xs font-normal flex-shrink-0", event.type === "Normal" ? "bg-[var(--color-success-soft)] text-[var(--color-success)]" : "bg-[var(--color-danger-soft)] text-[var(--color-danger)]")}>{event.type}</Badge>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-[#1D2129] font-medium">{event.reason}</p>
-                      <p className="text-xs text-[#4E5969] mt-0.5">{event.message}</p>
-                      <p className="text-xs text-[#86909C] mt-1">{event.lastTimestamp || "-"}</p>
+                      <p className="text-sm text-[var(--color-text-primary)] font-medium">{event.reason}</p>
+                      <p className="text-xs text-[var(--color-text-secondary)] mt-0.5">{event.message}</p>
+                      <p className="text-xs text-[var(--color-text-tertiary)] mt-1">{event.lastTimestamp || "-"}</p>
                     </div>
                   </div>
                 ))}
@@ -439,12 +447,12 @@ export function Pods() {
           <AlertDialogHeader>
             <AlertDialogTitle className="text-base">确认删除 Pod？</AlertDialogTitle>
             <AlertDialogDescription className="text-sm">
-              即将删除 Pod <span className="font-medium text-[#1D2129]">{deleteItem?.name}</span>（命名空间：{deleteItem?.namespace}），由控制器管理的 Pod 可能会被自动重建。
+              即将删除 Pod <span className="font-medium text-[var(--color-text-primary)]">{deleteItem?.name}</span>（命名空间：{deleteItem?.namespace}），由控制器管理的 Pod 可能会被自动重建。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel>
-            <AlertDialogAction className="h-8 text-sm bg-[#F53F3F] text-white hover:bg-[#F53F3F]/90" onClick={confirmDelete}>确认删除</AlertDialogAction>
+            <AlertDialogAction className="h-8 text-sm" onClick={confirmDelete}>确认删除</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -454,9 +462,9 @@ export function Pods() {
 
 function Info({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-[#F7F8FA] rounded-md px-3 py-2">
-      <p className="text-xs text-[#86909C] mb-0.5">{label}</p>
-      <p className="text-sm text-[#1D2129] font-medium truncate">{value}</p>
+    <div className="blueedge-info-card">
+      <p className="blueedge-info-card-label">{label}</p>
+      <p className="blueedge-info-card-value">{value}</p>
     </div>
   );
 }
@@ -464,13 +472,13 @@ function Info({ label, value }: { label: string; value: string }) {
 function TagGroup({ title, items }: { title: string; items: Array<[string, string]> }) {
   return (
     <div className="space-y-2">
-      <h4 className="text-xs font-medium text-[#86909C] uppercase">{title}</h4>
+      <h4 className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase">{title}</h4>
       {items.length === 0 ? (
-        <div className="bg-[#F7F8FA] rounded-md px-3 py-2 text-sm text-[#86909C]">-</div>
+        <div className="bg-[var(--color-bg-soft)] rounded-md px-3 py-2 text-sm text-[var(--color-text-tertiary)]">-</div>
       ) : (
         <div className="flex flex-wrap gap-2">
           {items.map(([key, value]) => (
-            <Badge key={`${key}-${value}`} variant="secondary" className="text-xs font-normal bg-[#E8F3FF] text-[#165DFF] max-w-full truncate">
+            <Badge key={`${key}-${value}`} variant="secondary" className="text-xs font-normal bg-[var(--color-brand-light)] text-[var(--color-brand)] max-w-full truncate">
               {key === value ? value : `${key}: ${value}`}
             </Badge>
           ))}

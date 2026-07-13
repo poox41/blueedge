@@ -76,7 +76,9 @@ import {
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
+import { edgeAppSummaryStatusText } from "@/api/adapters/edgeapp-summary.adapter";
 import { createEdgeApplicationResource, deleteEdgeApplicationResource, getDeployment, getEdgeApplication, listEdgeApplications, listNodeGroups, updateEdgeApplicationResource } from "@/api/services/resources";
+import { getEdgeAppSummary, getResourceLogs } from "@/api/services/product";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
@@ -120,9 +122,9 @@ interface EdgeApp {
 }
 
 const typeColors: Record<string, string> = {
-  Deployment: "bg-[#E8F3FF] text-[#165DFF]",
-  Job: "bg-[#FFF7E8] text-[#FF7D00]",
-  Pod: "bg-[#E8FFEA] text-[#00B42A]",
+  Deployment: "bg-[var(--color-brand-light)] text-[var(--color-brand)]",
+  Job: "bg-[var(--color-warning-soft)] text-[var(--color-warning)]",
+  Pod: "bg-[var(--color-success-soft)] text-[var(--color-success)]",
   DaemonSet: "bg-[#F5E8FF] text-[#722ED1]",
 };
 
@@ -440,6 +442,8 @@ export function EdgeApps() {
   const [deleteItem, setDeleteItem] = useState<EdgeApp | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [editItem, setEditItem] = useState<EdgeApp | null>(null);
+  const [detailLogs, setDetailLogs] = useState("打开日志页后加载关联 Pod 日志");
+  const [detailLogWarning, setDetailLogWarning] = useState("");
   const [editForm, setEditForm] = useState({ image: "", cpuLimit: "", memoryLimit: "", replicas: 1 });
   const [nodeGroupOptions, setNodeGroupOptions] = useState<string[]>([defaultTargetNodeGroupName]);
   const [createMode, setCreateMode] = useState("form");
@@ -599,9 +603,22 @@ spec:
   const openDetail = async (a: EdgeApp) => {
     setSelected(a);
     setDetailOpen(true);
+    setDetailLogs("打开日志页后加载关联 Pod 日志");
+    setDetailLogWarning("");
     try {
-      const detail = await getEdgeApplication(a.namespace, a.name);
-      setSelected(await resolveEdgeAppRuntimeStatus(detail, toEdgeApp(detail)));
+      const { item, warnings } = await getEdgeAppSummary(a.namespace, a.name);
+      if (warnings?.length) setError(warnings.map((warning) => warning.message).join("；"));
+      const detail = toEdgeApp(item.yaml);
+      setSelected({
+        ...detail,
+        status: edgeAppSummaryStatusText(item.status),
+        statusColor: item.status === "running" ? "success" : item.status === "unknown" ? "default" : "warning",
+        node: item.targetNodeGroups.length > 0 ? item.targetNodeGroups.join(", ") : detail.node,
+        pods: `${item.pods.filter((pod) => pod.status === "Running").length}/${item.pods.length}`,
+        availableReplicas: item.workloads.reduce((sum, workload) => sum + Number(workload.availableReplicas || 0), 0) || detail.availableReplicas,
+        desiredReplicas: item.workloads.reduce((sum, workload) => sum + Number(workload.replicas || 0), 0) || detail.desiredReplicas,
+        raw: item.yaml,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载边缘应用详情失败");
     }
@@ -948,15 +965,18 @@ spec:
   };
 
   return (
-    <div className="space-y-4">
+    <div className="blueedge-page space-y-4">
       {/* Page header */}
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-[#1D2129]">边缘应用</h1>
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight text-[var(--color-text-primary)]">边缘应用</h1>
+          <p className="mt-1 text-sm text-[var(--color-text-tertiary)]">面向节点组交付和治理边缘侧应用实例。</p>
+        </div>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
             size="sm"
-            className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]"
+            className="blueedge-muted-button h-9 px-3 text-sm"
             onClick={loadData}
             disabled={isLoading}
           >
@@ -965,7 +985,7 @@ spec:
           </Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
             <DialogTrigger asChild>
-              <Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white">
+              <Button size="sm" className="blueedge-primary-button h-9 px-3 text-sm">
                 <Plus className="w-3.5 h-3.5 mr-1" />
                 创建边缘应用
               </Button>
@@ -992,7 +1012,7 @@ spec:
                 <DialogTitle className="text-base">创建边缘应用</DialogTitle>
               </DialogHeader>
               <Tabs value={createMode} onValueChange={setCreateMode} className="min-h-0 overflow-hidden px-6">
-                <TabsList className="bg-[#F7F8FA] h-9">
+                <TabsList className="bg-[var(--color-bg-soft)] h-9">
                   <TabsTrigger value="form" className="text-xs h-7">表单</TabsTrigger>
                   <TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger>
                   <TabsTrigger value="preview" className="text-xs h-7">表单 YAML 预览</TabsTrigger>
@@ -1000,12 +1020,12 @@ spec:
                 <TabsContent value="form" className="space-y-4 mt-4 max-h-[62vh] overflow-y-auto pr-1 pb-2">
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">名称</Label>
+                    <Label className="text-xs text-[var(--color-text-secondary)]">名称</Label>
                     <Input placeholder="如 edge-app" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" />
-                    {createNameError && <p className="text-xs text-[#F53F3F]">{createNameError}</p>}
+                    {createNameError && <p className="text-xs text-[var(--color-danger)]">{createNameError}</p>}
                   </div>
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">类型</Label>
+                    <Label className="text-xs text-[var(--color-text-secondary)]">类型</Label>
                     <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
                       <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
                       <SelectContent>
@@ -1019,7 +1039,7 @@ spec:
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">命名空间</Label>
+                    <Label className="text-xs text-[var(--color-text-secondary)]">命名空间</Label>
                     <Select value={form.namespace} onValueChange={(v) => setForm({ ...form, namespace: v })}>
                       <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
                       <SelectContent>
@@ -1031,15 +1051,15 @@ spec:
                   </div>
                   {form.type === "Deployment" && (
                     <div className="space-y-1.5">
-                      <Label className="text-xs text-[#4E5969]">副本数</Label>
+                      <Label className="text-xs text-[var(--color-text-secondary)]">副本数</Label>
                       <Input type="number" min={1} value={form.replicas} onChange={(e) => setForm({ ...form, replicas: Number(e.target.value) })} className="h-9 text-sm" />
                     </div>
                   )}
                 </div>
-                <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3 space-y-3">
+                <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-soft)] p-3 space-y-3">
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
-                      <Label className="text-xs text-[#4E5969]">目标节点组</Label>
+                      <Label className="text-xs text-[var(--color-text-secondary)]">目标节点组</Label>
                       <Select value={form.targetNodeGroup} onValueChange={(v) => setForm({ ...form, targetNodeGroup: v })}>
                         <SelectTrigger className="h-9 bg-white text-sm"><SelectValue /></SelectTrigger>
                         <SelectContent>
@@ -1050,7 +1070,7 @@ spec:
                       </Select>
                     </div>
                     <div className="space-y-1.5">
-                      <Label className="text-xs text-[#4E5969]">节点组名称</Label>
+                      <Label className="text-xs text-[var(--color-text-secondary)]">节点组名称</Label>
                       <Input
                         value={form.targetNodeGroup}
                         onChange={(e) => setForm({ ...form, targetNodeGroup: e.target.value })}
@@ -1059,13 +1079,13 @@ spec:
                       />
                     </div>
                   </div>
-                  <div className="text-xs text-[#86909C]">边缘应用会写入 workloadScope.targetNodeGroups，实际落到该节点组匹配的边缘节点。</div>
+                  <div className="text-xs text-[var(--color-text-tertiary)]">边缘应用会写入 workloadScope.targetNodeGroups，实际落到该节点组匹配的边缘节点。</div>
                 </div>
-                <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3 space-y-3"><div className="text-sm font-medium">Pod 运行设置</div><div className="grid grid-cols-2 gap-3"><Select value={form.dnsPolicy} onValueChange={(dnsPolicy) => setForm({ ...form, dnsPolicy })}><SelectTrigger className="h-9 bg-white text-sm"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ClusterFirst">ClusterFirst</SelectItem><SelectItem value="ClusterFirstWithHostNet">ClusterFirstWithHostNet</SelectItem><SelectItem value="Default">Default</SelectItem><SelectItem value="None">None</SelectItem></SelectContent></Select><Input className="h-9 bg-white text-sm" value={form.terminationGracePeriodSeconds} placeholder="终止宽限秒数" onChange={(e)=>setForm({...form,terminationGracePeriodSeconds:e.target.value})}/><Input className="h-9 bg-white text-sm" value={form.serviceAccountName} placeholder="ServiceAccount（可选）" onChange={(e)=>setForm({...form,serviceAccountName:e.target.value})}/><Input className="h-9 bg-white text-sm" value={form.runtimeClassName} placeholder="RuntimeClass（可选，如 nvidia）" onChange={(e)=>setForm({...form,runtimeClassName:e.target.value})}/></div><div className="flex flex-wrap gap-4">{([['hostNetwork','使用主机网络'],['hostPID','共享主机 PID'],['hostIPC','共享主机 IPC'],['shareProcessNamespace','容器间共享进程命名空间']] as const).map(([key,label])=><label key={key} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={form[key]} onChange={(e)=>setForm({...form,[key]:e.target.checked,...(key === 'hostNetwork' && e.target.checked && form.dnsPolicy === 'ClusterFirst' ? {dnsPolicy:'ClusterFirstWithHostNet'} : {})})}/>{label}</label>)}</div><div><Label className="text-xs text-[#4E5969]">节点选择器</Label><Textarea className="mt-1 min-h-20 bg-white font-mono text-xs" value={form.nodeSelectorText} onChange={(e)=>setForm({...form,nodeSelectorText:e.target.value})} placeholder={'每行 key=value，例如：\nnvidia.com/gpu.product=A100'}/></div></div>
-                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">镜像仓库密钥</Label><Input value={form.imagePullSecrets} onChange={(e) => setForm({ ...form, imagePullSecrets: e.target.value })} className="h-9 text-sm" placeholder="多个 Secret 用逗号分隔" /></div>
-                <div className="flex items-center justify-between"><div><h3 className="text-sm font-medium">工作容器</h3><p className="text-xs text-[#86909C]">支持添加多个容器，配置能力与初始化容器一致。</p></div><Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...form, containers: [...form.containers, emptyContainer(`container-${form.containers.length + 1}`, "")] })}><Plus className="mr-1 h-3.5 w-3.5"/>添加工作容器</Button></div>
+                <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-soft)] p-3 space-y-3"><div className="text-sm font-medium">Pod 运行设置</div><div className="grid grid-cols-2 gap-3"><Select value={form.dnsPolicy} onValueChange={(dnsPolicy) => setForm({ ...form, dnsPolicy })}><SelectTrigger className="h-9 bg-white text-sm"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ClusterFirst">ClusterFirst</SelectItem><SelectItem value="ClusterFirstWithHostNet">ClusterFirstWithHostNet</SelectItem><SelectItem value="Default">Default</SelectItem><SelectItem value="None">None</SelectItem></SelectContent></Select><Input className="h-9 bg-white text-sm" value={form.terminationGracePeriodSeconds} placeholder="终止宽限秒数" onChange={(e)=>setForm({...form,terminationGracePeriodSeconds:e.target.value})}/><Input className="h-9 bg-white text-sm" value={form.serviceAccountName} placeholder="ServiceAccount（可选）" onChange={(e)=>setForm({...form,serviceAccountName:e.target.value})}/><Input className="h-9 bg-white text-sm" value={form.runtimeClassName} placeholder="RuntimeClass（可选，如 nvidia）" onChange={(e)=>setForm({...form,runtimeClassName:e.target.value})}/></div><div className="flex flex-wrap gap-4">{([['hostNetwork','使用主机网络'],['hostPID','共享主机 PID'],['hostIPC','共享主机 IPC'],['shareProcessNamespace','容器间共享进程命名空间']] as const).map(([key,label])=><label key={key} className="flex items-center gap-2 text-xs"><input type="checkbox" checked={form[key]} onChange={(e)=>setForm({...form,[key]:e.target.checked,...(key === 'hostNetwork' && e.target.checked && form.dnsPolicy === 'ClusterFirst' ? {dnsPolicy:'ClusterFirstWithHostNet'} : {})})}/>{label}</label>)}</div><div><Label className="text-xs text-[var(--color-text-secondary)]">节点选择器</Label><Textarea className="mt-1 min-h-20 bg-white font-mono text-xs" value={form.nodeSelectorText} onChange={(e)=>setForm({...form,nodeSelectorText:e.target.value})} placeholder={'每行 key=value，例如：\nnvidia.com/gpu.product=A100'}/></div></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">镜像仓库密钥</Label><Input value={form.imagePullSecrets} onChange={(e) => setForm({ ...form, imagePullSecrets: e.target.value })} className="h-9 text-sm" placeholder="多个 Secret 用逗号分隔" /></div>
+                <div className="flex items-center justify-between"><div><h3 className="text-sm font-medium">工作容器</h3><p className="text-xs text-[var(--color-text-tertiary)]">支持添加多个容器，配置能力与初始化容器一致。</p></div><Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...form, containers: [...form.containers, emptyContainer(`container-${form.containers.length + 1}`, "")] })}><Plus className="mr-1 h-3.5 w-3.5"/>添加工作容器</Button></div>
                 {form.containers.map((container, index) => <ContainerEditor key={container.id} title={`工作容器 ${index + 1}`} value={container} onChange={(next) => setForm({ ...form, containers: form.containers.map((item) => item.id === container.id ? next : item) })} onRemove={form.containers.length > 1 ? () => setForm({ ...form, containers: form.containers.filter((item) => item.id !== container.id) }) : undefined}/>) }
-                <div className="flex items-center justify-between border-t pt-4"><div><h3 className="text-sm font-medium">初始化容器</h3><p className="text-xs text-[#86909C]">按顺序运行，可添加任意多个，拥有与工作容器相同的配置能力。</p></div><Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...form, initContainers: [...form.initContainers, emptyContainer(`init-${form.initContainers.length + 1}`, "busybox:latest")] })}><Plus className="mr-1 h-3.5 w-3.5"/>添加初始化容器</Button></div>
+                <div className="flex items-center justify-between border-t pt-4"><div><h3 className="text-sm font-medium">初始化容器</h3><p className="text-xs text-[var(--color-text-tertiary)]">按顺序运行，可添加任意多个，拥有与工作容器相同的配置能力。</p></div><Button type="button" variant="outline" size="sm" onClick={() => setForm({ ...form, initContainers: [...form.initContainers, emptyContainer(`init-${form.initContainers.length + 1}`, "busybox:latest")] })}><Plus className="mr-1 h-3.5 w-3.5"/>添加初始化容器</Button></div>
                 {form.initContainers.map((container, index) => <ContainerEditor key={container.id} title={`初始化容器 ${index + 1}`} isInit value={container} onChange={(next) => setForm({ ...form, initContainers: form.initContainers.map((item) => item.id === container.id ? next : item) })} onRemove={() => setForm({ ...form, initContainers: form.initContainers.filter((item) => item.id !== container.id) })}/>) }
                 <VolumeEditor values={form.volumes} onChange={(volumes) => setForm({ ...form, volumes })}/>
                 </TabsContent>
@@ -1077,11 +1097,11 @@ spec:
                     spellCheck={false}
                   />
                 </TabsContent>
-                <TabsContent value="preview" className="mt-4 max-h-[62vh] overflow-y-auto pb-2"><Textarea value={generatedFormYaml} readOnly className="min-h-[520px] bg-[#F7F8FA] text-xs font-mono leading-relaxed" spellCheck={false}/></TabsContent>
+                <TabsContent value="preview" className="mt-4 max-h-[62vh] overflow-y-auto pb-2"><Textarea value={generatedFormYaml} readOnly className="min-h-[520px] bg-[var(--color-bg-soft)] text-xs font-mono leading-relaxed" spellCheck={false}/></TabsContent>
               </Tabs>
-              <DialogFooter className="border-t border-[#E5E6EB] px-6 py-4">
+              <DialogFooter className="border-t border-[var(--color-border-strong)] px-6 py-4">
                 <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
-                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={createMode === "yaml" ? !yamlText.trim() : (!createName || !!createNameError || !createContainersValid)}>创建</Button>
+                <Button size="sm"  onClick={handleCreate} disabled={createMode === "yaml" ? !yamlText.trim() : (!createName || !!createNameError || !createContainersValid)}>创建</Button>
               </DialogFooter>
               </div>
             </DialogContent>
@@ -1098,22 +1118,22 @@ spec:
                 </div>
                 {editItem?.type === "Deployment" && (
                   <div className="space-y-1.5">
-                    <Label className="text-xs text-[#4E5969]">副本数</Label>
+                    <Label className="text-xs text-[var(--color-text-secondary)]">副本数</Label>
                     <Input type="number" min={1} value={editForm.replicas} onChange={(e) => setEditForm({ ...editForm, replicas: Number(e.target.value) })} className="h-9 text-sm" />
                   </div>
                 )}
                 <div className="space-y-1.5">
-                  <Label className="text-xs text-[#4E5969]">镜像</Label>
+                  <Label className="text-xs text-[var(--color-text-secondary)]">镜像</Label>
                   <Input value={editForm.image} onChange={(e) => setEditForm({ ...editForm, image: e.target.value })} className="h-9 text-sm" />
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">CPU 限制</Label><Input value={editForm.cpuLimit} onChange={(e) => setEditForm({ ...editForm, cpuLimit: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">内存限制</Label><Input value={editForm.memoryLimit} onChange={(e) => setEditForm({ ...editForm, memoryLimit: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">CPU 限制</Label><Input value={editForm.cpuLimit} onChange={(e) => setEditForm({ ...editForm, cpuLimit: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">内存限制</Label><Input value={editForm.memoryLimit} onChange={(e) => setEditForm({ ...editForm, memoryLimit: e.target.value })} className="h-9 text-sm" /></div>
                 </div>
               </div>
               <DialogFooter>
                 <Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button>
-                <Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || !editForm.image}>保存</Button>
+                <Button size="sm"  onClick={handleEdit} disabled={!editItem || !editForm.image}>保存</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
@@ -1124,18 +1144,18 @@ spec:
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-3 flex-1">
           <div className="relative w-[280px]">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-tertiary)]" />
             <Input
               placeholder="请输入名称搜索"
               value={search}
               onChange={(e) => { setSearch(e.target.value); setCurrentPage(1); }}
-              className="pl-9 h-9 text-sm border-[#C9CDD4] focus-visible:ring-[#165DFF] bg-white"
+              className="h-9 bg-white pl-9 text-sm"
             />
           </div>
           <div className="flex items-center gap-2">
-            <Filter className="w-4 h-4 text-[#86909C]" />
+            <Filter className="w-4 h-4 text-[var(--color-text-tertiary)]" />
             <Select value={typeFilter} onValueChange={(v) => { setTypeFilter(v); setCurrentPage(1); }}>
-              <SelectTrigger className="h-9 w-[140px] text-sm border-[#C9CDD4]">
+              <SelectTrigger className="h-9 w-[140px] text-sm">
                 <SelectValue placeholder="全部类型" />
               </SelectTrigger>
               <SelectContent>
@@ -1150,52 +1170,48 @@ spec:
         </div>
         <div className="flex items-center gap-3">
           <NamespaceSelector value={namespace} onChange={(v) => { setNamespace(v); setCurrentPage(1); }} />
-          <span className="text-sm text-[#86909C]">共 {filtered.length} 条</span>
+          <span className="text-sm text-[var(--color-text-tertiary)]">共 {filtered.length} 条</span>
         </div>
       </div>
 
       {error && <div className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-700">{error}</div>}
 
       {/* Table */}
-      <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
+      <div className="table-card">
         <Table>
           <TableHeader>
-            <TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">命名空间</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">名称</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">类型</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">状态</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">边缘节点</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">CPU / 内存</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">镜像</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">重启</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[180px]">操作</TableHead>
+            <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">命名空间</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">名称</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">类型</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">状态</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">边缘节点</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">CPU / 内存</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">镜像</TableHead>
+              <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">重启</TableHead>
+              <TableHead className="w-[180px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">
-                  加载中...
-                </TableCell>
+                <TableCell colSpan={9}><div className="blueedge-empty-state"><span className="blueedge-empty-state-icon" aria-hidden="true" /><span className="text-sm">正在加载边缘应用数据...</span></div></TableCell>
               </TableRow>
             ) : paginated.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">
-                  暂无边缘应用数据
-                </TableCell>
+                <TableCell colSpan={9}><div className="blueedge-empty-state"><span className="blueedge-empty-state-icon" aria-hidden="true" /><span className="text-sm">暂无边缘应用数据</span></div></TableCell>
               </TableRow>
             ) : (
               paginated.map((row) => {
                 const TypeIcon = typeIcons[row.type] || Server;
                 return (
-                  <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
-                    <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
-                    <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>
+                  <TableRow key={row.name} className="h-[69px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
+                    <TableCell className="text-sm text-[var(--color-text-secondary)] px-4 py-3">{row.namespace}</TableCell>
+                    <TableCell className="cursor-pointer px-4 py-3 text-sm font-medium text-[var(--color-brand)] hover:underline" onClick={() => openDetail(row)}>
                       {row.name}
                     </TableCell>
                     <TableCell className="px-4 py-3">
-                      <Badge className={cn("text-xs font-normal border-0", typeColors[row.type] || "bg-[#F2F3F5] text-[#4E5969]")}>
+                      <Badge className={cn("text-xs font-normal border-0", typeColors[row.type] || "bg-[var(--color-bg-soft)] text-[var(--color-text-secondary)]")}>
                         <TypeIcon className="w-3 h-3 mr-1" />
                         {row.type}
                       </Badge>
@@ -1203,39 +1219,35 @@ spec:
                     <TableCell className="px-4 py-3">
                       <StatusBadge status={row.status} color={row.statusColor} />
                     </TableCell>
-                    <TableCell className="text-sm text-[#4E5969] px-4 py-3">
-                      <Badge variant="outline" className="text-xs font-normal border-[#E5E6EB] text-[#4E5969]">
+                    <TableCell className="text-sm text-[var(--color-text-secondary)] px-4 py-3">
+                      <Badge variant="outline" className="text-xs font-normal border-[var(--color-border-strong)] text-[var(--color-text-secondary)]">
                         {row.node}
                       </Badge>
                     </TableCell>
-                    <TableCell className="text-sm text-[#4E5969] px-4 py-3">
+                    <TableCell className="text-sm text-[var(--color-text-secondary)] px-4 py-3">
                       <div className="flex flex-col gap-0.5">
                         <span>{row.cpuLimit !== "-" ? row.cpuLimit : `${row.cpu} m`}</span>
-                        <span className="text-[#86909C]">{row.memoryLimit !== "-" ? row.memoryLimit : row.memory}</span>
+                        <span className="text-[var(--color-text-tertiary)]">{row.memoryLimit !== "-" ? row.memoryLimit : row.memory}</span>
                       </div>
                     </TableCell>
-                    <TableCell className="text-sm text-[#4E5969] px-4 py-3 max-w-[180px] truncate" title={row.images[0]}>
+                    <TableCell className="text-sm text-[var(--color-text-secondary)] px-4 py-3 max-w-[180px] truncate" title={row.images[0]}>
                       {row.images[0].split("/").pop() || row.images[0]}
                     </TableCell>
-                    <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.restartCount}</TableCell>
+                    <TableCell className="text-sm text-[var(--color-text-secondary)] px-4 py-3">{row.restartCount}</TableCell>
                     <TableCell className="px-4 py-3">
-                      <div className="flex items-center gap-1">
-                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}>
-                          <Eye className="w-3.5 h-3.5 mr-1" />
-                          详情
-                        </Button>
-                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}>
-                          <Pencil className="w-3.5 h-3.5 mr-1" />
-                          编辑
-                        </Button>
-                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#4E5969] hover:text-[#1D2129] hover:bg-[#F2F3F5]" onClick={() => handleRestart(row)}>
-                          <RotateCcw className="w-3.5 h-3.5 mr-1" />
-                          重启
-                        </Button>
-                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDelete(row)}>
-                          <Trash2 className="w-3.5 h-3.5 mr-1" />
-                          删除
-                        </Button>
+                      <div className="action-group">
+                        <button type="button" className="action-button" title="查看详情" onClick={() => openDetail(row)}>
+                          <Eye className="h-3.5 w-3.5" />
+                        </button>
+                        <button type="button" className="action-button" title="编辑" onClick={() => openEdit(row)}>
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button type="button" className="action-button" title="重启" onClick={() => handleRestart(row)}>
+                          <RotateCcw className="h-3.5 w-3.5" />
+                        </button>
+                        <button type="button" className="action-button is-danger" title="删除" onClick={() => openDelete(row)}>
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -1249,13 +1261,13 @@ spec:
       {/* Pagination */}
       {filtered.length > pageSize && (
         <div className="flex items-center justify-between">
-          <span className="text-sm text-[#86909C]">
+          <span className="text-sm text-[var(--color-text-tertiary)]">
             显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条
           </span>
           <Pagination>
             <PaginationContent>
               <PaginationItem>
-                <Button variant="outline" size="sm" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1} className="h-7 w-7 p-0 border-[#C9CDD4]">
+                <Button variant="outline" size="sm" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1} className="h-7 w-7 p-0">
                   <ChevronLeft className="w-4 h-4" />
                 </Button>
               </PaginationItem>
@@ -1265,14 +1277,14 @@ spec:
                     variant={currentPage === page ? "default" : "outline"}
                     size="sm"
                     onClick={() => setCurrentPage(page)}
-                    className={cn("h-7 w-7 p-0 text-xs", currentPage === page ? "bg-[#165DFF] text-white hover:bg-[#165DFF]/90" : "border-[#C9CDD4] text-[#4E5969]")}
+                    className={cn("h-7 w-7 p-0 text-xs", currentPage === page ? "bg-[var(--color-text-primary)] text-white hover:bg-[var(--color-brand-dark)]" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}
                   >
                     {page}
                   </Button>
                 </PaginationItem>
               ))}
               <PaginationItem>
-                <Button variant="outline" size="sm" onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="h-7 w-7 p-0 border-[#C9CDD4]">
+                <Button variant="outline" size="sm" onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="h-7 w-7 p-0">
                   <ChevronRight className="w-4 h-4" />
                 </Button>
               </PaginationItem>
@@ -1284,7 +1296,7 @@ spec:
       {/* Detail Sheet */}
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
         <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
-          <SheetHeader className="pb-4 border-b border-[#E5E6EB]">
+          <SheetHeader className="pb-4 border-b border-[var(--color-border-strong)]">
             <div className="flex items-center justify-between">
               <SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle>
             </div>
@@ -1298,10 +1310,10 @@ spec:
           </SheetHeader>
           {selected && (
             <Tabs defaultValue="overview" className="mt-4">
-              <TabsList className="bg-[#F7F8FA] h-9">
+              <TabsList className="bg-[var(--color-bg-soft)] h-9">
                 <TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger>
                 <TabsTrigger value="resource" className="text-xs h-7">资源</TabsTrigger>
-                {selected.type === "Pod" && <TabsTrigger value="logs" className="text-xs h-7">日志</TabsTrigger>}
+                <TabsTrigger value="logs" className="text-xs h-7">日志</TabsTrigger>
                 <TabsTrigger value="yaml" className="text-xs h-7">完整 YAML</TabsTrigger>
               </TabsList>
               <TabsContent value="overview" className="mt-3 space-y-4">
@@ -1324,12 +1336,12 @@ spec:
                   {selected.ip && <InfoCard label="Pod IP" value={selected.ip} />}
                 </div>
                 <div className="space-y-2">
-                  <h4 className="text-xs font-medium text-[#86909C] uppercase">镜像</h4>
-                  <div className="bg-[#F7F8FA] rounded-md px-3 py-2 text-sm text-[#4E5969] font-mono">{selected.images[0]}</div>
+                  <h4 className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase">镜像</h4>
+                  <div className="bg-[var(--color-bg-soft)] rounded-md px-3 py-2 text-sm text-[var(--color-text-secondary)] font-mono">{selected.images[0]}</div>
                 </div>
                 {selected.ports.length > 0 && (
                   <div className="space-y-2">
-                    <h4 className="text-xs font-medium text-[#86909C] uppercase">端口</h4>
+                    <h4 className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase">端口</h4>
                     <div className="flex flex-wrap gap-2">
                       {selected.ports.map((p, i) => (
                         <Badge key={i} variant="outline" className="text-xs font-normal">{p}</Badge>
@@ -1338,10 +1350,10 @@ spec:
                   </div>
                 )}
                 <div className="space-y-2">
-                  <h4 className="text-xs font-medium text-[#86909C] uppercase">标签</h4>
+                  <h4 className="text-xs font-medium text-[var(--color-text-tertiary)] uppercase">标签</h4>
                   <div className="flex flex-wrap gap-2">
                     {Object.entries(selected.labels).map(([k, v]) => (
-                      <Badge key={k} variant="secondary" className="text-xs font-normal bg-[#E8F3FF] text-[#165DFF]">{k}: {v}</Badge>
+                      <Badge key={k} variant="secondary" className="text-xs font-normal bg-[var(--color-brand-light)] text-[var(--color-brand)]">{k}: {v}</Badge>
                     ))}
                   </div>
                 </div>
@@ -1355,8 +1367,8 @@ spec:
                     {selected.status === "已暂停" ? "恢复" : "暂停"}
                   </Button>
                   <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => { setDetailOpen(false); openDelete(selected); }}>
-                    <Trash2 className="w-3.5 h-3.5 mr-1 text-[#F53F3F]" />
-                    <span className="text-[#F53F3F]">删除</span>
+                    <Trash2 className="w-3.5 h-3.5 mr-1 text-[var(--color-danger)]" />
+                    <span className="text-[var(--color-danger)]">删除</span>
                   </Button>
                 </div>
               </TabsContent>
@@ -1365,41 +1377,46 @@ spec:
                 <InfoCard label="内存使用" value={selected.memory} />
                 <InfoCard label="CPU 限制" value={selected.cpuLimit} />
                 <InfoCard label="内存限制" value={selected.memoryLimit} />
-                <div className="bg-[#F7F8FA] rounded-md p-3">
-                  <h4 className="text-xs text-[#86909C] mb-2">资源使用趋势</h4>
-                  <div className="h-2 bg-[#E5E6EB] rounded-full overflow-hidden">
-                    <div className="h-full bg-[#165DFF] rounded-full" style={{ width: `${Math.min(100, Number(selected.cpu) * 2)}%` }} />
+                <div className="bg-[var(--color-bg-soft)] rounded-md p-3">
+                  <h4 className="text-xs text-[var(--color-text-tertiary)] mb-2">资源使用趋势</h4>
+                  <div className="h-2 bg-[var(--color-border-strong)] rounded-full overflow-hidden">
+                    <div className="h-full bg-[var(--color-brand)] rounded-full" style={{ width: `${Math.min(100, Number(selected.cpu) * 2)}%` }} />
                   </div>
-                  <p className="text-xs text-[#86909C] mt-1">CPU 使用率: {selected.cpu} m / {selected.cpuLimit}</p>
+                  <p className="text-xs text-[var(--color-text-tertiary)] mt-1">CPU 使用率: {selected.cpu} m / {selected.cpuLimit}</p>
                 </div>
-                <div className="bg-[#F7F8FA] rounded-md p-3">
-                  <div className="h-2 bg-[#E5E6EB] rounded-full overflow-hidden">
-                    <div className="h-full bg-[#00B42A] rounded-full" style={{ width: `${Math.min(100, Number(selected.memory.replace(/[^0-9]/g, "")) / 2)}%` }} />
+                <div className="bg-[var(--color-bg-soft)] rounded-md p-3">
+                  <div className="h-2 bg-[var(--color-border-strong)] rounded-full overflow-hidden">
+                    <div className="h-full bg-[var(--color-success)] rounded-full" style={{ width: `${Math.min(100, Number(selected.memory.replace(/[^0-9]/g, "")) / 2)}%` }} />
                   </div>
-                  <p className="text-xs text-[#86909C] mt-1">内存使用率: {selected.memory} / {selected.memoryLimit}</p>
+                  <p className="text-xs text-[var(--color-text-tertiary)] mt-1">内存使用率: {selected.memory} / {selected.memoryLimit}</p>
                 </div>
               </TabsContent>
-              {selected.type === "Pod" && (
-                <TabsContent value="logs" className="mt-3">
-                  <div className="bg-[#0A1628] rounded-lg p-4 text-xs font-mono text-[#C9CDD4] h-[400px] overflow-y-auto leading-relaxed">
-                    <p><span className="text-[#00B42A]">[INFO]</span> 2026/04/23 10:23:15 Starting container {selected.name}</p>
-                    <p><span className="text-[#00B42A]">[INFO]</span> 2026/04/23 10:23:16 Container started successfully</p>
-                    <p><span className="text-[#165DFF]">[DEBUG]</span> 2026/04/23 10:23:18 Listening on port {selected.ports[0]?.split("/")[0] || "80"}</p>
-                    <p><span className="text-[#00B42A]">[INFO]</span> 2026/04/23 10:25:42 Health check passed</p>
-                    <p><span className="text-[#86909C]">[ACCESS]</span> 2026/04/23 10:30:11 GET /health 200 OK</p>
-                    <p><span className="text-[#86909C]">[ACCESS]</span> 2026/04/23 10:32:05 GET /metrics 200 OK</p>
-                    <p><span className="text-[#00B42A]">[INFO]</span> 2026/04/23 10:35:22 Scheduled task executed</p>
-                    <p><span className="text-[#86909C]">[ACCESS]</span> 2026/04/23 10:40:18 POST /api/data 201 Created</p>
-                    <p><span className="text-[#FF7D00]">[WARN]</span> 2026/04/23 10:45:33 High memory usage detected: {selected.memory}</p>
-                    <p><span className="text-[#00B42A]">[INFO]</span> 2026/04/23 10:50:01 Garbage collection completed</p>
-                    <p><span className="text-[#86909C]">[ACCESS]</span> 2026/04/23 10:55:47 GET /status 200 OK</p>
-                    <p><span className="text-[#00B42A]">[INFO]</span> 2026/04/23 11:00:00 Heartbeat sent to cloud</p>
-                  </div>
-                </TabsContent>
-              )}
+              <TabsContent value="logs" className="mt-3">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mb-2 h-8 text-xs"
+                    onClick={async () => {
+                      setDetailLogs("正在加载日志...");
+                      setDetailLogWarning("");
+                      try {
+                        const res = await getResourceLogs("edgeapplication", selected.namespace, selected.name, { tailLines: 200 });
+                        const first = res.item.pods.find((pod) => pod.available) || res.item.pods[0];
+                        setDetailLogs(first?.content || "未找到关联 Pod 日志");
+                        setDetailLogWarning((res.warnings || []).map((warning) => warning.message).join("；"));
+                      } catch (err) {
+                        setDetailLogs(err instanceof Error ? err.message : "加载日志失败");
+                      }
+                    }}
+                  >
+                    加载日志
+                  </Button>
+                  {detailLogWarning && <div className="mb-2 rounded-md border border-[#F7BA1E]/30 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{detailLogWarning}</div>}
+                  <pre className="blueedge-code-block p-4 h-[400px] overflow-y-auto whitespace-pre-wrap leading-relaxed text-[var(--color-text-tertiary)]">{detailLogs}</pre>
+              </TabsContent>
               <TabsContent value="yaml" className="mt-3">
                 <div className="relative">
-                  <pre className="max-h-[640px] overflow-auto whitespace-pre bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono leading-relaxed">{exportableEdgeApplicationYaml(selected)}</pre>
+                  <pre className="max-h-[640px] overflow-auto whitespace-pre blueedge-code-block p-4 leading-relaxed">{exportableEdgeApplicationYaml(selected)}</pre>
                   <Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(exportableEdgeApplicationYaml(selected))}>
                     <Copy className="w-3.5 h-3.5" />
                   </Button>
@@ -1416,12 +1433,12 @@ spec:
           <AlertDialogHeader>
             <AlertDialogTitle className="text-base">确认删除边缘应用？</AlertDialogTitle>
             <AlertDialogDescription className="text-sm">
-              即将删除应用 <span className="font-medium text-[#1D2129]">{deleteItem?.name}</span>（类型：{deleteItem?.type}，命名空间：{deleteItem?.namespace}），此操作不可恢复。
+              即将删除应用 <span className="font-medium text-[var(--color-text-primary)]">{deleteItem?.name}</span>（类型：{deleteItem?.type}，命名空间：{deleteItem?.namespace}），此操作不可恢复。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel>
-            <AlertDialogAction className="h-8 text-sm bg-[#F53F3F] text-white hover:bg-[#F53F3F]/90" onClick={confirmDelete}>确认删除</AlertDialogAction>
+            <AlertDialogAction className="h-8 text-sm" onClick={confirmDelete}>确认删除</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
@@ -1431,9 +1448,9 @@ spec:
 
 function InfoCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-[#F7F8FA] rounded-md px-3 py-2">
-      <p className="text-xs text-[#86909C] mb-0.5">{label}</p>
-      <p className="text-sm text-[#1D2129] font-medium truncate">{value}</p>
+    <div className="blueedge-info-card">
+      <p className="blueedge-info-card-label">{label}</p>
+      <p className="blueedge-info-card-value">{value}</p>
     </div>
   );
 }

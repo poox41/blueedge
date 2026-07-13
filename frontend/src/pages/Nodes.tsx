@@ -1,17 +1,23 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { Search, Plus, RefreshCw, Trash2, ChevronLeft, ChevronRight, Eye, Copy, Ban, CheckCircle2 } from "lucide-react";
+import { AlertTriangle, Trash2, ChevronLeft, ChevronRight, Copy, Ban, CheckCircle2, MoreHorizontal, Pause, Pencil, Plus, RefreshCw, Search } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { formatMemory, listNodeMetrics } from "@/api/services/metrics";
 import { deleteNodeResource, getNode, listNodes, listPods, updateNodeResource } from "@/api/services/resources";
+import { toAccessConfigUiModel, type AccessConfigUiModel } from "@/api/adapters/access-config.adapter";
+import { toHomeEdgeUnit } from "@/api/adapters/edge-unit.adapter";
+import { nodeSummaryStatusText } from "@/api/adapters/node-summary.adapter";
+import { createAccessConfig as createAccessConfigResource, deleteAccessConfig, getNodeSummary, listAccessConfigs, listEdgeUnits, updateAccessConfig, type AccessConfigPayload } from "@/api/services/product";
 import type { EdgeNodeView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
@@ -19,12 +25,58 @@ interface Node {
   name: string; role: string; status: string; statusColor: string; labels: number;
   cpu: string; memory: string; ip: string; taints: number; pods: number; createdAt: string;
   raw: KubeResource; unschedulable: boolean;
+  localOnly?: boolean;
+  alias?: string;
+  labelPreview?: string;
+  extraLabels?: number;
+  cpuUsage?: string;
+  cpuCapacity?: string;
+  memoryUsage?: string;
+  memoryCapacity?: string;
+  version?: string;
   os?: string; kernel?: string; kubelet?: string; containerRuntime?: string;
   architecture?: string; capacity?: { cpu: string; memory: string; storage: string };
   conditions?: Array<{ type: string; status: string; message: string }>;
 }
 
-const DEFAULT_CLOUDCORE_ADDRESS = import.meta.env.VITE_DEFAULT_CLOUDCORE_ADDRESS || "14.103.163.121:10000";
+interface AccessConfig extends AccessConfigUiModel {
+  nodeLabel: string;
+  driver: "systemd" | "cgroups";
+  address: string;
+  labels: Record<string, string>;
+}
+
+type AccessConfigForm = {
+  name: string;
+  edgeUnitRef: string;
+  nodeName: string;
+  architecture: "amd64" | "arm64" | "arm";
+  os: string;
+  kubeEdgeVersion: string;
+  driver: "systemd" | "cgroups";
+  criAddress: string;
+  address: string;
+  protocol: "websocket" | "QUIC";
+  registry: string;
+  description: string;
+  labelRules: Array<{ key: string; value: string }>;
+};
+
+const defaultAccessForm: AccessConfigForm = {
+  name: "",
+  edgeUnitRef: "",
+  nodeName: "",
+  architecture: "amd64",
+  os: "linux",
+  kubeEdgeVersion: "v1.21.0",
+  driver: "systemd",
+  criAddress: "",
+  address: "127.0.0.1:10000",
+  protocol: "websocket",
+  registry: "registry.cn-beijing.aliyuncs.com/kubeedge",
+  description: "",
+  labelRules: [{ key: "", value: "" }],
+};
 
 function statusText(status: EdgeNodeView["status"]) {
   if (status === "Ready") return "就绪";
@@ -72,20 +124,33 @@ function toPageNode(
   const allocatable = raw.status?.allocatable || {};
   const conditions = Array.isArray(raw.status?.conditions) ? raw.status.conditions : [];
   const metrics = metricsByName.get(node.name);
+  const labels = raw.metadata?.labels || {};
+  const cpuCapacity = formatCapacityCpu(allocatable.cpu || capacity.cpu);
+  const memoryCapacity = formatCapacityMemory(allocatable.memory || capacity.memory);
+  const cpuUsage = metrics ? `${Math.min(100, Math.round((metrics.cpuMillicores / Math.max(Number.parseInt(String(allocatable.cpu || capacity.cpu || "1000"), 10) || 1000, 1)) * 100))}%` : "-";
+  const memoryUsage = metrics ? formatMemory(metrics.memoryBytes) : "-";
   return {
     name: node.name,
     role: node.role === "unknown" ? "cloud" : node.role,
     status: statusText(node.status),
     statusColor: statusColor(node.status),
-    labels: Object.keys(raw.metadata?.labels || {}).length,
-    cpu: metrics ? `${metrics.cpuMillicores}m` : formatCapacityCpu(allocatable.cpu || capacity.cpu),
-    memory: metrics ? formatMemory(metrics.memoryBytes) : formatCapacityMemory(allocatable.memory || capacity.memory),
+    labels: Object.keys(labels).length,
+    cpu: metrics ? `${metrics.cpuMillicores}m` : cpuCapacity,
+    memory: metrics ? memoryUsage : memoryCapacity,
     ip: node.internalIP,
     taints: Array.isArray(raw.spec?.taints) ? raw.spec.taints.length : 0,
     pods: podCountByNode.get(node.name) ?? Number(raw.podCount || raw.pods || 0),
     createdAt: node.createdAt,
     raw: node.raw,
     unschedulable: Boolean(raw.spec?.unschedulable),
+    alias: raw.metadata?.annotations?.alias || raw.metadata?.annotations?.["blueedge.io/alias"] || node.name,
+    labelPreview: Object.entries(labels)[0]?.join(": ") || "-",
+    extraLabels: Math.max(Object.keys(labels).length - 1, 0),
+    cpuUsage,
+    cpuCapacity,
+    memoryUsage: metrics ? `${memoryUsage}` : "-",
+    memoryCapacity,
+    version: node.kubeletVersion,
     os: node.osImage,
     kernel: nodeInfo.kernelVersion || "-",
     kubelet: node.kubeletVersion,
@@ -129,25 +194,56 @@ status:
 ${(n.conditions || []).map(c => `  - type: ${c.type}\n    status: "${c.status}"`).join("\n")}`;
 }
 
+function toAccessConfigRow(item: AccessConfigUiModel): AccessConfig {
+  return {
+    ...item,
+    driver: "systemd",
+    address: item.cloudCoreAddress,
+    labels: { "blueedge.io/edge-unit": item.edgeUnitRef },
+    nodeLabel: `blueedge.io/edge-unit: ${item.edgeUnitRef}`,
+  };
+}
+
 export function Nodes() {
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<Node[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  const [activeTab, setActiveTab] = useState<"nodes" | "access">("nodes");
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<Node | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
   const [deleteItem, setDeleteItem] = useState<Node | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const [joinForm, setJoinForm] = useState({
-    mode: "edge",
-    cloudCoreAddress: DEFAULT_CLOUDCORE_ADDRESS,
-    token: "",
-    nodeName: "",
-    kubeadmCommand: "",
-  });
+  const [aliasTarget, setAliasTarget] = useState<Node | null>(null);
+  const [aliasValue, setAliasValue] = useState("");
+  const [accessConfigs, setAccessConfigs] = useState<AccessConfig[]>([]);
+  const [edgeUnitOptions, setEdgeUnitOptions] = useState<Array<{ name: string; version: string }>>([]);
+  const [accessError, setAccessError] = useState("");
+  const [accessCreateOpen, setAccessCreateOpen] = useState(false);
+  const [accessCancelConfirmOpen, setAccessCancelConfirmOpen] = useState(false);
+  const [accessLabelTarget, setAccessLabelTarget] = useState<AccessConfig | null>(null);
+  const [accessLabelKey, setAccessLabelKey] = useState("");
+  const [accessLabelValue, setAccessLabelValue] = useState("");
+  const [accessForm, setAccessForm] = useState<AccessConfigForm>(defaultAccessForm);
   const pageSize = 10;
+
+  const loadAccessConfigs = useCallback(async () => {
+    setAccessError("");
+    try {
+      const [configsResult, edgeUnitsResult] = await Promise.all([
+        listAccessConfigs(),
+        listEdgeUnits().catch(() => ({ items: [] })),
+      ]);
+      setAccessConfigs(configsResult.items.map(toAccessConfigUiModel).map(toAccessConfigRow));
+      setEdgeUnitOptions(edgeUnitsResult.items.map(toHomeEdgeUnit).map((item) => ({ name: item.name, version: item.version === "未配置" ? "v1.21.0" : item.version })));
+    } catch (err) {
+      setAccessError(err instanceof Error ? err.message : "接入配置加载失败");
+      setAccessConfigs([]);
+    }
+  }, []);
 
   const loadNodes = useCallback(async () => {
     setIsLoading(true);
@@ -177,43 +273,175 @@ export function Nodes() {
 
   useEffect(() => {
     void loadNodes();
-  }, [loadNodes]);
+    void loadAccessConfigs();
+  }, [loadNodes, loadAccessConfigs]);
+
+  useEffect(() => {
+    if (searchParams.get("tab") !== "access") return;
+    setActiveTab("access");
+    if (searchParams.get("create") === "1") {
+      setAccessCreateOpen(true);
+      setSearchParams({}, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   const filtered = useMemo(() => {
     let result = data;
     if (search.trim()) {
       const s = search.toLowerCase();
-      result = result.filter(n => n.name.toLowerCase().includes(s) || n.ip.toLowerCase().includes(s));
+      result = result.filter(n => n.name.toLowerCase().includes(s) || n.ip.toLowerCase().includes(s) || (n.alias || "").toLowerCase().includes(s));
     }
     return result;
   }, [data, search]);
+
+  const filteredAccessConfigs = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    if (!keyword) return accessConfigs;
+    return accessConfigs.filter((item) => item.name.toLowerCase().includes(keyword) || item.nodeLabel.toLowerCase().includes(keyword) || item.address.toLowerCase().includes(keyword));
+  }, [accessConfigs, search]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (currentPage - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
   const openDelete = (n: Node) => { setDeleteItem(n); setDeleteOpen(true); };
+  const openAliasDialog = (n: Node) => {
+    setAliasTarget(n);
+    setAliasValue(n.alias || n.name);
+  };
+  const saveAlias = () => {
+    if (!aliasTarget) return;
+    const nextAlias = aliasValue.trim() || aliasTarget.name;
+    setData((prev) => prev.map((item) => item.name === aliasTarget.name ? { ...item, alias: nextAlias } : item));
+    setSelected((prev) => prev?.name === aliasTarget.name ? { ...prev, alias: nextAlias } : prev);
+    setAliasTarget(null);
+    setAliasValue("");
+  };
+  const openAccessLabelDialog = (item: AccessConfig) => {
+    const [key = "", value = ""] = Object.entries(item.labels)[0] || [];
+    setAccessLabelTarget(item);
+    setAccessLabelKey(key);
+    setAccessLabelValue(value);
+  };
+  const saveAccessLabels = async () => {
+    if (!accessLabelTarget) return;
+    try {
+      await updateAccessConfig(accessLabelTarget.name, {
+        edgeUnitRef: accessLabelTarget.edgeUnitRef,
+        nodeName: accessLabelTarget.nodeName,
+        architecture: accessLabelTarget.architecture,
+        os: accessLabelTarget.os,
+        kubeEdgeVersion: accessLabelTarget.kubeEdgeVersion,
+        cloudCoreAddress: accessLabelTarget.cloudCoreAddress,
+        protocol: accessLabelTarget.protocol,
+        registry: accessLabelTarget.registry,
+        description: accessLabelValue.trim() || accessLabelTarget.description,
+      });
+      await loadAccessConfigs();
+      setAccessLabelTarget(null);
+      setAccessLabelKey("");
+      setAccessLabelValue("");
+    } catch (err) {
+      setAccessError(err instanceof Error ? err.message : "接入配置更新失败");
+    }
+  };
+  const resetAccessForm = () => {
+    setAccessForm(defaultAccessForm);
+  };
+  const requestCloseAccessCreate = () => {
+    setAccessCancelConfirmOpen(true);
+  };
+  const confirmCancelAccessCreate = () => {
+    setAccessCancelConfirmOpen(false);
+    setAccessCreateOpen(false);
+    resetAccessForm();
+  };
+  const createAccessConfig = async () => {
+    const name = accessForm.name.trim();
+    if (!name) return;
+    const payload: AccessConfigPayload = {
+      name,
+      edgeUnitRef: accessForm.edgeUnitRef,
+      nodeName: accessForm.nodeName.trim() || name,
+      architecture: accessForm.architecture,
+      os: accessForm.os,
+      kubeEdgeVersion: accessForm.kubeEdgeVersion,
+      cloudCoreAddress: accessForm.address,
+      protocol: accessForm.protocol === "QUIC" ? "quic" : accessForm.protocol,
+      registry: accessForm.registry,
+      description: accessForm.description,
+    };
+    try {
+      await createAccessConfigResource(payload);
+      await loadAccessConfigs();
+      setAccessCreateOpen(false);
+      resetAccessForm();
+    } catch (err) {
+      setAccessError(err instanceof Error ? err.message : "接入配置创建失败");
+    }
+  };
   const openDetailWithFreshData = async (n: Node) => {
     setSelected(n);
     setDetailOpen(true);
     try {
-      const detail = await getNode(n.name);
-      setSelected({ ...toPageNode(detail, new Map()), cpu: n.cpu, memory: n.memory, pods: n.pods });
-    } catch {
+      const { item, warnings } = await getNodeSummary(n.name);
+      if (warnings?.length) setError(warnings.map((warning) => warning.message).join("；"));
+      const raw = item.raw || {};
+      setSelected({
+        ...n,
+        name: item.name,
+        role: item.roles[0] || n.role,
+        status: nodeSummaryStatusText(item.status),
+        statusColor: item.status === "ready" ? "success" : item.status === "notReady" ? "warning" : "default",
+        labels: Object.keys(item.labels || {}).length,
+        cpu: item.metrics.available && item.metrics.cpuUsage !== null ? `${item.metrics.cpuUsage}m` : n.cpu,
+        memory: item.metrics.available && item.metrics.memoryUsage !== null ? formatMemory(item.metrics.memoryUsage) : n.memory,
+        ip: item.internalIP || n.ip,
+        pods: item.pods.total,
+        createdAt: item.createdAt || n.createdAt,
+        raw,
+        alias: item.annotations?.alias || item.annotations?.["blueedge.io/alias"] || item.name,
+        labelPreview: Object.entries(item.labels || {})[0]?.join(": ") || "-",
+        extraLabels: Math.max(Object.keys(item.labels || {}).length - 1, 0),
+        cpuUsage: item.metrics.available && item.metrics.cpuUsage !== null ? `${item.metrics.cpuUsage}m` : "-",
+        memoryUsage: item.metrics.available && item.metrics.memoryUsage !== null ? formatMemory(item.metrics.memoryUsage) : "-",
+        version: item.kubeletVersion || item.kubeEdgeVersion || n.version,
+        os: item.os || n.os,
+        kernel: item.kernelVersion || "-",
+        kubelet: item.kubeletVersion || "-",
+        containerRuntime: item.containerRuntime || "-",
+        architecture: item.architecture || "-",
+        capacity: {
+          cpu: raw.status?.capacity?.cpu || "-",
+          memory: raw.status?.capacity?.memory || "-",
+          storage: raw.status?.capacity?.["ephemeral-storage"] || "-",
+        },
+        conditions: item.conditions.length > 0
+          ? item.conditions.map((condition) => ({
+            type: condition.type || "-",
+            status: condition.status || "-",
+            message: condition.message || condition.reason || "-",
+          }))
+          : n.conditions,
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "加载节点详情失败");
       setSelected(n);
     }
   };
 
-  const edgeJoinCommand = [
-    "sudo keadm join",
-    joinForm.cloudCoreAddress.trim() ? `--cloudcore-ipport=${joinForm.cloudCoreAddress.trim()}` : "--cloudcore-ipport=<cloudcore-ip:10000>",
-    joinForm.token.trim() ? `--token=${joinForm.token.trim()}` : "--token=<cloudcore-token>",
-    joinForm.nodeName.trim() ? `--edgenode-name=${joinForm.nodeName.trim()}` : "",
-  ].filter(Boolean).join(" \\\n  ");
-  const kubeadmJoinCommand = joinForm.kubeadmCommand.trim() || "sudo kubeadm join <apiserver:6443> --token <token> --discovery-token-ca-cert-hash sha256:<hash>";
-  const currentJoinCommand = joinForm.mode === "edge" ? edgeJoinCommand : kubeadmJoinCommand;
   const confirmDelete = async () => {
     if (!deleteItem) return;
+    if (deleteItem.localOnly) {
+      setData((prev) => prev.filter((item) => item.name !== deleteItem.name));
+      setDeleteOpen(false);
+      setDeleteItem(null);
+      if (selected?.name === deleteItem.name) {
+        setDetailOpen(false);
+        setSelected(null);
+      }
+      return;
+    }
     setIsLoading(true);
     setError("");
     try {
@@ -233,6 +461,22 @@ export function Nodes() {
   };
 
   const toggleScheduling = async (node: Node) => {
+    if (node.localOnly) {
+      const nextNode = {
+        ...node,
+        unschedulable: !node.unschedulable,
+        raw: {
+          ...node.raw,
+          spec: {
+            ...(node.raw.spec || {}),
+            unschedulable: !node.unschedulable,
+          },
+        },
+      };
+      setData((prev) => prev.map((item) => item.name === node.name ? nextNode : item));
+      setSelected(nextNode);
+      return;
+    }
     setIsLoading(true);
     setError("");
     try {
@@ -240,7 +484,7 @@ export function Nodes() {
       const resource = detail.raw;
       resource.spec = {
         ...(resource.spec || {}),
-        unschedulable: !Boolean((resource.spec as Record<string, unknown> | undefined)?.unschedulable),
+        unschedulable: !(resource.spec as Record<string, unknown> | undefined)?.unschedulable,
       };
       await updateNodeResource(resource);
       await loadNodes();
@@ -254,124 +498,382 @@ export function Nodes() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-[#1D2129]">节点</h1>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadNodes} disabled={isLoading}>
-            <RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />刷新
-          </Button>
-          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />接入节点</Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader><DialogTitle className="text-base">接入节点</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-2 text-sm text-[#4E5969]">
-                <div className="rounded-md border border-[#E5E6EB] bg-[#F7F8FA] p-3">
-                  当前 API 不支持通过表单创建真实 Node。节点需要在目标机器上运行 kubelet 或 edgecore，向集群注册成功后自动出现在列表中。
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <Button variant={joinForm.mode === "edge" ? "default" : "outline"} size="sm" onClick={() => setJoinForm({ ...joinForm, mode: "edge" })} className={cn("h-9", joinForm.mode === "edge" && "bg-[#165DFF] text-white")}>边缘节点</Button>
-                  <Button variant={joinForm.mode === "worker" ? "default" : "outline"} size="sm" onClick={() => setJoinForm({ ...joinForm, mode: "worker" })} className={cn("h-9", joinForm.mode === "worker" && "bg-[#165DFF] text-white")}>云端 / 工作节点</Button>
-                </div>
-                {joinForm.mode === "edge" ? (
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-1.5"><p className="text-xs text-[#4E5969]">CloudCore 地址</p><Input placeholder={`如 ${DEFAULT_CLOUDCORE_ADDRESS}`} value={joinForm.cloudCoreAddress} onChange={(e) => setJoinForm({ ...joinForm, cloudCoreAddress: e.target.value })} className="h-9 text-sm" /></div>
-                    <div className="space-y-1.5"><p className="text-xs text-[#4E5969]">边缘节点名称</p><Input placeholder="可选，如 k8s-laptop-edge" value={joinForm.nodeName} onChange={(e) => setJoinForm({ ...joinForm, nodeName: e.target.value })} className="h-9 text-sm" /></div>
-                    <div className="col-span-2 space-y-1.5"><p className="text-xs text-[#4E5969]">CloudCore Token</p><Input placeholder="keadm gettoken 获取的 token" value={joinForm.token} onChange={(e) => setJoinForm({ ...joinForm, token: e.target.value })} className="h-9 text-sm" /></div>
-                  </div>
-                ) : (
-                  <div className="space-y-1.5">
-                    <p className="text-xs text-[#4E5969]">kubeadm join 命令</p>
-                    <Input placeholder="粘贴 kubeadm token create --print-join-command 输出" value={joinForm.kubeadmCommand} onChange={(e) => setJoinForm({ ...joinForm, kubeadmCommand: e.target.value })} className="h-9 text-sm" />
-                  </div>
-                )}
-                <div className="space-y-2">
-                  <p className="font-medium text-[#1D2129]">{joinForm.mode === "edge" ? "在边缘节点执行" : "在工作节点执行"}</p>
-                  <div className="relative">
-                    <pre className="min-h-24 whitespace-pre-wrap break-all rounded-md bg-[#0A1628] p-3 pr-12 text-xs text-[#C9CDD4]">{currentJoinCommand}</pre>
-                    <Button variant="ghost" size="sm" className="absolute right-2 top-2 h-7 text-white/70 hover:text-white" onClick={() => navigator.clipboard.writeText(currentJoinCommand)}><Copy className="w-3.5 h-3.5" /></Button>
-                  </div>
-                  <p className="text-xs text-[#86909C]">执行完成并注册成功后，点击刷新查看新节点。</p>
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
-                <Button size="sm" className="bg-[#165DFF] text-white" onClick={() => navigator.clipboard.writeText(currentJoinCommand)}>复制命令</Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-        </div>
-      </div>
-      <div className="flex items-center justify-between gap-4">
-        <div className="relative w-[320px]">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" />
-          <Input placeholder="请输入名称或IP搜索" value={search} onChange={e => { setSearch(e.target.value); setCurrentPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] focus-visible:ring-[#165DFF] bg-white" />
-        </div>
-        <span className="text-sm text-[#86909C]">共 {filtered.length} 条</span>
+    <div className="blueedge-page space-y-4">
+      <div className="space-y-2">
+        <h1 className="text-xl font-semibold tracking-tight text-[var(--color-text-primary)]">边缘节点</h1>
+        <p className="text-sm text-[var(--color-text-secondary)]">是容器集群组成的基本元素，既可以是云主机，也可以是物理机，用于运行容器化应用的载体，边缘应用将以 Pod 的形式在节点上运行。</p>
       </div>
       {error && (
-        <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">
+        <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">
           {error}
         </div>
       )}
-      <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
-        <Table>
-          <TableHeader>
-            <TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">名称</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">角色</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">状态</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">CPU</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">内存</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">IP 地址</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">Pod 数</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
-              <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[140px]">操作</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading ? (
-              <TableRow><TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">正在加载节点数据...</TableCell></TableRow>
-            ) : paginated.length === 0 ? (
-              <TableRow><TableCell colSpan={9} className="text-center py-16 text-[#86909C] text-sm">暂无节点数据</TableCell></TableRow>
-            ) : paginated.map(row => (
-              <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
-                <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetailWithFreshData(row)}>{row.name}</TableCell>
-                <TableCell className="px-4 py-3"><Badge variant="outline" className={cn("text-xs font-normal", row.role === "cloud" ? "border-[#E8F3FF] text-[#165DFF] bg-[#E8F3FF]" : "border-[#E8FFEA] text-[#00B42A] bg-[#E8FFEA]")}>{row.role}</Badge></TableCell>
-                <TableCell className="px-4 py-3"><StatusBadge status={row.status} color={row.statusColor} /></TableCell>
-                <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.cpu}</TableCell>
-                <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.memory}</TableCell>
-                <TableCell className="text-sm text-[#4E5969] px-4 py-3 font-mono">{row.ip}</TableCell>
-                <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.pods}</TableCell>
-                <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-                <TableCell className="px-4 py-3">
-                  <div className="flex items-center gap-1">
-                    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetailWithFreshData(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button>
-                    <Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDelete(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+      {accessError && (
+        <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">
+          {accessError}
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-4 pt-5">
+        <div className="inline-flex rounded-xl border border-[var(--color-border)] bg-white p-1 shadow-sm">
+          <button
+            type="button"
+            onClick={() => setActiveTab("nodes")}
+            className={cn("h-9 rounded-[10px] px-4 text-sm font-semibold transition-colors", activeTab === "nodes" ? "bg-[var(--color-text-primary)] text-white" : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]")}
+          >
+            边缘节点 ({data.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab("access")}
+            className={cn("h-9 rounded-[10px] px-4 text-sm font-semibold transition-colors", activeTab === "access" ? "bg-[var(--color-text-primary)] text-white" : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]")}
+          >
+            接入配置 ({accessConfigs.length})
+          </button>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="relative w-[320px]">
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+            <Input
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setCurrentPage(1);
+              }}
+              placeholder={activeTab === "nodes" ? "输入节点名称搜索" : "输入接入配置名称搜索"}
+              className="h-10 rounded-xl border-[var(--color-input-border)] bg-white pl-11 text-sm"
+            />
+          </div>
+          <Button variant="outline" size="sm" onClick={loadNodes} className="blueedge-muted-button h-10 w-10 rounded-xl border-[var(--color-border-strong)] p-0" title="刷新">
+            <span className="sr-only">刷新</span>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+          <Button onClick={() => activeTab === "nodes" ? navigate("/nodes/access") : setAccessCreateOpen(true)} className="blueedge-primary-button h-10 rounded-xl px-4 text-sm">
+            <Plus className="h-4 w-4" />
+            {activeTab === "nodes" ? "接入节点" : "创建接入配置"}
+          </Button>
+        </div>
       </div>
-      {filtered.length > pageSize && (
+      {activeTab === "access" && (
+        <div className="rounded-xl border border-[#fde68a] bg-[#fffbeb] px-4 py-3 text-sm leading-6 text-[#92400e]">
+          接入配置当前仅保存配置元数据并提供命令模板；尚未接入 join token，不能视为节点已经真实安装或接入成功。
+        </div>
+      )}
+      <div className="table-card">
+        {activeTab === "nodes" ? (
+          <Table>
+            <TableHeader>
+              <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">名称</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">别名</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">状态</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">调度状态</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">标签</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">CPU</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">内存</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">版本</TableHead>
+                <TableHead className="w-[96px] px-4 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {isLoading ? (
+                <TableRow><TableCell colSpan={9}><div className="blueedge-empty-state"><span className="blueedge-empty-state-icon" aria-hidden="true" /><span className="text-sm">正在加载节点数据...</span></div></TableCell></TableRow>
+              ) : paginated.length === 0 ? (
+                <TableRow><TableCell colSpan={9}><div className="blueedge-empty-state"><span className="blueedge-empty-state-icon" aria-hidden="true" /><span className="text-sm">暂无节点数据</span></div></TableCell></TableRow>
+              ) : paginated.map(row => (
+                <TableRow key={row.name} className="h-[76px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
+                  <TableCell className="cursor-pointer px-4 py-3 text-sm font-semibold text-[var(--color-brand)] hover:underline" onClick={() => openDetailWithFreshData(row)}>{row.name}</TableCell>
+                  <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{row.alias || "-"}</TableCell>
+                  <TableCell className="px-4 py-3"><NodeStatePill status={row.status} /></TableCell>
+                  <TableCell className="px-4 py-3"><SchedulePill unschedulable={row.unschedulable} /></TableCell>
+                  <TableCell className="px-4 py-3">
+                    <div className="flex items-center gap-1.5">
+                      <span className="rounded-md bg-[var(--color-bg-soft)] px-2 py-1 text-xs text-[var(--color-text-primary)]">{row.labelPreview || "-"}</span>
+                      {Boolean(row.extraLabels) && <span className="rounded-md bg-[var(--color-brand-light)] px-2 py-1 text-xs font-semibold text-[var(--color-brand)]">+{row.extraLabels}</span>}
+                    </div>
+                  </TableCell>
+                  <TableCell className="px-4 py-3 text-sm text-[var(--color-text-primary)]">{row.cpuUsage || "-"} <span className="text-[var(--color-text-tertiary)]">/ {row.cpuCapacity || "-"}</span></TableCell>
+                  <TableCell className="px-4 py-3 text-sm text-[var(--color-text-primary)]">{row.memoryUsage || "-"} <span className="text-[var(--color-text-tertiary)]">/ {row.memoryCapacity || "-"}</span></TableCell>
+                  <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{row.version || row.kubelet || "-"}</TableCell>
+                  <TableCell className="px-4 py-3 text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button className="action-button h-10 w-10 rounded-xl" title="操作">
+                          <MoreHorizontal className="h-4 w-4" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-[156px] rounded-xl border-[var(--color-border)] p-2 shadow-xl">
+                        <DropdownMenuItem className="h-9 cursor-pointer rounded-lg text-sm" onSelect={() => toggleScheduling(row)}>
+                          {row.unschedulable ? <CheckCircle2 className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
+                          {row.unschedulable ? "恢复调度" : "暂停调度"}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem className="h-9 cursor-pointer rounded-lg text-sm" onSelect={() => openAliasDialog(row)}>
+                          <Pencil className="h-4 w-4" />
+                          编辑别名
+                        </DropdownMenuItem>
+                        <DropdownMenuItem className="h-9 cursor-pointer rounded-lg text-sm text-[var(--color-danger)] focus:text-[var(--color-danger)]" onSelect={() => openDelete(row)}>
+                          <Trash2 className="h-4 w-4 text-[var(--color-danger)]" />
+                          移除节点
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">名称</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">节点标签</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">驱动方式</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">接入地址</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">通信协议</TableHead>
+                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
+                <TableHead className="w-[96px] px-4 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filteredAccessConfigs.length === 0 ? (
+                <TableRow><TableCell colSpan={7}><div className="blueedge-empty-state"><span className="blueedge-empty-state-icon" aria-hidden="true" /><span className="text-sm">暂无接入配置</span></div></TableCell></TableRow>
+              ) : filteredAccessConfigs.map((item) => (
+                <TableRow key={item.name} className="h-[69px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
+                  <TableCell className="px-4 py-3 text-sm font-semibold text-[var(--color-brand)]">{item.name}</TableCell>
+                  <TableCell className="px-4 py-3"><span className="inline-block max-w-[360px] truncate rounded-md bg-[var(--color-bg-soft)] px-2 py-1 text-sm text-[var(--color-text-primary)]">{item.nodeLabel}</span></TableCell>
+                  <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{item.driver}</TableCell>
+                  <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{item.address}</TableCell>
+                  <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{item.protocol}</TableCell>
+                  <TableCell className="px-4 py-3 text-sm text-[var(--color-text-tertiary)]">{item.createdAt}</TableCell>
+                  <TableCell className="px-4 py-3 text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button className="action-button h-10 w-10 rounded-xl" title="操作">
+                          <MoreHorizontal className="h-4 w-4" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-[156px] rounded-xl border-[var(--color-border)] p-2 shadow-xl">
+                        <DropdownMenuItem className="h-9 cursor-pointer rounded-lg text-sm" onSelect={() => openAccessLabelDialog(item)}>
+                          <Pencil className="h-4 w-4" />
+                          修改标签
+                        </DropdownMenuItem>
+                        <DropdownMenuItem className="h-9 cursor-pointer rounded-lg text-sm text-[var(--color-danger)] focus:text-[var(--color-danger)]" onSelect={async () => {
+                          try {
+                            await deleteAccessConfig(item.name);
+                            await loadAccessConfigs();
+                          } catch (err) {
+                            setAccessError(err instanceof Error ? err.message : "接入配置删除失败");
+                          }
+                        }}>
+                          <Trash2 className="h-4 w-4 text-[var(--color-danger)]" />
+                          删除
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </div>
+      {activeTab === "nodes" && filtered.length > pageSize && (
         <div className="flex items-center justify-between">
-          <span className="text-sm text-[#86909C]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
+          <span className="text-sm text-[var(--color-text-tertiary)]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
           <Pagination><PaginationContent>
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="h-7 w-7 p-0 border-[#C9CDD4]"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
+            <PaginationItem><Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="h-7 w-7 p-0"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
             {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-              <PaginationItem key={page}><Button variant={currentPage === page ? "default" : "outline"} size="sm" onClick={() => setCurrentPage(page)} className={cn("h-7 w-7 p-0 text-xs", currentPage === page ? "bg-[#165DFF] text-white hover:bg-[#165DFF]/90" : "border-[#C9CDD4] text-[#4E5969]")}>{page}</Button></PaginationItem>
+              <PaginationItem key={page}><Button variant={currentPage === page ? "default" : "outline"} size="sm" onClick={() => setCurrentPage(page)} className={cn("h-7 w-7 p-0 text-xs", currentPage === page ? "bg-[var(--color-text-primary)] text-white hover:bg-[var(--color-brand-dark)]" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}>{page}</Button></PaginationItem>
             ))}
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="h-7 w-7 p-0 border-[#C9CDD4]"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
+            <PaginationItem><Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="h-7 w-7 p-0"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
           </PaginationContent></Pagination>
         </div>
       )}
+      <Dialog open={!!aliasTarget} onOpenChange={(open) => {
+        if (!open) {
+          setAliasTarget(null);
+          setAliasValue("");
+        }
+      }}>
+        <DialogContent className="max-w-[420px] rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-base">编辑别名</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="text-sm text-[var(--color-text-secondary)]">节点：<span className="font-semibold text-[var(--color-text-primary)]">{aliasTarget?.name}</span></div>
+            <Input value={aliasValue} onChange={(event) => setAliasValue(event.target.value)} placeholder="请输入节点别名" className="h-10 rounded-xl" />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAliasTarget(null)}>取消</Button>
+            <Button onClick={saveAlias}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={accessCreateOpen} onOpenChange={(open) => {
+        if (open) {
+          setAccessCreateOpen(true);
+          return;
+        }
+        requestCloseAccessCreate();
+      }}>
+        <DialogContent className="!flex max-h-[92vh] max-w-[760px] flex-col gap-0 overflow-hidden rounded-[24px] p-0" showCloseButton>
+          <DialogHeader className="border-b border-[var(--color-border)] px-7 py-5">
+            <DialogTitle className="text-lg font-semibold">创建接入配置</DialogTitle>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-7 py-6">
+            <AccessField label="配置名称" required>
+              <Input value={accessForm.name} onChange={(event) => setAccessForm({ ...accessForm, name: event.target.value })} placeholder="请输入配置名称" className="h-11 rounded-xl" />
+            </AccessField>
+            <AccessField label="关联边缘单元" required>
+              <select value={accessForm.edgeUnitRef} onChange={(event) => {
+                const edgeUnit = edgeUnitOptions.find((item) => item.name === event.target.value);
+                setAccessForm({ ...accessForm, edgeUnitRef: event.target.value, kubeEdgeVersion: edgeUnit?.version || accessForm.kubeEdgeVersion });
+              }} className="h-11 w-full rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm outline-none focus:border-[var(--color-brand)]">
+                <option value="">请选择边缘单元</option>
+                {edgeUnitOptions.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+              </select>
+            </AccessField>
+            <AccessField label="节点名称" required>
+              <Input value={accessForm.nodeName} onChange={(event) => setAccessForm({ ...accessForm, nodeName: event.target.value })} placeholder="请输入未来注册的节点名称" className="h-11 rounded-xl" />
+            </AccessField>
+            <div className="grid gap-4 md:grid-cols-2">
+              <AccessField label="节点架构" required>
+                <select value={accessForm.architecture} onChange={(event) => setAccessForm({ ...accessForm, architecture: event.target.value as AccessConfigForm["architecture"] })} className="h-11 w-full rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm outline-none focus:border-[var(--color-brand)]">
+                  <option value="amd64">amd64</option>
+                  <option value="arm64">arm64</option>
+                  <option value="arm">arm</option>
+                </select>
+              </AccessField>
+              <AccessField label="KubeEdge 版本" required>
+                <Input value={accessForm.kubeEdgeVersion} onChange={(event) => setAccessForm({ ...accessForm, kubeEdgeVersion: event.target.value })} placeholder="v1.21.0" className="h-11 rounded-xl" />
+              </AccessField>
+            </div>
+            <AccessField label="驱动方式" required>
+              <SegmentedChoice
+                value={accessForm.driver}
+                options={["systemd", "cgroups"]}
+                onChange={(driver) => setAccessForm({ ...accessForm, driver: driver as AccessConfigForm["driver"] })}
+              />
+            </AccessField>
+            <AccessField label="CRI 服务地址" required>
+              <select value={accessForm.criAddress} onChange={(event) => setAccessForm({ ...accessForm, criAddress: event.target.value })} className="h-11 w-full rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm outline-none focus:border-[var(--color-brand)]">
+                <option value="">点击读取现有 CRI 服务地址</option>
+                <option value="/run/containerd/containerd.sock">/run/containerd/containerd.sock</option>
+                <option value="/var/run/dockershim.sock">/var/run/dockershim.sock</option>
+              </select>
+            </AccessField>
+            <AccessField label="访问地址" required>
+              <Input value={accessForm.address} onChange={(event) => setAccessForm({ ...accessForm, address: event.target.value })} placeholder="example.com:10000" className="h-11 rounded-xl" />
+            </AccessField>
+            <AccessField label="通信协议" required>
+              <SegmentedChoice
+                value={accessForm.protocol}
+                options={["websocket", "QUIC"]}
+                onChange={(protocol) => setAccessForm({ ...accessForm, protocol: protocol as AccessConfigForm["protocol"] })}
+              />
+            </AccessField>
+            <AccessField label="镜像仓库" required>
+              <Input value={accessForm.registry} onChange={(event) => setAccessForm({ ...accessForm, registry: event.target.value })} className="h-11 rounded-xl" />
+              <div className="mt-3 flex gap-3">
+                <Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => setAccessForm({ ...accessForm, registry: "registry.cn-shanghai.aliyuncs.com/kubeedge/default" })}>引用云端地址</Button>
+                <Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => setAccessForm({ ...accessForm, registry: "registry.cn-beijing.aliyuncs.com/kubeedge" })}>一键填充默认仓库</Button>
+              </div>
+              <div className="mt-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-soft)] p-4 text-sm text-[var(--color-text-secondary)]">
+                <p className="mb-2 font-semibold text-[var(--color-text-primary)]">镜像仓库说明</p>
+                <p>用于拉取边端组件（Mosquitto / pause / installation-package）</p>
+                <p>建议使用企业内网仓库，公网仓库需确保可访问。</p>
+              </div>
+            </AccessField>
+            <AccessField label="描述">
+              <Input value={accessForm.description} onChange={(event) => setAccessForm({ ...accessForm, description: event.target.value })} placeholder="请输入描述" className="h-11 rounded-xl" />
+            </AccessField>
+            <AccessField label="标签匹配规则">
+              <div className="space-y-3">
+                {accessForm.labelRules.map((rule, index) => (
+                  <div key={index} className="grid grid-cols-[1fr_24px_1fr_40px] items-center gap-3">
+                    <Input
+                      value={rule.key}
+                      onChange={(event) => setAccessForm({ ...accessForm, labelRules: accessForm.labelRules.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item) })}
+                      placeholder="键（key）"
+                      className="h-11 rounded-xl"
+                    />
+                    <span className="text-center text-[var(--color-text-tertiary)]">=</span>
+                    <Input
+                      value={rule.value}
+                      onChange={(event) => setAccessForm({ ...accessForm, labelRules: accessForm.labelRules.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item) })}
+                      placeholder="值（value）"
+                      className="h-11 rounded-xl"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setAccessForm({ ...accessForm, labelRules: accessForm.labelRules.length > 1 ? accessForm.labelRules.filter((_, itemIndex) => itemIndex !== index) : [{ key: "", value: "" }] })}
+                      className="flex h-10 w-10 items-center justify-center rounded-xl text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]"
+                      title="删除标签规则"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button type="button" onClick={() => setAccessForm({ ...accessForm, labelRules: [...accessForm.labelRules, { key: "", value: "" }] })} className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-[var(--color-text-primary)]">
+                <Plus className="h-4 w-4" />
+                添加标签规则
+              </button>
+            </AccessField>
+          </div>
+          <DialogFooter className="border-t border-[var(--color-border)] px-7 py-5">
+            <Button variant="outline" className="h-10 rounded-xl px-5" onClick={requestCloseAccessCreate}>取消</Button>
+            <Button className="h-10 rounded-xl px-6" onClick={() => void createAccessConfig()} disabled={!accessForm.name.trim() || !accessForm.edgeUnitRef || !accessForm.nodeName.trim() || !accessForm.address.trim()}>确定</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <AlertDialog open={accessCancelConfirmOpen} onOpenChange={setAccessCancelConfirmOpen}>
+        <AlertDialogContent className="z-[120] max-w-[480px] rounded-2xl p-0">
+          <AlertDialogHeader className="border-b border-[var(--color-border)] px-7 py-5">
+            <AlertDialogTitle className="flex items-center gap-3 text-lg">
+              <AlertTriangle className="h-5 w-5 text-[var(--color-danger)]" />
+              确认取消创建
+            </AlertDialogTitle>
+          </AlertDialogHeader>
+          <AlertDialogDescription className="px-7 py-7 text-base text-[var(--color-text-secondary)]">
+            取消后，当前创建内容将不会保存。
+          </AlertDialogDescription>
+          <AlertDialogFooter className="border-t border-[var(--color-border)] px-7 py-5">
+            <AlertDialogCancel className="h-10 rounded-xl px-6">取消</AlertDialogCancel>
+            <AlertDialogAction className="h-10 rounded-xl bg-[var(--color-danger)] px-6 text-white hover:bg-[var(--color-danger)]/90" onClick={confirmCancelAccessCreate}>
+              确认取消
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <Dialog open={!!accessLabelTarget} onOpenChange={(open) => {
+        if (!open) {
+          setAccessLabelTarget(null);
+          setAccessLabelKey("");
+          setAccessLabelValue("");
+        }
+      }}>
+        <DialogContent className="max-w-[460px] rounded-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-base">修改标签</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div className="text-sm text-[var(--color-text-secondary)]">配置：<span className="font-semibold text-[var(--color-text-primary)]">{accessLabelTarget?.name}</span></div>
+            <div className="grid grid-cols-[1fr_24px_1fr] items-center gap-3">
+              <Input value={accessLabelKey} onChange={(event) => setAccessLabelKey(event.target.value)} placeholder="键（key）" className="h-10 rounded-xl" />
+              <span className="text-center text-[var(--color-text-tertiary)]">=</span>
+              <Input value={accessLabelValue} onChange={(event) => setAccessLabelValue(event.target.value)} placeholder="值（value）" className="h-10 rounded-xl" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAccessLabelTarget(null)}>取消</Button>
+            <Button onClick={() => void saveAccessLabels()}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
         <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
-          <SheetHeader className="pb-4 border-b border-[#E5E6EB]">
+          <SheetHeader className="pb-4 border-b border-[var(--color-border-strong)]">
             <SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle>
             <div className="flex items-center gap-2 mt-2">
               <StatusBadge status={selected?.status || ""} color={selected?.statusColor || "default"} />
@@ -380,7 +882,7 @@ export function Nodes() {
           </SheetHeader>
           {selected && (
             <Tabs defaultValue="overview" className="mt-4">
-              <TabsList className="bg-[#F7F8FA] h-9">
+              <TabsList className="bg-[var(--color-bg-soft)] h-9">
                 <TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger>
                 <TabsTrigger value="resource" className="text-xs h-7">资源</TabsTrigger>
                 <TabsTrigger value="conditions" className="text-xs h-7">状态条件</TabsTrigger>
@@ -407,7 +909,7 @@ export function Nodes() {
                     {selected.unschedulable ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <Ban className="w-3.5 h-3.5 mr-1" />}
                     {selected.unschedulable ? "恢复调度" : "设为不可调度"}
                   </Button>
-                  <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => openDelete(selected)}><Trash2 className="w-3.5 h-3.5 mr-1 text-[#F53F3F]" /><span className="text-[#F53F3F]">删除</span></Button>
+                  <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => openDelete(selected)}><Trash2 className="w-3.5 h-3.5 mr-1 text-[var(--color-danger)]" /><span className="text-[var(--color-danger)]">删除</span></Button>
                 </div>
               </TabsContent>
               <TabsContent value="resource" className="mt-3 space-y-3">
@@ -416,21 +918,21 @@ export function Nodes() {
                 <Info label="存储容量" value={selected.capacity?.storage || "-"} />
                 <Info label="CPU 使用" value={selected.cpu} />
                 <Info label="内存使用" value={selected.memory} />
-                <div className="bg-[#F7F8FA] rounded-md p-3"><p className="text-xs text-[#86909C] mb-1">CPU 使用率</p><div className="h-2 bg-[#E5E6EB] rounded-full"><div className="h-full bg-[#165DFF] rounded-full" style={{ width: "30%" }} /></div></div>
-                <div className="bg-[#F7F8FA] rounded-md p-3"><p className="text-xs text-[#86909C] mb-1">内存使用率</p><div className="h-2 bg-[#E5E6EB] rounded-full"><div className="h-full bg-[#00B42A] rounded-full" style={{ width: "25%" }} /></div></div>
+                <div className="bg-[var(--color-bg-soft)] rounded-md p-3"><p className="text-xs text-[var(--color-text-tertiary)] mb-1">CPU 使用率</p><div className="h-2 bg-[var(--color-border-strong)] rounded-full"><div className="h-full bg-[var(--color-brand)] rounded-full" style={{ width: "30%" }} /></div></div>
+                <div className="bg-[var(--color-bg-soft)] rounded-md p-3"><p className="text-xs text-[var(--color-text-tertiary)] mb-1">内存使用率</p><div className="h-2 bg-[var(--color-border-strong)] rounded-full"><div className="h-full bg-[var(--color-success)] rounded-full" style={{ width: "25%" }} /></div></div>
               </TabsContent>
               <TabsContent value="conditions" className="mt-3 space-y-2">
                 {(selected.conditions || []).map((c, i) => (
-                  <div key={i} className="flex items-start gap-3 p-3 rounded-md bg-[#F7F8FA]">
-                    <div className={cn("w-2 h-2 rounded-full mt-1.5 flex-shrink-0", c.status === "True" ? "bg-[#00B42A]" : "bg-[#F53F3F]")} />
-                    <div className="flex-1"><p className="text-sm font-medium text-[#1D2129]">{c.type}</p><p className="text-xs text-[#4E5969] mt-0.5">{c.message}</p></div>
-                    <Badge className={cn("text-xs font-normal flex-shrink-0", c.status === "True" ? "bg-[#E8FFEA] text-[#00B42A]" : "bg-[#FFECE8] text-[#F53F3F]")}>{c.status}</Badge>
+                  <div key={i} className="flex items-start gap-3 p-3 rounded-md bg-[var(--color-bg-soft)]">
+                    <div className={cn("w-2 h-2 rounded-full mt-1.5 flex-shrink-0", c.status === "True" ? "bg-[var(--color-success)]" : "bg-[var(--color-danger)]")} />
+                    <div className="flex-1"><p className="text-sm font-medium text-[var(--color-text-primary)]">{c.type}</p><p className="text-xs text-[var(--color-text-secondary)] mt-0.5">{c.message}</p></div>
+                    <Badge className={cn("text-xs font-normal flex-shrink-0", c.status === "True" ? "bg-[var(--color-success-soft)] text-[var(--color-success)]" : "bg-[var(--color-danger-soft)] text-[var(--color-danger)]")}>{c.status}</Badge>
                   </div>
                 ))}
               </TabsContent>
               <TabsContent value="yaml" className="mt-3">
                 <div className="relative">
-                  <pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-x-auto">{yamlNode(selected)}</pre>
+                  <pre className="blueedge-code-block p-4 overflow-x-auto">{yamlNode(selected)}</pre>
                   <Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(yamlNode(selected))}><Copy className="w-3.5 h-3.5" /></Button>
                 </div>
               </TabsContent>
@@ -440,8 +942,8 @@ export function Nodes() {
       </Sheet>
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle className="text-base">确认删除节点？</AlertDialogTitle><AlertDialogDescription className="text-sm">即将删除节点 <span className="font-medium text-[#1D2129]">{deleteItem?.name}</span>，此操作不可恢复。</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel><AlertDialogAction className="h-8 text-sm bg-[#F53F3F] text-white hover:bg-[#F53F3F]/90" onClick={confirmDelete}>确认删除</AlertDialogAction></AlertDialogFooter>
+          <AlertDialogHeader><AlertDialogTitle className="text-base">确认删除节点？</AlertDialogTitle><AlertDialogDescription className="text-sm">即将删除节点 <span className="font-medium text-[var(--color-text-primary)]">{deleteItem?.name}</span>，此操作不可恢复。</AlertDialogDescription></AlertDialogHeader>
+          <AlertDialogFooter><AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel><AlertDialogAction className="h-8 text-sm" onClick={confirmDelete}>确认删除</AlertDialogAction></AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
     </div>
@@ -449,5 +951,54 @@ export function Nodes() {
 }
 
 function Info({ label, value }: { label: string; value: string }) {
-  return (<div className="bg-[#F7F8FA] rounded-md px-3 py-2"><p className="text-xs text-[#86909C] mb-0.5">{label}</p><p className="text-sm text-[#1D2129] font-medium truncate">{value}</p></div>);
+  return (<div className="blueedge-info-card"><p className="blueedge-info-card-label">{label}</p><p className="blueedge-info-card-value">{value}</p></div>);
+}
+
+function NodeStatePill({ status }: { status: string }) {
+  const healthy = status === "健康" || status === "就绪";
+  return (
+    <span className={cn("inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-xs font-semibold", healthy ? "bg-[var(--color-success-soft)] text-[var(--color-success)]" : "bg-[var(--color-warning-soft)] text-[var(--color-warning)]")}>
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      {healthy ? "健康" : "未知"}
+    </span>
+  );
+}
+
+function SchedulePill({ unschedulable }: { unschedulable: boolean }) {
+  return (
+    <span className={cn("inline-flex h-7 items-center rounded-full px-3 text-xs font-semibold", unschedulable ? "bg-[var(--color-bg-soft)] text-[var(--color-text-tertiary)]" : "bg-[var(--color-success-soft)] text-[var(--color-success)]")}>
+      {unschedulable ? "不可调度" : "可调度"}
+    </span>
+  );
+}
+
+function AccessField({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="mb-2 text-sm font-semibold text-[var(--color-text-primary)]">
+        {label} {required && <span className="text-[var(--color-danger)]">*</span>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function SegmentedChoice({ value, options, onChange }: { value: string; options: string[]; onChange: (value: string) => void }) {
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {options.map((option) => (
+        <button
+          key={option}
+          type="button"
+          onClick={() => onChange(option)}
+          className={cn(
+            "h-12 rounded-xl border-2 text-sm font-semibold transition-colors",
+            value === option ? "border-[var(--color-text-primary)] bg-[var(--color-text-primary)] text-white" : "border-[var(--color-input-border)] bg-white text-[var(--color-text-primary)] hover:border-[var(--color-input-border-hover)]",
+          )}
+        >
+          {option}
+        </button>
+      ))}
+    </div>
+  );
 }
