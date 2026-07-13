@@ -46,19 +46,35 @@ function buildUrl(baseUrl: string, path: string, params?: RequestOptions["params
 
 async function parseResponse<T>(response: Response): Promise<ApiEnvelope<T>> {
   const contentType = response.headers.get("content-type") || "";
-  const data = contentType.includes("application/json")
+  const isJson = contentType.includes("application/json");
+  const data = isJson
     ? await response.json().catch(() => null)
     : await response.text().catch(() => "");
 
   if (!response.ok) {
-    const message =
-      typeof data === "object" && data && "message" in data
-        ? String((data as { message?: unknown }).message)
-        : typeof data === "object" && data && "error" in data
-          ? String((data as { error?: unknown }).error)
-          : typeof data === "string" && data.trim()
-            ? data.trim()
-        : `Request failed with status ${response.status}`;
+    if (!isJson && import.meta.env.DEV && typeof data === "string" && data.trim()) {
+      console.error("Non-JSON API error response", {
+        status: response.status,
+        contentType,
+        text: data,
+      });
+    }
+
+    const jsonMessage = typeof data === "object" && data
+      ? ["message", "error", "code"]
+          .map((key) => (data as Record<string, unknown>)[key])
+          .find((value) => typeof value === "string" && value.trim())
+      : undefined;
+    const statusMessage: Record<number, string> = {
+      401: "登录状态已失效",
+      403: "没有操作权限",
+      404: "请求的接口不存在，请确认服务版本是否已更新",
+      502: "上游服务暂时不可用",
+      503: "集群服务暂时不可用",
+    };
+    const message = typeof jsonMessage === "string"
+      ? jsonMessage
+      : statusMessage[response.status] || "请求失败，请稍后重试";
     throw new Error(message);
   }
 
