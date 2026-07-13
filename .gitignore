@@ -2,8 +2,18 @@ node_modules/
 dist/
 build/
 .env
+.env.*
+!.env.example
 .DS_Store
 *.log
+*.pid
+*.token
+*token*.txt
+*.response
+response*.json
+tmp/
+.tmp/
+coverage/
 upstream/kubeedge-dashboard/
 
 *.tar
