@@ -4,4 +4,3 @@ export interface DeviceSummarySources {
   nodeGroups: any[];
   edgeUnitConfigMaps: any[];
 }
-

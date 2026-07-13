@@ -263,4 +263,3 @@ export async function getPersistentVolumeClaimSummary(namespace: string, name: s
   const usedBy = scanPvcUsedBy(namespace, name, sources);
   return { item: persistentVolumeClaimView(pvc, pvByName, storageClasses, usedBy), ...(warnings.length > 0 ? { warnings } : {}) };
 }
-

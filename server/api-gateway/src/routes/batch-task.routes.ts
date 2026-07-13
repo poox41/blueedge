@@ -92,4 +92,3 @@ export function registerBatchTaskRoutes(app: express.Express) {
     }
   });
 }
-

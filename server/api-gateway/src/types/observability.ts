@@ -10,4 +10,3 @@ export interface ObservabilityQuery {
   sinceSeconds?: unknown;
   previous?: unknown;
 }
-

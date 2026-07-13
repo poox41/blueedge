@@ -46,4 +46,3 @@ export function registerDeviceRoutes(app: express.Express) {
     }
   });
 }
-

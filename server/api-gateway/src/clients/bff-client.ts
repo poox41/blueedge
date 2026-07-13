@@ -70,4 +70,3 @@ export async function proxyBffRequest(req: express.Request, res: express.Respons
   if (contentType) res.type(contentType);
   res.status(response.status).send(Buffer.from(await response.arrayBuffer()));
 }
-

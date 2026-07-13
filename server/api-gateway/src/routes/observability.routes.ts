@@ -37,4 +37,3 @@ export function registerObservabilityRoutes(app: express.Express) {
     }
   });
 }
-

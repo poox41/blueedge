@@ -208,4 +208,3 @@ server/api-gateway/src/
 5. `BatchTasks.tsx` / `BatchWorkloads.tsx` 先接任务创建和任务状态查询。
 
 第二轮再做节点、边缘应用、Pod、设备、存储的 summary 聚合接口。
-

@@ -178,4 +178,3 @@ export function knownEdgeUnitNames(edgeUnitConfigMaps: any[], nodeGroupByName: M
 export function nodeNames(nodes: any[]) {
   return new Set(nodes.map(nodeNameOf));
 }
-

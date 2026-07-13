@@ -4,4 +4,3 @@ export interface PvcReferenceSources {
   statefulSets: any[];
   daemonSets: any[];
 }
-

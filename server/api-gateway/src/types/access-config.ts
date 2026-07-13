@@ -7,4 +7,3 @@ export interface AccessConfigCommandView {
   expiresAt: null;
   warnings?: unknown[];
 }
-

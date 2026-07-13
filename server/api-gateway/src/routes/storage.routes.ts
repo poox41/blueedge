@@ -51,4 +51,3 @@ export function registerStorageRoutes(app: express.Express) {
     }
   });
 }
-

@@ -76,4 +76,3 @@ export async function getK8sText(path: string) {
   }
   return text;
 }
-

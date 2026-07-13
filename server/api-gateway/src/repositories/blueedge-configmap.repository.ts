@@ -38,7 +38,6 @@ export async function ensureNamespace() {
     });
   });
 }
-
 export async function create(resource: any): Promise<any> {
   return requestK8sJson(configMapPath(), {
     method: "POST",
@@ -58,4 +57,3 @@ export async function remove(configMapName: string): Promise<any> {
     method: "DELETE",
   });
 }
-

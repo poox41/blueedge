@@ -317,4 +317,3 @@ export async function listAccessConfigViewsForNodes(warnings: EdgeUnitWarning[],
     .filter((item) => isValidAccessConfigMap(item, warnings))
     .map((item) => buildAccessConfigView(item, nodes));
 }
-

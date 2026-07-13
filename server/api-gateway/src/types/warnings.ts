@@ -3,4 +3,3 @@ export interface EdgeUnitWarning {
   code?: string;
   message: string;
 }
-

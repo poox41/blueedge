@@ -35,4 +35,3 @@ export function isValidKubernetesName(name: string): boolean {
 export function isHostPort(value: string): boolean {
   return /^[a-zA-Z0-9.-]+:\d{1,5}$/.test(value) && Number(value.split(":").pop()) > 0 && Number(value.split(":").pop()) <= 65535;
 }
-

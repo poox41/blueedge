@@ -20,4 +20,3 @@ export interface EdgeUnitSources extends NodeGroupDetails {
 export interface WarningCollector {
   warnings: EdgeUnitWarning[];
 }
-

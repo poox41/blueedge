@@ -67,4 +67,3 @@ export function registerAccessConfigRoutes(app: express.Express) {
     });
   });
 }
-
