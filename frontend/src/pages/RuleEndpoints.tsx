@@ -1,312 +1,549 @@
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { useState, useMemo, useEffect, useCallback } from "react";
-import { Button } from "@/components/ui/button";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
-import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { createRuleEndpointResource, deleteRuleEndpointResource, getRuleEndpoint, listRuleEndpoints, updateRuleEndpointResource } from "@/api/services/resources";
+import { createRuleEndpointResource, deleteRuleEndpointResource, getRuleEndpoint, listRuleEndpoints } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, RuleEndpointView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { Copy, MoreHorizontal, Plus, RefreshCw, Search, Trash2, X } from "lucide-react";
 
-interface RE { namespace: string; name: string; ruleEndpointType: string; targetResource: string; description: string; createdAt: string; raw: KubeResource; }
+type EndpointType = "rest" | "eventbus" | "servicebus";
 
-function toRuleEndpointRow(item: RuleEndpointView): RE {
-  const raw = item.raw as Record<string, any>;
-  return {
-    namespace: item.namespace,
-    name: item.name,
-    ruleEndpointType: item.type,
-    targetResource: item.targetResource,
-    description: raw.spec?.description || raw.description || "",
-    createdAt: item.createdAt,
-    raw: item.raw,
-  };
+interface MessageEndpointRow {
+  namespace: string;
+  name: string;
+  ruleEndpointType: string;
+  targetResource: string;
+  createdAt: string;
+  connected: boolean;
+  raw: KubeResource;
 }
 
-function yaml(n: RE) {
-  return `apiVersion: rules.kubeedge.io/v1
-kind: RuleEndpoint
-metadata:
-  name: ${n.name}
-  namespace: ${n.namespace}
-spec:
-  ruleEndpointType: ${n.ruleEndpointType}
-  targetResource: ${n.targetResource || '""'}`;
-}
+type CreateForm = {
+  type: EndpointType;
+  namespace: string;
+  name: string;
+};
 
-function normalizeRuleEndpointType(type: string): "eventbus" | "rest" | "servicebus" {
-  const normalized = type.toLowerCase();
-  if (normalized === "rest") return "rest";
+const endpointTypeOptions: Array<{ key: EndpointType; label: string; desc: string }> = [
+  { key: "rest", label: "Rest", desc: "云端端点，向边缘发送消息请求的源端点。或者作为目标端点，从边缘接收消息。" },
+  { key: "eventbus", label: "Event Bus", desc: "边端端点，可作为源端点，向云端发送数据。或者作为目标端点，从云端接收消息。" },
+  { key: "servicebus", label: "Service Bus", desc: "边端端点，可作为目标端点，用于接收从云端传递的消息。" },
+];
+
+const namespaceManagementUrl = "https://183.95.195.121:31417/kpanda/clusters/ali-139-131/namespaces";
+
+function normalizeRuleEndpointType(type: string): EndpointType {
+  const normalized = type.toLowerCase().replace(/[\s_-]/g, "");
+  if (normalized === "rest" || normalized === "http") return "rest";
   if (normalized === "servicebus") return "servicebus";
   return "eventbus";
-}
-
-function propertyKeyForType(type: string): "topic" | "resource" | "path" {
-  const normalized = normalizeRuleEndpointType(type);
-  if (normalized === "rest") return "resource";
-  if (normalized === "servicebus") return "path";
-  return "topic";
 }
 
 function displayRuleEndpointType(type: string): string {
   const normalized = normalizeRuleEndpointType(type);
   if (normalized === "rest") return "Rest";
-  if (normalized === "servicebus") return "ServiceBus";
-  return "EventBus";
+  if (normalized === "servicebus") return "Service Bus";
+  return "Event Bus";
 }
 
-function buildRuleEndpointResource(form: { name: string; namespace: string; type: string; targetResource: string }): KubeResource {
-  const type = normalizeRuleEndpointType(form.type);
-  const targetResource = form.targetResource.trim();
+function endpointLocation(type: string): string {
+  return normalizeRuleEndpointType(type) === "rest" ? "云端" : "边端";
+}
+
+function isEndpointConnected(item: RuleEndpointView): boolean {
+  const raw = item.raw as Record<string, any>;
+  const phase = String(raw.status?.phase || raw.status?.state || raw.status?.connectionStatus || "").toLowerCase();
+  if (phase) return ["ready", "running", "connected", "online", "true"].includes(phase);
+  return normalizeRuleEndpointType(item.type) !== "rest";
+}
+
+function toRuleEndpointRow(item: RuleEndpointView): MessageEndpointRow {
+  return {
+    namespace: item.namespace,
+    name: item.name,
+    ruleEndpointType: item.type,
+    targetResource: item.targetResource,
+    createdAt: item.createdAt,
+    connected: isEndpointConnected(item),
+    raw: item.raw,
+  };
+}
+
+function propertyKeyForType(type: EndpointType): "topic" | "resource" | "path" {
+  if (type === "rest") return "resource";
+  if (type === "servicebus") return "path";
+  return "topic";
+}
+
+function buildRuleEndpointResource(form: CreateForm): KubeResource {
   return {
     apiVersion: "rules.kubeedge.io/v1",
     kind: "RuleEndpoint",
     metadata: {
-      name: form.name,
+      name: form.name.trim(),
       namespace: form.namespace,
     },
     spec: {
-      ruleEndpointType: type,
-      properties: targetResource ? { [propertyKeyForType(type)]: targetResource } : {},
+      ruleEndpointType: form.type,
+      properties: {
+        [propertyKeyForType(form.type)]: "",
+      },
     },
   };
 }
 
+function endpointYaml(row: MessageEndpointRow) {
+  return `apiVersion: rules.kubeedge.io/v1
+kind: RuleEndpoint
+metadata:
+  name: ${row.name}
+  namespace: ${row.namespace}
+spec:
+  ruleEndpointType: ${normalizeRuleEndpointType(row.ruleEndpointType)}
+  targetResource: ${row.targetResource || '""'}`;
+}
+
+function formatCreatedAt(value: string) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
+function validEndpointName(name: string) {
+  return /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name) && name.length <= 253;
+}
+
 export function RuleEndpoints() {
   const namespaces = useNamespaceOptions();
-  const [data, setData] = useState<RE[]>([]);
+  const namespaceItems = useMemo(() => namespaces.filter((item) => item.value !== "all"), [namespaces]);
+  const [data, setData] = useState<MessageEndpointRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [ns, setNs] = useState("all");
-  const [page, setPage] = useState(1);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [selected, setSelected] = useState<RE | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [delOpen, setDelOpen] = useState(false);
-  const [delItem, setDelItem] = useState<RE | null>(null);
-  const [form, setForm] = useState({ name: "", namespace: "default", type: "eventbus", targetResource: "" });
-  const [editItem, setEditItem] = useState<RE | null>(null);
-  const [editForm, setEditForm] = useState({ type: "eventbus", targetResource: "", description: "" });
-  const pageSize = 10;
+  const [form, setForm] = useState<CreateForm>({ type: "rest", namespace: "default", name: "" });
+  const [refreshingNamespaces, setRefreshingNamespaces] = useState(false);
+  const [menuTarget, setMenuTarget] = useState<MessageEndpointRow | null>(null);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+  const [deleteTarget, setDeleteTarget] = useState<MessageEndpointRow | null>(null);
+  const [detailTarget, setDetailTarget] = useState<MessageEndpointRow | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setError("");
     try {
-      const rows = await listRuleEndpoints(ns === "all" ? undefined : ns);
+      const rows = await listRuleEndpoints();
       setData(rows.map(toRuleEndpointRow));
-      setPage(1);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "规则端点数据加载失败");
+      setError(err instanceof Error ? err.message : "消息端点数据加载失败");
       setData([]);
     } finally {
       setIsLoading(false);
     }
-  }, [ns]);
+  }, []);
 
   useEffect(() => {
     void loadData();
   }, [loadData]);
 
-  const filtered = useMemo(() => {
-    let r = data;
-    if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
-    return r;
-  }, [data, ns, search]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const start = (page - 1) * pageSize;
-  const paginated = filtered.slice(start, start + pageSize);
+  useEffect(() => {
+    if (!createOpen) return;
+    setForm((current) => ({
+      ...current,
+      namespace: namespaceItems.some((item) => item.value === current.namespace) ? current.namespace : namespaceItems[0]?.value || "default",
+    }));
+  }, [createOpen, namespaceItems]);
 
-  const openDetail = async (d: RE) => {
-    setSelected(d);
+  const filtered = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    return data.filter((row) => !keyword || row.name.toLowerCase().includes(keyword));
+  }, [data, search]);
+
+  const openMenu = (row: MessageEndpointRow, button: HTMLButtonElement) => {
+    const rect = button.getBoundingClientRect();
+    const width = 160;
+    setMenuPosition({
+      top: rect.bottom + 10,
+      left: Math.min(window.innerWidth - width - 16, Math.max(16, rect.right - width)),
+    });
+    setMenuTarget((current) => (current?.name === row.name && current.namespace === row.namespace ? null : row));
+  };
+
+  const openDetail = async (row: MessageEndpointRow) => {
+    setDetailTarget(row);
     setDetailOpen(true);
     try {
-      setSelected(toRuleEndpointRow(await getRuleEndpoint(d.namespace, d.name)));
+      const detail = await getRuleEndpoint(row.namespace, row.name);
+      setDetailTarget(toRuleEndpointRow(detail));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载规则端点详情失败");
+      setError(err instanceof Error ? err.message : "加载消息端点详情失败");
     }
   };
-  const openEdit = async (d: RE) => {
-    setIsLoading(true);
-    setError("");
-    try {
-      const detail = toRuleEndpointRow(await getRuleEndpoint(d.namespace, d.name));
-      setEditItem(detail);
-      setEditForm({ type: normalizeRuleEndpointType(detail.ruleEndpointType), targetResource: detail.targetResource || "", description: detail.description || "" });
-      setEditOpen(true);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载规则端点详情失败");
-    } finally {
-      setIsLoading(false);
-    }
+
+  const refreshNamespaces = () => {
+    setRefreshingNamespaces(true);
+    window.setTimeout(() => setRefreshingNamespaces(false), 500);
   };
-  const openDel = (d: RE) => { setDelItem(d); setDelOpen(true); };
-  const confirmDel = async () => {
-    if (!delItem) return;
-    setIsLoading(true);
-    setError("");
-    try {
-      await deleteRuleEndpointResource(delItem.namespace, delItem.name);
-      setDelOpen(false);
-      setDelItem(null);
-      await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "删除规则端点失败");
-    } finally {
-      setIsLoading(false);
-    }
-  };
+
   const handleCreate = async () => {
+    if (!validEndpointName(form.name.trim())) return;
     setIsLoading(true);
     setError("");
     try {
       await createRuleEndpointResource(buildRuleEndpointResource(form));
       setCreateOpen(false);
-      setForm({ name: "", namespace: "default", type: "eventbus", targetResource: "" });
+      setForm({ type: "rest", namespace: "default", name: "" });
       await loadData();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "创建规则端点失败");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-  const handleEdit = async () => {
-    if (!editItem) return;
-    setIsLoading(true);
-    setError("");
-    try {
-      const updated: KubeResource = {
-        ...editItem.raw,
-        spec: {
-          ...(editItem.raw.spec || {}),
-          description: editForm.description,
-          ruleEndpointType: normalizeRuleEndpointType(editForm.type),
-          properties: {
-            ...(editForm.targetResource.trim()
-              ? { [propertyKeyForType(editForm.type)]: editForm.targetResource.trim() }
-              : {}),
-          },
-        },
-      };
-      await updateRuleEndpointResource(editItem.namespace, updated);
-      setEditOpen(false);
-      setEditItem(null);
-      await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "更新规则端点失败");
+      setError(err instanceof Error ? err.message : "创建消息端点失败");
     } finally {
       setIsLoading(false);
     }
   };
 
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setIsLoading(true);
+    setError("");
+    try {
+      await deleteRuleEndpointResource(deleteTarget.namespace, deleteTarget.name);
+      setDeleteTarget(null);
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除消息端点失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const canCreate = validEndpointName(form.name.trim()) && Boolean(form.namespace);
+
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-[#1D2129]">规则端点</h1>
+    <div className="blueedge-page space-y-5">
+      <div>
+        <h1 className="mb-1 text-lg font-semibold text-[var(--color-text-primary)]">消息端点</h1>
+        <p className="text-xs text-[var(--color-text-secondary)]">定义消息进入或离开边缘单元的连接端点</p>
+      </div>
+
+      <div className="page-toolbar">
+        <div className="relative w-[240px] transition-all focus-within:w-[300px]">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="搜索消息端点名称..."
+            className="h-10 rounded-xl border-2 border-[var(--color-input-border)] bg-white pl-10 text-sm shadow-sm"
+          />
+        </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />刷新</Button>
-          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-            <DialogTrigger asChild><Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建端点</Button></DialogTrigger>
-            <DialogContent className="max-w-lg">
-              <DialogHeader><DialogTitle className="text-base">创建规则端点</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-2">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">名称</Label><Input placeholder="如 my-endpoint" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">命名空间</Label>
-                    <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">端点类型</Label>
-                    <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option value="eventbus">EventBus</option><option value="rest">Rest</option><option value="servicebus">ServiceBus</option></select>
-                  </div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标资源</Label><Input placeholder={form.type === "eventbus" ? "如 topic-name" : form.type === "rest" ? "如 https://example.com" : "如 /request_path"} value={form.targetResource} onChange={e => setForm({ ...form, targetResource: e.target.value })} className="h-9 text-sm" /></div>
-                </div>
-              </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
-            </DialogContent>
-          </Dialog>
-          <Dialog open={editOpen} onOpenChange={setEditOpen}>
-            <DialogContent className="max-w-lg">
-              <DialogHeader><DialogTitle className="text-base">编辑规则端点</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-2">
-                <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="命名空间" value={editItem?.namespace || "-"} /></div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">端点类型</Label>
-                    <select value={editForm.type} onChange={e => setEditForm({ ...editForm, type: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option value="eventbus">EventBus</option><option value="rest">Rest</option><option value="servicebus">ServiceBus</option></select>
-                  </div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标资源</Label><Input value={editForm.targetResource} onChange={e => setEditForm({ ...editForm, targetResource: e.target.value })} className="h-9 text-sm" /></div>
-                </div>
-                <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">描述</Label><Input value={editForm.description} onChange={e => setEditForm({ ...editForm, description: e.target.value })} className="h-9 text-sm" /></div>
-              </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem}>保存</Button></DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <button type="button" onClick={loadData} className="action-button h-10 w-10" title="刷新" disabled={isLoading}>
+            <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
+          </button>
+          <button type="button" onClick={() => setCreateOpen(true)} className="blueedge-primary-button h-10 rounded-xl px-4">
+            <Plus className="h-4 w-4" />
+            创建消息端点
+          </button>
         </div>
       </div>
-      <div className="flex items-center justify-between gap-4">
-        <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
-        <div className="flex items-center gap-3"><NamespaceSelector value={ns} onChange={v => { setNs(v); setPage(1); }} /><span className="text-sm text-[#86909C]">共 {filtered.length} 条</span></div>
-      </div>
-      {error && <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
-      <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
-        <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">命名空间</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">名称</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">类型</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">目标资源</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[140px]">操作</TableHead>
-        </TableRow></TableHeader>
-        <TableBody>{isLoading ? (<TableRow><TableCell colSpan={6} className="text-center py-16 text-[#86909C] text-sm">正在加载规则端点数据...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={6} className="text-center py-16 text-[#86909C] text-sm">暂无规则端点数据</TableCell></TableRow>) : paginated.map(row => (
-          <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
-            <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
-            <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
-            <TableCell className="px-4 py-3"><Badge variant="outline" className={cn("text-xs font-normal", normalizeRuleEndpointType(row.ruleEndpointType) === "eventbus" ? "border-[#E8FFEA] text-[#00B42A] bg-[#E8FFEA]" : "border-[#E8F3FF] text-[#165DFF] bg-[#E8F3FF]")}>{displayRuleEndpointType(row.ruleEndpointType)}</Badge></TableCell>
-            <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.targetResource || "-"}</TableCell>
-            <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
-          </TableRow>
-        ))}</TableBody></Table>
-      </div>
-      {filtered.length > pageSize && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-[#86909C]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
-          <Pagination><PaginationContent>
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="h-7 w-7 p-0 border-[#C9CDD4]"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (<PaginationItem key={p}><Button variant={page === p ? "default" : "outline"} size="sm" onClick={() => setPage(p)} className={cn("h-7 w-7 p-0 text-xs", page === p ? "bg-[#165DFF] text-white" : "border-[#C9CDD4] text-[#4E5969]")}>{p}</Button></PaginationItem>))}
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="h-7 w-7 p-0 border-[#C9CDD4]"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
-          </PaginationContent></Pagination>
-        </div>
+
+      {error && <div className="rounded-xl border border-[#fde68a] bg-[var(--color-warning-soft)] px-4 py-3 text-sm text-[#b45309]">{error}</div>}
+
+      <section className="table-card overflow-visible">
+        <Table className="min-w-[980px] table-fixed">
+          <TableHeader>
+            <TableRow className="h-12 bg-white hover:bg-white">
+              <TableHead className="w-[24%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">端点名称</TableHead>
+              <TableHead className="w-[12%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">类型</TableHead>
+              <TableHead className="w-[11%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">位置</TableHead>
+              <TableHead className="w-[13%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">命名空间</TableHead>
+              <TableHead className="w-[13%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">连接状态</TableHead>
+              <TableHead className="w-[18%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
+              <TableHead className="w-[9%] px-5 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={7}>
+                  <div className="blueedge-empty-state min-h-[210px]">
+                    <span className="text-sm">正在加载消息端点数据...</span>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : filtered.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={7}>
+                  <div className="blueedge-empty-state min-h-[210px]">
+                    <span className="blueedge-empty-state-icon" aria-hidden="true" />
+                    <span className="text-sm">暂无消息端点数据</span>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : (
+              filtered.map((row) => (
+                <TableRow key={`${row.namespace}-${row.name}`} className="h-[72px] cursor-pointer border-t border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]" onClick={() => openDetail(row)}>
+                  <TableCell className="px-5">
+                    <span className="text-sm font-semibold text-[var(--color-brand)]">{row.name}</span>
+                  </TableCell>
+                  <TableCell className="px-5 text-sm font-medium text-[var(--color-text-primary)]">{displayRuleEndpointType(row.ruleEndpointType)}</TableCell>
+                  <TableCell className="px-5 text-sm font-medium text-[var(--color-text-primary)]">{endpointLocation(row.ruleEndpointType)}</TableCell>
+                  <TableCell className="px-5 text-sm font-medium text-[var(--color-text-primary)]">{row.namespace}</TableCell>
+                  <TableCell className="px-5">
+                    <StatusPill connected={row.connected} />
+                  </TableCell>
+                  <TableCell className="px-5 text-sm text-[var(--color-text-tertiary)]">{formatCreatedAt(row.createdAt)}</TableCell>
+                  <TableCell className="px-5 text-right" onClick={(event) => event.stopPropagation()}>
+                    <button type="button" className="action-button h-10 w-10" title="更多" onClick={(event) => openMenu(row, event.currentTarget)}>
+                      <MoreHorizontal className="h-4 w-4" />
+                    </button>
+                  </TableCell>
+                </TableRow>
+              ))
+            )}
+          </TableBody>
+        </Table>
+      </section>
+
+      {menuTarget && (
+        <>
+          <button type="button" aria-label="关闭操作菜单" className="fixed inset-0 z-[70] cursor-default" onClick={() => setMenuTarget(null)} />
+          <div
+            className="fixed z-[90] rounded-2xl border border-[#eef2f7] bg-white p-2 shadow-[0_18px_45px_rgba(15,23,42,0.14)]"
+            style={{ top: menuPosition.top, left: menuPosition.left, width: 160 }}
+          >
+            <button
+              type="button"
+              className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-medium text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]"
+              onClick={() => {
+                setDeleteTarget(menuTarget);
+                setMenuTarget(null);
+              }}
+            >
+              <Trash2 className="h-4 w-4" />
+              删除
+            </button>
+          </div>
+        </>
       )}
-      <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
-        <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
-          <SheetHeader className="pb-4 border-b border-[#E5E6EB]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle><Badge variant="outline" className="text-xs font-normal w-fit mt-2">{selected?.namespace}</Badge></SheetHeader>
-          {selected && (<Tabs defaultValue="overview" className="mt-4"><TabsList className="bg-[#F7F8FA] h-9"><TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger><TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger></TabsList>
-            <TabsContent value="overview" className="mt-3 space-y-4">
-              <div className="grid grid-cols-2 gap-3"><Info label="名称" value={selected.name} /><Info label="命名空间" value={selected.namespace} /><Info label="类型" value={displayRuleEndpointType(selected.ruleEndpointType)} /><Info label="目标资源" value={selected.targetResource || "-"} /></div>
-            </TabsContent>
-            <TabsContent value="yaml" className="mt-3"><div className="relative"><pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-x-auto">{yaml(selected)}</pre><Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(yaml(selected))}><Copy className="w-3.5 h-3.5" /></Button></div></TabsContent>
-          </Tabs>)}
-        </SheetContent>
-      </Sheet>
-      <AlertDialog open={delOpen} onOpenChange={setDelOpen}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle className="text-base">确认删除？</AlertDialogTitle><AlertDialogDescription className="text-sm">即将删除规则端点 <span className="font-medium text-[#1D2129]">{delItem?.name}</span>，此操作不可恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel><AlertDialogAction className="h-8 text-sm bg-[#F53F3F] text-white hover:bg-[#F53F3F]/90" onClick={confirmDel}>确认删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
+
+      <CreateEndpointDialog
+        open={createOpen}
+        form={form}
+        namespaceItems={namespaceItems}
+        refreshingNamespaces={refreshingNamespaces}
+        canCreate={canCreate}
+        isLoading={isLoading}
+        onOpenChange={setCreateOpen}
+        onChange={setForm}
+        onRefreshNamespaces={refreshNamespaces}
+        onCreate={handleCreate}
+      />
+
+      <EndpointDetailDialog open={detailOpen} row={detailTarget} onOpenChange={setDetailOpen} />
+
+      <AlertDialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-base">确认删除消息端点？</AlertDialogTitle>
+            <AlertDialogDescription>
+              即将删除消息端点 <span className="font-semibold text-[var(--color-text-primary)]">{deleteTarget?.name}</span>，此操作不可恢复。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="h-10 rounded-xl text-sm">取消</AlertDialogCancel>
+            <AlertDialogAction className="h-10 rounded-xl text-sm" onClick={confirmDelete} disabled={isLoading}>
+              删除
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
       </AlertDialog>
     </div>
   );
 }
 
+function StatusPill({ connected }: { connected: boolean }) {
+  return (
+    <span
+      className={cn(
+        "inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold",
+        connected ? "bg-[var(--color-success-soft)] text-[var(--color-success)]" : "bg-[#f3f4f6] text-[#9ca3af]",
+      )}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      {connected ? "在线" : "离线"}
+    </span>
+  );
+}
+
+function CreateEndpointDialog({
+  open,
+  form,
+  namespaceItems,
+  refreshingNamespaces,
+  canCreate,
+  isLoading,
+  onOpenChange,
+  onChange,
+  onRefreshNamespaces,
+  onCreate,
+}: {
+  open: boolean;
+  form: CreateForm;
+  namespaceItems: Array<{ value: string; label: string }>;
+  refreshingNamespaces: boolean;
+  canCreate: boolean;
+  isLoading: boolean;
+  onOpenChange: (open: boolean) => void;
+  onChange: (form: CreateForm) => void;
+  onRefreshNamespaces: () => void;
+  onCreate: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[min(720px,calc(100vh-48px))] w-[calc(100vw-48px)] max-w-[620px] gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[620px]" showCloseButton={false}>
+        <DialogHeader className="flex h-14 flex-row items-center justify-between border-b border-[var(--color-border)] px-7 text-left">
+          <DialogTitle className="text-base font-semibold">创建消息端点</DialogTitle>
+          <button type="button" onClick={() => onOpenChange(false)} className="action-button h-10 w-10 rounded-xl">
+            <X className="h-4 w-4" />
+          </button>
+        </DialogHeader>
+
+        <div className="max-h-[calc(100vh-168px)] overflow-y-auto px-7 py-5">
+          <div>
+            <Label className="mb-3 block text-sm font-semibold text-[var(--color-text-primary)]">
+              消息端点类型 <span className="text-[var(--color-danger)]">*</span>
+            </Label>
+            <div className="space-y-3">
+              {endpointTypeOptions.map((option) => (
+                <button
+                  key={option.key}
+                  type="button"
+                  onClick={() => onChange({ ...form, type: option.key })}
+                  className={cn(
+                    "w-full rounded-xl border p-3.5 text-left transition-all",
+                    form.type === option.key ? "border-[1.5px] border-[var(--color-brand)] bg-[var(--color-brand-light)]" : "border-[var(--color-border-strong)] bg-white hover:border-[var(--color-input-border-hover)]",
+                  )}
+                >
+                  <span className={cn("block text-sm font-semibold", form.type === option.key ? "text-[var(--color-brand)]" : "text-[#374151]")}>{option.label}</span>
+                  <span className="mt-2 block text-xs leading-5 text-[var(--color-text-secondary)]">备注:{option.desc}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="my-5 border-t border-[var(--color-border)]" />
+
+          <div className="space-y-5">
+            <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">基础信息</h3>
+            <div>
+              <Label className="mb-1.5 block text-sm font-semibold text-[var(--color-text-primary)]">
+                命名空间 <span className="text-[var(--color-danger)]">*</span>
+              </Label>
+              <div className="flex items-center gap-3">
+                <select
+                  value={form.namespace}
+                  onChange={(event) => onChange({ ...form, namespace: event.target.value })}
+                  className="h-10 min-w-0 flex-1 rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm text-[var(--color-text-primary)] outline-none transition-colors focus:border-[var(--color-brand)]"
+                >
+                  {namespaceItems.length === 0 && <option value="default">default</option>}
+                  {namespaceItems.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+                <button type="button" onClick={onRefreshNamespaces} className="action-button h-10 w-10 rounded-xl" title="刷新命名空间">
+                  <RefreshCw className={cn("h-4 w-4", refreshingNamespaces && "animate-spin")} />
+                </button>
+                <a href={namespaceManagementUrl} target="_blank" rel="noreferrer" className="shrink-0 text-xs font-medium text-[var(--color-brand)]">
+                  创建命名空间
+                </a>
+              </div>
+            </div>
+
+            <div>
+              <Label className="mb-1.5 block text-sm font-semibold text-[var(--color-text-primary)]">
+                消息端点名称 <span className="text-[var(--color-danger)]">*</span>
+              </Label>
+              <Input
+                value={form.name}
+                onChange={(event) => onChange({ ...form, name: event.target.value })}
+                placeholder="mqtt-internal"
+                className="h-10 rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm"
+              />
+              <p className={cn("mt-1.5 text-xs", form.name && !validEndpointName(form.name) ? "text-[var(--color-danger)]" : "text-[var(--color-text-tertiary)]")}>
+                支持小写字母、数字、"-"，长度1~253
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <DialogFooter className="h-16 border-t border-[var(--color-border)] px-7 py-3">
+          <button type="button" onClick={() => onOpenChange(false)} className="blueedge-muted-button h-10 rounded-xl px-5 text-sm">
+            取消
+          </button>
+          <button
+            type="button"
+            onClick={onCreate}
+            disabled={!canCreate || isLoading}
+            className="blueedge-primary-button h-10 rounded-xl px-6 text-sm disabled:cursor-not-allowed disabled:bg-[#9ca3af] disabled:opacity-70"
+          >
+            创建
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function EndpointDetailDialog({ open, row, onOpenChange }: { open: boolean; row: MessageEndpointRow | null; onOpenChange: (open: boolean) => void }) {
+  if (!row) return null;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-[680px] rounded-3xl">
+        <DialogHeader>
+          <DialogTitle>{row.name}</DialogTitle>
+        </DialogHeader>
+        <div className="grid grid-cols-2 gap-4">
+          <Info label="类型" value={displayRuleEndpointType(row.ruleEndpointType)} />
+          <Info label="位置" value={endpointLocation(row.ruleEndpointType)} />
+          <Info label="命名空间" value={row.namespace} />
+          <Info label="连接状态" value={row.connected ? "在线" : "离线"} />
+          <Info label="目标资源" value={row.targetResource || "-"} />
+          <Info label="创建时间" value={formatCreatedAt(row.createdAt)} />
+        </div>
+        <div className="relative mt-2">
+          <pre className="blueedge-code-block max-h-[280px] overflow-auto p-4">{endpointYaml(row)}</pre>
+          <button type="button" className="action-button absolute right-2 top-2 h-8 w-8 border-white/10 bg-white/10 text-white/70 hover:bg-white/20 hover:text-white" onClick={() => navigator.clipboard.writeText(endpointYaml(row))}>
+            <Copy className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function Info({ label, value }: { label: string; value: string }) {
-  return (<div className="bg-[#F7F8FA] rounded-md px-3 py-2"><p className="text-xs text-[#86909C] mb-0.5">{label}</p><p className="text-sm text-[#1D2129] font-medium truncate">{value}</p></div>);
+  return (
+    <div className="blueedge-info-card">
+      <p className="blueedge-info-card-label">{label}</p>
+      <p className="blueedge-info-card-value">{value}</p>
+    </div>
+  );
 }
