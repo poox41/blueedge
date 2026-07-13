@@ -1,253 +1,167 @@
-import { useState } from "react";
-import { cn } from "@/lib/utils";
-import { NavLink, useLocation } from "react-router-dom";
+import { NavLink } from "react-router-dom";
 import {
-  LayoutDashboard,
-  Server,
-  Briefcase,
-  HardDrive,
-  Cpu,
-  Network,
-  Globe,
-  ShieldCheck,
-  KeyRound,
-  FileCode,
-  ChevronDown,
-  ChevronLeft,
-  ChevronRight as ChevronRightIcon,
-  Layers,
   Box,
-  FileText,
+  ChevronLeft,
+  ChevronRight,
+  Cpu,
+  FileCode,
+  Layers,
+  LayoutDashboard,
+  MessageSquare,
+  Rocket,
+  Route,
+  Server,
+  Settings2,
 } from "lucide-react";
-
-interface MenuItem {
-  key: string;
-  label: string;
-  icon: React.ElementType;
-  path?: string;
-  children?: MenuItem[];
-}
-
-const menuItems: MenuItem[] = [
-  { key: "dashboard", label: "仪表板", icon: LayoutDashboard, path: "/" },
-  {
-    key: "edge",
-    label: "边缘",
-    icon: Server,
-    children: [
-      { key: "nodes", label: "节点", icon: Server, path: "/nodes" },
-      { key: "nodegroups", label: "节点组", icon: Layers, path: "/nodegroups" },
-    ],
-  },
-  {
-    key: "workloads",
-    label: "工作负载",
-    icon: Briefcase,
-    children: [
-      { key: "deployments", label: "部署", icon: Briefcase, path: "/deployments" },
-      { key: "pods", label: "Pods", icon: Box, path: "/pods" },
-      { key: "edgeapps", label: "边缘应用", icon: Briefcase, path: "/edgeapps" },
-    ],
-  },
-  {
-    key: "storage",
-    label: "存储",
-    icon: HardDrive,
-    children: [
-      { key: "persistentvolumes", label: "持久卷", icon: HardDrive, path: "/persistentvolumes" },
-      { key: "persistentvolumeclaims", label: "持久卷声明", icon: HardDrive, path: "/persistentvolumeclaims" },
-    ],
-  },
-  {
-    key: "devices",
-    label: "设备",
-    icon: Cpu,
-    children: [
-      { key: "devicemodels", label: "设备模型", icon: Cpu, path: "/devicemodels" },
-      { key: "deviceinstances", label: "设备实例", icon: Cpu, path: "/deviceinstances" },
-    ],
-  },
-  {
-    key: "network",
-    label: "网络",
-    icon: Network,
-    children: [
-      { key: "ruleendpoints", label: "规则端点", icon: Network, path: "/ruleendpoints" },
-      { key: "rules", label: "规则", icon: Network, path: "/rules" },
-    ],
-  },
-  {
-    key: "services",
-    label: "服务",
-    icon: Globe,
-    path: "/services",
-  },
-  {
-    key: "config",
-    label: "配置",
-    icon: FileText,
-    children: [
-      { key: "configmaps", label: "配置字典", icon: FileText, path: "/configmaps" },
-      { key: "secrets", label: "Secrets", icon: KeyRound, path: "/secrets" },
-    ],
-  },
-  {
-    key: "security",
-    label: "安全",
-    icon: ShieldCheck,
-    children: [
-      { key: "serviceaccounts", label: "服务账户", icon: ShieldCheck, path: "/serviceaccounts" },
-      { key: "roles", label: "角色", icon: ShieldCheck, path: "/roles" },
-      { key: "rolebindings", label: "角色绑定", icon: ShieldCheck, path: "/rolebindings" },
-      { key: "clusterroles", label: "集群角色", icon: ShieldCheck, path: "/clusterroles" },
-      { key: "clusterrolebindings", label: "集群角色绑定", icon: ShieldCheck, path: "/clusterrolebindings" },
-    ],
-  },
-  {
-    key: "crds",
-    label: "自定义资源定义",
-    icon: FileCode,
-    path: "/crds",
-  },
-];
+import { cn } from "@/lib/utils";
 
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
 }
 
+const edgeUnit = {
+  name: "edge-131",
+  status: "运行中",
+  type: "外接",
+  cluster: "ali-139-131",
+  version: "v1.21.0",
+};
+
+const navGroups = [
+  {
+    group: "",
+    items: [{ label: "概览", icon: LayoutDashboard, path: "/dashboard" }],
+  },
+  {
+    group: "边缘资源",
+    items: [
+      { label: "边缘节点", icon: Server, path: "/nodes" },
+      { label: "边缘节点组", icon: Settings2, path: "/nodegroups" },
+      { label: "设备模型", icon: Cpu, path: "/devicemodels" },
+      { label: "终端设备", icon: Box, path: "/deviceinstances" },
+      { label: "批量任务", icon: Rocket, path: "/batchtasks" },
+    ],
+  },
+  {
+    group: "边缘应用",
+    items: [
+      { label: "工作负载", icon: Layers, path: "/deployments" },
+      { label: "批量工作负载", icon: Layers, path: "/batchworkloads" },
+      { label: "配置项与密钥", icon: FileCode, path: "/configmaps" },
+    ],
+  },
+  {
+    group: "边云消息",
+    items: [
+      { label: "消息端点", icon: MessageSquare, path: "/ruleendpoints" },
+      { label: "消息路由", icon: Route, path: "/rules" },
+    ],
+  },
+];
+
+function StatusPill({ children, tone = "success" }: { children: React.ReactNode; tone?: "success" | "warning" }) {
+  return (
+    <span className={cn("inline-flex h-5 items-center gap-1 rounded-full px-2 text-xs font-semibold", tone === "success" ? "bg-[var(--color-success-soft)] text-[var(--color-success)]" : "bg-[var(--color-warning-soft)] text-[#f57c00]")}>
+      {tone === "success" && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+      {children}
+    </span>
+  );
+}
+
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
-  const location = useLocation();
-  const [expandedKeys, setExpandedKeys] = useState<string[]>(["edge", "workloads", "storage", "devices", "network", "config", "security"]);
-
-  const toggleExpand = (key: string) => {
-    setExpandedKeys((prev) =>
-      prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]
-    );
-  };
-
-  const isActive = (path?: string) => {
-    if (!path) return false;
-    return location.pathname === path;
-  };
-
-  const isParentActive = (item: MenuItem) => {
-    if (item.children) {
-      return item.children.some((child) => isActive(child.path));
-    }
-    return false;
-  };
-
   return (
     <aside
       className={cn(
-        "fixed left-0 top-0 h-full bg-[#F7F8FA] border-r border-[#E5E6EB] z-40 transition-all duration-300 ease-in-out flex flex-col",
-        collapsed ? "w-16" : "w-56"
+        "fixed left-0 top-0 z-40 flex h-screen flex-col border-r border-[#e8ecf3] bg-white transition-all duration-200",
+        collapsed ? "w-[72px]" : "w-[240px]"
       )}
     >
-      {/* Logo */}
-      <div className="h-14 flex items-center px-4 border-b border-[#E5E6EB] bg-white">
-        <div className="flex items-center gap-2.5 overflow-hidden">
-          <div className="w-8 h-8 rounded-lg bg-[#165DFF] flex items-center justify-center flex-shrink-0">
-            <Layers className="w-4 h-4 text-white" />
-          </div>
-          {!collapsed && (
-            <span className="text-sm font-semibold text-[#1D2129] whitespace-nowrap">
-              BlueEdge
-            </span>
-          )}
+      <div className="flex h-[72px] shrink-0 items-center border-b border-[#e8ecf3] px-5">
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--color-text-primary)]">
+          <Box className="h-4 w-4 text-white" />
         </div>
+        {!collapsed && (
+          <span className="ml-3 text-sm font-bold text-[var(--color-text-primary)]">
+            BlueEdge
+          </span>
+        )}
       </div>
 
-      {/* Menu */}
-      <nav className="flex-1 overflow-y-auto py-3 px-2">
-        {menuItems.map((item) => {
-          const hasChildren = item.children && item.children.length > 0;
-          const isExpanded = expandedKeys.includes(item.key);
-          const parentActive = isParentActive(item);
-
-          if (hasChildren) {
-            return (
-              <div key={item.key} className="mb-1">
-                <button
-                  onClick={() => toggleExpand(item.key)}
-                  className={cn(
-                    "w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm transition-all duration-200",
-                    collapsed
-                      ? "justify-center"
-                      : "justify-between",
-                    parentActive
-                      ? "bg-[#E8F3FF] text-[#165DFF] font-medium"
-                      : "text-[#4E5969] hover:bg-[#F2F3F5] hover:text-[#1D2129]"
+      <nav className={cn("min-h-0 flex-1 overflow-y-auto py-3", collapsed ? "px-2" : "px-3")}>
+        {navGroups.map((group) => (
+          <div key={group.group || "root"}>
+            {group.group && !collapsed && (
+              <div className="mb-2 mt-5 px-3 text-[11px] font-semibold text-[var(--color-text-tertiary)]">
+                {group.group}
+              </div>
+            )}
+            {group.group && collapsed && <div className="mt-5" />}
+            {group.items.map((item) => {
+              const Icon = item.icon;
+              return (
+                <NavLink
+                  key={`${group.group}-${item.label}`}
+                  to={item.path}
+                  className={({ isActive }) => cn(
+                    "relative mb-0.5 flex h-10 items-center rounded-[10px] px-3 text-sm font-medium transition-colors",
+                    collapsed && "justify-center",
+                    isActive ? "bg-[var(--color-bg-hover)] text-[var(--color-text-primary)]" : "text-[#5f6368] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
                   )}
                 >
-                  <div className="flex items-center gap-2.5">
-                    <item.icon className="w-4 h-4 flex-shrink-0" />
-                    {!collapsed && <span className="truncate">{item.label}</span>}
-                  </div>
-                  {!collapsed && (
-                    <ChevronDown
-                      className={cn(
-                        "w-3.5 h-3.5 transition-transform duration-200",
-                        isExpanded ? "rotate-180" : ""
-                      )}
-                    />
+                  {({ isActive }) => (
+                    <>
+                      {isActive && !collapsed && <span className="absolute left-0 top-1/2 h-5 w-[3px] -translate-y-1/2 rounded-r-full bg-[var(--color-text-primary)]" />}
+                      <Icon className="h-[18px] w-[18px]" />
+                      {!collapsed && <span className="ml-3">{item.label}</span>}
+                    </>
                   )}
-                </button>
-                {!collapsed && isExpanded && (
-                  <div className="mt-1 ml-2 pl-4 border-l border-[#E5E6EB] space-y-0.5">
-                    {item.children?.map((child) => (
-                      <NavLink
-                        key={child.key}
-                        to={child.path || ""}
-                        className={cn(
-                          "flex items-center gap-2 px-2.5 py-1.5 rounded-md text-sm transition-all duration-200",
-                          isActive(child.path)
-                            ? "bg-[#E8F3FF] text-[#165DFF] font-medium"
-                            : "text-[#4E5969] hover:bg-[#F2F3F5] hover:text-[#1D2129]"
-                        )}
-                      >
-                        <span className="w-1 h-1 rounded-full bg-current flex-shrink-0" />
-                        <span className="truncate">{child.label}</span>
-                      </NavLink>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          }
-
-          return (
-            <div key={item.key} className="mb-1">
-              <NavLink
-                to={item.path || ""}
-                className={cn(
-                  "flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm transition-all duration-200",
-                  collapsed ? "justify-center" : "",
-                  isActive(item.path)
-                    ? "bg-[#E8F3FF] text-[#165DFF] font-medium"
-                    : "text-[#4E5969] hover:bg-[#F2F3F5] hover:text-[#1D2129]"
-                )}
-              >
-                <item.icon className="w-4 h-4 flex-shrink-0" />
-                {!collapsed && <span className="truncate">{item.label}</span>}
-              </NavLink>
-            </div>
-          );
-        })}
+                </NavLink>
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
-      {/* Toggle button */}
-      <div className="h-10 border-t border-[#E5E6EB] flex items-center justify-center bg-white">
+      {!collapsed && (
+        <div className="shrink-0 px-3 pb-3">
+          <div className="rounded-[22px] border border-[#e8ecf3] bg-[#f6f7f9] p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
+            <div className="mb-3 flex items-center justify-between">
+              <StatusPill>{edgeUnit.status}</StatusPill>
+              <StatusPill tone="warning">{edgeUnit.type}</StatusPill>
+            </div>
+            <h3 className="mb-2 truncate text-sm font-bold text-[var(--color-text-primary)]">{edgeUnit.name}</h3>
+            <div className="space-y-1 text-[11px] text-[var(--color-text-secondary)]">
+              <div className="flex items-center gap-1.5"><Server className="h-3 w-3 text-[var(--color-text-tertiary)]" />{edgeUnit.cluster}</div>
+              <div className="flex items-center gap-1.5"><Box className="h-3 w-3 text-[var(--color-text-tertiary)]" />KubeEdge {edgeUnit.version}</div>
+            </div>
+            <div className="my-3 border-t border-[#e8ecf3]" />
+            <NavLink to="/" className="flex h-8 items-center justify-center gap-1.5 rounded-xl border border-[#e8ecf3] bg-white text-xs font-semibold text-[var(--color-text-primary)] shadow-sm hover:bg-[var(--color-text-primary)] hover:text-white">
+              <ChevronLeft className="h-3.5 w-3.5" />
+              返回列表
+            </NavLink>
+          </div>
+        </div>
+      )}
+
+      {collapsed && (
+        <div className="flex shrink-0 justify-center pb-3">
+          <button onClick={onToggle} className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#e8ecf3] bg-[#f6f7f9]">
+            <span className="h-2.5 w-2.5 rounded-full bg-[var(--color-success)]" />
+          </button>
+        </div>
+      )}
+
+      <div className="flex h-[52px] shrink-0 items-center border-t border-[#eef1f5] px-5">
         <button
           onClick={onToggle}
-          className="w-full h-full flex items-center justify-center text-[#86909C] hover:text-[#165DFF] transition-colors"
-        >
-          {collapsed ? (
-            <ChevronRightIcon className="w-4 h-4" />
-          ) : (
-            <ChevronLeft className="w-4 h-4" />
+          className={cn(
+            "flex h-9 w-full items-center gap-2 rounded-lg text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]",
+            collapsed ? "justify-center" : "justify-start px-2"
           )}
+        >
+          {collapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+          {!collapsed && <span className="text-xs">收起侧边栏</span>}
         </button>
       </div>
     </aside>
