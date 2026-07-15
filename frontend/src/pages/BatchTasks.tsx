@@ -7,7 +7,6 @@ import {
   ClipboardList,
   Check,
   ChevronLeft,
-  Clock3,
   Eye,
   Info,
   MoreHorizontal,
@@ -36,20 +35,24 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { toBatchTaskRow } from "@/api/adapters/batch-task.adapter";
 import type { BatchTaskApiItem } from "@/api/adapters/batch-task.adapter";
+import type { BatchTaskAuditRecord, BatchTaskEvent } from "@/api/adapters/batch-task.adapter";
 import {
-  cancelBatchTask,
   createImagePreheatTask,
   createNodeUpgradeTask,
   deleteBatchTask,
   getBatchTask,
+  getBatchTaskAudit,
+  getBatchTaskEvents,
   listBatchTasks,
+  retryBatchTask,
+  rollbackBatchTask,
   startBatchTask,
 } from "@/api/services/product";
-import { listNodes } from "@/api/services/resources";
+import { listNamespaces, listNodes, listSecrets } from "@/api/services/resources";
 import { cn } from "@/lib/utils";
 
 type BatchTaskType = "节点升级" | "镜像预热";
-type UpgradeStatus = "计划已完成" | "计划生成失败" | "计划初始化" | "计划待生成" | "计划已生成" | "计划部分生成" | "计划已取消";
+type UpgradeStatus = "成功" | "失败" | "初始化" | "待执行" | "执行中" | "部分成功" | "已取消";
 type PreheatStatus = UpgradeStatus;
 
 type BatchTask = {
@@ -72,8 +75,7 @@ type UpgradeForm = {
   image: string;
   version: string;
   selectorType: "label" | "nodes";
-  labelKey: string;
-  labelValue: string;
+  labels: Array<{ key: string; value: string }>;
   selectedNodes: string[];
   userConfirm: boolean;
   concurrency: string;
@@ -87,8 +89,7 @@ type PreheatForm = {
   images: string[];
   description: string;
   selectorType: "label" | "nodes";
-  labelKey: string;
-  labelValue: string;
+  labels: Array<{ key: string; value: string }>;
   credentialNamespace: string;
   credentialName: string;
   selectedNodes: string[];
@@ -105,8 +106,7 @@ const defaultUpgradeForm: UpgradeForm = {
   image: "",
   version: "",
   selectorType: "label",
-  labelKey: "",
-  labelValue: "",
+  labels: [{ key: "", value: "" }],
   selectedNodes: [],
   userConfirm: false,
   concurrency: "2",
@@ -120,8 +120,7 @@ const defaultPreheatForm: PreheatForm = {
   images: [""],
   description: "",
   selectorType: "label",
-  labelKey: "",
-  labelValue: "",
+  labels: [{ key: "", value: "" }],
   credentialNamespace: "",
   credentialName: "",
   selectedNodes: [],
@@ -133,23 +132,23 @@ const defaultPreheatForm: PreheatForm = {
 };
 
 const upgradeStatusStyle: Record<UpgradeStatus, { className: string; dot: string }> = {
-  计划已完成: { className: "bg-[#dcfce7] text-[#16a34a]", dot: "#22c55e" },
-  计划生成失败: { className: "bg-[#fee2e2] text-[#ef4444]", dot: "#ff4d4f" },
-  计划初始化: { className: "bg-transparent text-[#475569]", dot: "#64748b" },
-  计划待生成: { className: "bg-[#f1f5f9] text-[#64748b]", dot: "#94a3b8" },
-  计划已生成: { className: "bg-[#dbeafe] text-[#2563eb]", dot: "#2563eb" },
-  计划部分生成: { className: "bg-[#fff7ed] text-[#c2410c]", dot: "#f97316" },
-  计划已取消: { className: "bg-[#f8fafc] text-[#64748b]", dot: "#94a3b8" },
+  成功: { className: "bg-[#dcfce7] text-[#16a34a]", dot: "#22c55e" },
+  失败: { className: "bg-[#fee2e2] text-[#ef4444]", dot: "#ff4d4f" },
+  初始化: { className: "bg-transparent text-[#475569]", dot: "#64748b" },
+  待执行: { className: "bg-[#f1f5f9] text-[#64748b]", dot: "#94a3b8" },
+  执行中: { className: "bg-[#dbeafe] text-[#2563eb]", dot: "#2563eb" },
+  部分成功: { className: "bg-[#fff7ed] text-[#c2410c]", dot: "#f97316" },
+  已取消: { className: "bg-[#f8fafc] text-[#64748b]", dot: "#94a3b8" },
 };
 
 const preheatStatusStyle: Record<PreheatStatus, { className: string; dot: string }> = {
-  计划已生成: { className: "bg-[#dbeafe] text-[#2563eb]", dot: "#2563eb" },
-  计划部分生成: { className: "bg-[#fff7ed] text-[#c2410c]", dot: "#f97316" },
-  计划待生成: { className: "bg-[#f1f5f9] text-[#64748b]", dot: "#94a3b8" },
-  计划已完成: { className: "bg-[#dcfce7] text-[#16a34a]", dot: "#22c55e" },
-  计划生成失败: { className: "bg-[#fee2e2] text-[#ef4444]", dot: "#ff4d4f" },
-  计划初始化: { className: "bg-transparent text-[#475569]", dot: "#64748b" },
-  计划已取消: { className: "bg-[#f8fafc] text-[#64748b]", dot: "#94a3b8" },
+  执行中: { className: "bg-[#dbeafe] text-[#2563eb]", dot: "#2563eb" },
+  部分成功: { className: "bg-[#fff7ed] text-[#c2410c]", dot: "#f97316" },
+  待执行: { className: "bg-[#f1f5f9] text-[#64748b]", dot: "#94a3b8" },
+  成功: { className: "bg-[#dcfce7] text-[#16a34a]", dot: "#22c55e" },
+  失败: { className: "bg-[#fee2e2] text-[#ef4444]", dot: "#ff4d4f" },
+  初始化: { className: "bg-transparent text-[#475569]", dot: "#64748b" },
+  已取消: { className: "bg-[#f8fafc] text-[#64748b]", dot: "#94a3b8" },
 };
 
 export function BatchTasks() {
@@ -219,13 +218,19 @@ export function BatchTasks() {
       await createNodeUpgradeTask({
         name: form.name.trim(),
         targetType: form.selectorType === "nodes" ? "node" : "nodeGroup",
-        targetRefs: form.selectorType === "nodes" ? form.selectedNodes : [form.labelValue.trim()],
+        targetRefs: form.selectorType === "nodes" ? form.selectedNodes : [],
+        labelSelector: form.selectorType === "label"
+          ? Object.fromEntries(form.labels.map((item) => [item.key.trim(), item.value.trim()]).filter(([key, value]) => key && value))
+          : undefined,
         image: form.image.trim(),
         targetVersion: form.version.trim(),
         concurrency: Number(form.concurrency || 1),
         failurePolicy: "continue",
         timeoutSeconds: Number(form.timeout || 0),
         retryCount: 0,
+        failureRateThreshold: Number(form.failureRate || 0),
+        resourceChecks: form.resourceCheck,
+        userConfirm: form.userConfirm,
         description: form.description || `计划升级到 ${form.version.trim()}`,
       });
       setActiveType("节点升级");
@@ -242,12 +247,19 @@ export function BatchTasks() {
       await createImagePreheatTask({
         name: form.name.trim(),
         targetType: form.selectorType === "nodes" ? "node" : "nodeGroup",
-        targetRefs: form.selectorType === "nodes" ? form.selectedNodes : [form.labelValue.trim()],
+        targetRefs: form.selectorType === "nodes" ? form.selectedNodes : [],
+        labelSelector: form.selectorType === "label"
+          ? Object.fromEntries(form.labels.map((item) => [item.key.trim(), item.value.trim()]).filter(([key, value]) => key && value))
+          : undefined,
         images: form.images.map((item) => item.trim()).filter(Boolean),
         concurrency: Number(form.concurrency || 1),
         failurePolicy: "continue",
         timeoutSeconds: Number(form.timeout || 0),
         retryCount: Number(form.retryCount || 0),
+        failureRateThreshold: Number(form.failureRate || 0),
+        resourceChecks: form.resourceCheck,
+        credentialNamespace: form.credentialNamespace,
+        credentialName: form.credentialName,
         description: form.description || "镜像预热计划任务",
       });
       setActiveType("镜像预热");
@@ -278,8 +290,16 @@ export function BatchTasks() {
         }}
         onRetry={async () => {
           try {
-            const data = await startBatchTask(detailTarget.id);
-            setDetailTarget(toBatchTaskRow(data.item) as BatchTask);
+            if (detailTarget.raw?.status === "pending") {
+              await startBatchTask(detailTarget.id);
+              const refreshed = await getBatchTask(detailTarget.id);
+              setDetailTarget(toBatchTaskRow(refreshed.item) as BatchTask);
+              await loadTasks();
+              return;
+            }
+            await retryBatchTask(detailTarget.id);
+            const refreshed = await getBatchTask(detailTarget.id);
+            setDetailTarget(toBatchTaskRow(refreshed.item) as BatchTask);
             await loadTasks();
           } catch (err) {
             setError(err instanceof Error ? err.message : "启动批量任务失败");
@@ -288,8 +308,9 @@ export function BatchTasks() {
         }}
         onRollback={async () => {
           try {
-            const data = await cancelBatchTask(detailTarget.id);
-            setDetailTarget(toBatchTaskRow(data.item) as BatchTask);
+            await rollbackBatchTask(detailTarget.id);
+            const refreshed = await getBatchTask(detailTarget.id);
+            setDetailTarget(toBatchTaskRow(refreshed.item) as BatchTask);
             await loadTasks();
           } catch (err) {
             setError(err instanceof Error ? err.message : "取消批量任务失败");
@@ -304,7 +325,7 @@ export function BatchTasks() {
     <div className="blueedge-page space-y-5">
       <section>
         <h1 className="mb-1 text-lg font-semibold text-[#111827]">批量任务</h1>
-        <p className="text-xs text-[var(--color-text-secondary)]">创建节点升级和镜像预热计划任务；当前不会执行真实节点操作</p>
+        <p className="text-xs text-[var(--color-text-secondary)]">节点升级提交 KubeEdge NodeUpgradeJob 真实执行；镜像预热仍按当前后端能力展示</p>
       </section>
       {error && <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
 
@@ -491,7 +512,7 @@ function PreheatTaskRow({ task, onDetail, onDelete }: { task: BatchTask; onDetai
 }
 
 function StatusPill({ status, variant }: { status: UpgradeStatus | PreheatStatus; variant: "upgrade" | "preheat" }) {
-  const style = (variant === "upgrade" ? upgradeStatusStyle[status as UpgradeStatus] : preheatStatusStyle[status as PreheatStatus]) || preheatStatusStyle.计划待生成;
+  const style = (variant === "upgrade" ? upgradeStatusStyle[status as UpgradeStatus] : preheatStatusStyle[status as PreheatStatus]) || preheatStatusStyle.待执行;
   return (
     <span className={cn("inline-flex h-6 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold", style.className)}>
       <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: style.dot }} />
@@ -545,7 +566,7 @@ function CreateUpgradeTaskModal({
     if (form.name.trim() && !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(form.name.trim())) nextErrors.name = "名称格式不正确";
     if (!form.version.trim()) nextErrors.version = "请输入升级版本";
     if (form.selectorType === "nodes" && form.selectedNodes.length === 0) nextErrors.nodes = "请至少选择 1 个节点";
-    if (form.selectorType === "label" && (!form.labelKey.trim() || !form.labelValue.trim())) nextErrors.labels = "请输入标签键和值";
+    if (form.selectorType === "label" && (form.labels.length === 0 || form.labels.some((item) => !item.key.trim() || !item.value.trim()))) nextErrors.labels = "请输入完整的标签键和值";
     setErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
   };
@@ -584,6 +605,21 @@ function CreateUpgradeTaskModal({
     }));
   };
 
+  const updateLabel = (index: number, field: "key" | "value", value: string) => {
+    setForm((current) => ({
+      ...current,
+      labels: current.labels.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: value } : item),
+    }));
+    setErrors(({ labels, ...rest }) => rest);
+  };
+
+  const addLabel = () => setForm((current) => ({ ...current, labels: [...current.labels, { key: "", value: "" }] }));
+
+  const removeLabel = (index: number) => setForm((current) => ({
+    ...current,
+    labels: current.labels.length === 1 ? [{ key: "", value: "" }] : current.labels.filter((_, itemIndex) => itemIndex !== index),
+  }));
+
   return (
     <>
       <Dialog open={open} onOpenChange={(nextOpen) => (nextOpen ? onOpenChange(true) : requestClose())}>
@@ -607,7 +643,7 @@ function CreateUpgradeTaskModal({
             </div>
           </DialogHeader>
 
-          <div className="shrink-0 border-b border-[var(--color-border)] px-10 py-6">
+          <div className="shrink-0 border-b border-[var(--color-border)] px-10 py-7">
             <div className="flex items-center justify-center gap-4">
               <StepDot active={step === 1} done={step > 1} label="基础信息" />
               <div className={cn("h-px w-16", step > 1 ? "bg-[#0f172a]" : "bg-[var(--color-border-strong)]")} />
@@ -669,70 +705,52 @@ function CreateUpgradeTaskModal({
                 </CreateField>
 
                 <CreateField label="边缘节点" required error={errors.labels || errors.nodes}>
-                  <div className="grid gap-3 md:grid-cols-2">
-                    <button
-                      type="button"
-                      onClick={() => setForm({ ...form, selectorType: "label" })}
-                      className={cn(
-                        "rounded-2xl border p-4 text-left transition-colors",
-                        form.selectorType === "label" ? "border-[#0f172a] bg-[#fafbfc]" : "border-[var(--color-border-strong)] bg-white",
+                  <div className="space-y-5">
+                    <div className={cn("overflow-hidden rounded-[24px] border-2 transition-colors", form.selectorType === "label" ? "border-[#0f172a] bg-[#fbfcfe]" : "border-[#e2e8f0] bg-white")}>
+                      <button type="button" onClick={() => setForm({ ...form, selectorType: "label" })} className="flex w-full items-center gap-5 px-8 py-6 text-left">
+                        <Toggle enabled={form.selectorType === "label"} size="large" />
+                        <span className="text-lg font-semibold text-[#111827]">标签匹配</span>
+                        <span className="text-base text-[#98a2b3]">通过标签选择器自动匹配节点</span>
+                      </button>
+                      {form.selectorType === "label" && (
+                        <div className="space-y-4 border-t border-[#e6eaf0] px-8 pb-7 pt-6">
+                          {form.labels.map((label, index) => (
+                            <div key={index} className="grid grid-cols-[1fr_1fr_44px] items-center gap-4">
+                              <Input value={label.key} onChange={(event) => updateLabel(index, "key", event.target.value)} className="h-14 rounded-2xl border-2 border-[#e1e6ee] bg-white px-5 text-base shadow-none focus-visible:ring-0" placeholder="键" />
+                              <Input value={label.value} onChange={(event) => updateLabel(index, "value", event.target.value)} className="h-14 rounded-2xl border-2 border-[#e1e6ee] bg-white px-5 text-base shadow-none focus-visible:ring-0" placeholder="值" />
+                              <button type="button" onClick={() => removeLabel(index)} className="flex h-11 w-11 items-center justify-center rounded-xl text-[#c5cbd5] hover:bg-white hover:text-[#64748b]" aria-label="删除标签"><X className="h-5 w-5" /></button>
+                            </div>
+                          ))}
+                          <button type="button" onClick={addLabel} className="inline-flex items-center gap-2 text-base font-semibold text-[#1769ff]"><Plus className="h-5 w-5" />添加标签</button>
+                        </div>
                       )}
-                    >
-                      <div className="mb-3 flex items-center gap-3">
-                        <Toggle enabled={form.selectorType === "label"} />
-                        <span className="text-sm font-semibold text-[#111827]">标签匹配</span>
-                        <span className="text-xs text-[var(--color-text-tertiary)]">通过标签选择器自动匹配节点</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <Input value={form.labelKey} onChange={(event) => setForm({ ...form, labelKey: event.target.value })} className="h-10 rounded-xl" placeholder="标签键" />
-                        <Input value={form.labelValue} onChange={(event) => setForm({ ...form, labelValue: event.target.value })} className="h-10 rounded-xl" placeholder="标签值" />
-                      </div>
-                    </button>
+                    </div>
 
-                    <button
-                      type="button"
-                      onClick={() => setForm({ ...form, selectorType: "nodes" })}
-                      className={cn(
-                        "rounded-2xl border p-4 text-left transition-colors",
-                        form.selectorType === "nodes" ? "border-[#0f172a] bg-[#fafbfc]" : "border-[var(--color-border-strong)] bg-white",
+                    <div className={cn("overflow-hidden rounded-[24px] border-2 transition-colors", form.selectorType === "nodes" ? "border-[#0f172a] bg-[#fbfcfe]" : "border-[#e2e8f0] bg-white")}>
+                      <button type="button" onClick={() => setForm({ ...form, selectorType: "nodes" })} className="flex w-full items-center gap-5 px-8 py-6 text-left">
+                        <Toggle enabled={form.selectorType === "nodes"} size="large" />
+                        <span className="text-lg font-semibold text-[#111827]">指定节点</span>
+                        <span className="text-base text-[#98a2b3]">手动选择特定节点</span>
+                      </button>
+                      {form.selectorType === "nodes" && (
+                        <div className="flex flex-wrap gap-3 border-t border-[#e6eaf0] px-8 pb-7 pt-6">
+                          {nodeOptions.length === 0 && <span className="text-sm text-[var(--color-text-tertiary)]">暂无可选节点</span>}
+                          {nodeOptions.map((node) => (
+                            <button key={node} type="button" onClick={() => toggleNode(node)} className={cn("rounded-xl border-2 px-4 py-2.5 text-sm font-medium", form.selectedNodes.includes(node) ? "border-[#0f172a] bg-[#0f172a] text-white" : "border-[#e1e6ee] bg-white text-[#475467]")}>{node}</button>
+                          ))}
+                        </div>
                       )}
-                    >
-                      <div className="mb-3 flex items-center gap-3">
-                        <Toggle enabled={form.selectorType === "nodes"} />
-                        <span className="text-sm font-semibold text-[#111827]">指定节点</span>
-                        <span className="text-xs text-[var(--color-text-tertiary)]">手动选择特定节点</span>
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        {nodeOptions.length === 0 && <span className="text-xs text-[var(--color-text-tertiary)]">暂无可选节点</span>}
-                        {nodeOptions.map((node) => (
-                          <span
-                            key={node}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              toggleNode(node);
-                            }}
-                            className={cn(
-                              "rounded-lg border px-2.5 py-1 text-xs",
-                              form.selectedNodes.includes(node) ? "border-[#0f172a] bg-[#0f172a] text-white" : "border-[var(--color-border)] bg-white text-[var(--color-text-secondary)]",
-                            )}
-                          >
-                            {node}
-                          </span>
-                        ))}
-                      </div>
-                    </button>
+                    </div>
                   </div>
                 </CreateField>
 
-                <div className="flex items-center gap-3">
-                  <button type="button" onClick={() => setForm({ ...form, userConfirm: !form.userConfirm })}>
-                    <Toggle enabled={form.userConfirm} />
-                  </button>
+                <button type="button" onClick={() => setForm({ ...form, userConfirm: !form.userConfirm })} className="flex w-full items-start gap-5 rounded-2xl px-1 py-3 text-left">
+                  <Toggle enabled={form.userConfirm} size="large" />
                   <div>
-                    <p className="text-sm font-semibold text-[#111827]">边缘用户确认</p>
-                    <p className="text-xs text-[var(--color-text-tertiary)]">开启后，边缘用户需手动确认才能开始升级。</p>
+                    <p className="text-lg font-semibold text-[#111827]">边缘用户确认</p>
+                    <p className="mt-2 text-base text-[#98a2b3]">开启后，边缘用户需手动确认才能开始升级。</p>
                   </div>
-                </div>
+                </button>
               </div>
             ) : (
               <div className="space-y-6">
@@ -812,7 +830,7 @@ function CreateUpgradeTaskModal({
         <AlertDialogContent className="max-w-[460px] rounded-[24px]">
           <AlertDialogHeader>
             <AlertDialogTitle className="text-base">确认创建</AlertDialogTitle>
-            <AlertDialogDescription className="text-sm">当前仅创建节点升级计划任务，不会对节点执行真实升级。确定继续吗？</AlertDialogDescription>
+            <AlertDialogDescription className="text-sm">确定后将向集群创建 KubeEdge NodeUpgradeJob，并可能立即在所选边缘节点执行真实升级。升级过程可能导致节点短暂离线，请确认版本、镜像和目标节点无误。</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="h-9 rounded-xl">取消</AlertDialogCancel>
@@ -840,6 +858,34 @@ function CreatePreheatTaskModal({
   const [step, setStep] = useState(1);
   const [form, setForm] = useState(defaultPreheatForm);
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [namespaceOptions, setNamespaceOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const [credentialOptions, setCredentialOptions] = useState<Array<{ value: string; label: string }>>([]);
+  const [credentialLoading, setCredentialLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    void listNamespaces()
+      .then((items) => setNamespaceOptions(items.filter((item) => item.value !== "all")))
+      .catch((error) => setErrors((current) => ({ ...current, credentials: error instanceof Error ? error.message : "命名空间加载失败" })));
+  }, [open]);
+
+  useEffect(() => {
+    if (!open || !form.credentialNamespace) {
+      setCredentialOptions([]);
+      return;
+    }
+    setCredentialLoading(true);
+    void listSecrets(form.credentialNamespace)
+      .then((items) => setCredentialOptions(items
+        .filter((item) => ["kubernetes.io/dockerconfigjson", "kubernetes.io/dockercfg"].includes(String(item?.type || "")))
+        .map((item) => {
+          const name = String(item?.metadata?.name || item?.name || "");
+          return { value: name, label: name };
+        })
+        .filter((item) => item.value)))
+      .catch((error) => setErrors((current) => ({ ...current, credentials: error instanceof Error ? error.message : "镜像凭证加载失败" })))
+      .finally(() => setCredentialLoading(false));
+  }, [form.credentialNamespace, open]);
 
   const resetAndClose = () => {
     setStep(1);
@@ -854,7 +900,7 @@ function CreatePreheatTaskModal({
     if (form.name.trim() && !/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/.test(form.name.trim())) nextErrors.name = "名称格式不正确";
     if (!form.images.some((item) => item.trim())) nextErrors.images = "请至少输入 1 个镜像地址";
     if (form.selectorType === "nodes" && form.selectedNodes.length === 0) nextErrors.nodes = "请至少选择 1 个节点";
-    if (form.selectorType === "label" && (!form.labelKey.trim() || !form.labelValue.trim())) nextErrors.labels = "请输入标签键和值";
+    if (form.selectorType === "label" && (form.labels.length === 0 || form.labels.some((item) => !item.key.trim() || !item.value.trim()))) nextErrors.labels = "请输入完整的标签键和值";
     setErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
   };
@@ -889,6 +935,21 @@ function CreatePreheatTaskModal({
     }));
   };
 
+  const updateLabel = (index: number, field: "key" | "value", value: string) => {
+    setForm((current) => ({
+      ...current,
+      labels: current.labels.map((item, itemIndex) => itemIndex === index ? { ...item, [field]: value } : item),
+    }));
+    setErrors(({ labels, ...rest }) => rest);
+  };
+
+  const addLabel = () => setForm((current) => ({ ...current, labels: [...current.labels, { key: "", value: "" }] }));
+
+  const removeLabel = (index: number) => setForm((current) => ({
+    ...current,
+    labels: current.labels.length === 1 ? [{ key: "", value: "" }] : current.labels.filter((_, itemIndex) => itemIndex !== index),
+  }));
+
   const toggleNode = (node: string) => {
     setForm((current) => ({
       ...current,
@@ -910,7 +971,7 @@ function CreatePreheatTaskModal({
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (nextOpen ? onOpenChange(true) : resetAndClose())}>
       <DialogContent
-        className="!flex max-h-[calc(100vh-48px)] w-[min(960px,calc(100vw-96px))] max-w-none flex-col gap-0 overflow-hidden rounded-[28px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)]"
+        className="!flex max-h-[calc(100vh-48px)] w-[min(1200px,calc(100vw-96px))] max-w-none flex-col gap-0 overflow-hidden rounded-[28px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)]"
         showCloseButton={false}
       >
         <DialogHeader className="h-[92px] shrink-0 border-b border-[var(--color-border)] px-10 py-0">
@@ -929,7 +990,7 @@ function CreatePreheatTaskModal({
           </div>
         </DialogHeader>
 
-        <div className="shrink-0 border-b border-[var(--color-border)] px-10 py-6">
+        <div className="shrink-0 border-b border-[var(--color-border)] px-10 py-7">
           <div className="flex items-center justify-center gap-4">
             <StepDot active={step === 1} done={step > 1} label="基础信息" />
             <div className={cn("h-px w-16", step > 1 ? "bg-[#0f172a]" : "bg-[var(--color-border-strong)]")} />
@@ -962,94 +1023,101 @@ function CreatePreheatTaskModal({
               </CreateField>
 
               <CreateField label="镜像" required error={errors.images}>
-                <div className="space-y-2">
+                <div className="space-y-3">
                   {form.images.map((image, index) => (
-                    <div key={index} className="flex items-center gap-2">
+                    <div key={index} className="flex items-center gap-4">
                       <Input
                         value={image}
                         onChange={(event) => updateImage(index, event.target.value)}
                         placeholder="nginx:1.25-alpine"
-                        className="h-12 flex-1 rounded-xl border-2 border-[var(--color-input-border)] px-4 text-base shadow-sm focus-visible:ring-0"
+                        className="h-14 flex-1 rounded-2xl border-2 border-[var(--color-input-border)] px-5 text-base shadow-none focus-visible:ring-0"
                       />
-                      {form.images.length > 1 && (
-                        <button type="button" onClick={() => removeImage(index)} className="action-button is-danger">
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
+                      <button type="button" onClick={() => removeImage(index)} className="flex h-11 w-11 items-center justify-center rounded-xl text-[#c5cbd5] hover:bg-[var(--color-bg-hover)] hover:text-[#64748b]" aria-label="删除镜像">
+                        <X className="h-5 w-5" />
+                      </button>
                     </div>
                   ))}
                 </div>
-                <button type="button" onClick={addImage} className="mt-2 inline-flex items-center gap-1 text-sm font-semibold text-[#1e6bff]">
-                  <Plus className="h-4 w-4" />
+                <button type="button" onClick={addImage} className="mt-4 inline-flex items-center gap-2 text-base font-semibold text-[#1769ff]">
+                  <Plus className="h-5 w-5" />
                   添加更多镜像
                 </button>
               </CreateField>
 
-              <CreateField label="镜像凭证">
+              <CreateField label="镜像凭证" error={errors.credentials}>
                 <div className="grid grid-cols-2 gap-3">
                   <select
                     value={form.credentialNamespace}
-                    onChange={(event) => setForm({ ...form, credentialNamespace: event.target.value })}
-                    className="blueedge-native-select h-12 rounded-xl border-2 text-base"
+                    onChange={(event) => {
+                      setForm({ ...form, credentialNamespace: event.target.value, credentialName: "" });
+                      setErrors(({ credentials, ...rest }) => rest);
+                    }}
+                    className="blueedge-native-select h-14 rounded-2xl border-2 px-5 text-base"
                   >
                     <option value="">请选择命名空间</option>
-                    <option value="default">default</option>
-                    <option value="kube-system">kube-system</option>
-                    <option value="iot-system">iot-system</option>
+                    {namespaceOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                   </select>
                   <select
                     value={form.credentialName}
                     onChange={(event) => setForm({ ...form, credentialName: event.target.value })}
-                    className="blueedge-native-select h-12 rounded-xl border-2 text-base"
+                    disabled={!form.credentialNamespace || credentialLoading}
+                    className="blueedge-native-select h-14 rounded-2xl border-2 px-5 text-base"
                   >
-                    <option value="">请选择镜像凭证</option>
-                    <option value="docker-hub">docker-hub</option>
-                    <option value="aliyun-cr">aliyun-cr</option>
-                    <option value="harbor-local">harbor-local</option>
+                    <option value="">{credentialLoading ? "正在加载镜像凭证" : "请选择镜像凭证"}</option>
+                    {credentialOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                   </select>
                 </div>
               </CreateField>
 
               <CreateField label="选择方式" required error={errors.labels || errors.nodes}>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <TargetModeCard
-                    active={form.selectorType === "label"}
-                    title="标签匹配"
-                    description="自动匹配需要预热的节点"
-                    onClick={() => setForm({ ...form, selectorType: "label" })}
-                  >
-                    <div className="grid grid-cols-2 gap-2">
-                      <Input value={form.labelKey} onChange={(event) => setForm({ ...form, labelKey: event.target.value })} className="h-10 rounded-xl" placeholder="标签键" />
-                      <Input value={form.labelValue} onChange={(event) => setForm({ ...form, labelValue: event.target.value })} className="h-10 rounded-xl" placeholder="标签值" />
-                    </div>
-                  </TargetModeCard>
+                <div className="space-y-5">
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setForm({ ...form, selectorType: "label" })}
+                      className={cn("flex w-full items-center gap-5 rounded-[24px] border-2 px-7 py-6 text-left transition-colors", form.selectorType === "label" ? "border-[#0f172a] bg-[#fbfcfe]" : "border-[#e2e8f0] bg-white")}
+                    >
+                      <Toggle enabled={form.selectorType === "label"} size="large" />
+                      <div>
+                        <p className="text-lg font-semibold text-[#111827]">标签匹配</p>
+                        <p className="mt-1 text-base text-[#667085]">通过标签选择器匹配目标节点</p>
+                      </div>
+                    </button>
+                    {form.selectorType === "label" && (
+                      <div className="space-y-4 px-7 pt-4">
+                        {form.labels.map((label, index) => (
+                          <div key={index} className="grid grid-cols-[1fr_1fr_44px] items-center gap-4">
+                            <Input value={label.key} onChange={(event) => updateLabel(index, "key", event.target.value)} className="h-14 rounded-2xl border-2 border-[#e1e6ee] bg-white px-5 text-base shadow-none focus-visible:ring-0" placeholder="键" />
+                            <Input value={label.value} onChange={(event) => updateLabel(index, "value", event.target.value)} className="h-14 rounded-2xl border-2 border-[#e1e6ee] bg-white px-5 text-base shadow-none focus-visible:ring-0" placeholder="值" />
+                            <button type="button" onClick={() => removeLabel(index)} className="flex h-11 w-11 items-center justify-center rounded-xl text-[#c5cbd5] hover:bg-[var(--color-bg-hover)] hover:text-[#64748b]" aria-label="删除标签"><X className="h-5 w-5" /></button>
+                          </div>
+                        ))}
+                        <button type="button" onClick={addLabel} className="inline-flex items-center gap-2 text-base font-semibold text-[#1769ff]"><Plus className="h-5 w-5" />添加标签</button>
+                      </div>
+                    )}
+                  </div>
 
-                  <TargetModeCard
-                    active={form.selectorType === "nodes"}
-                    title="指定节点"
-                    description="手动选择目标节点"
-                    onClick={() => setForm({ ...form, selectorType: "nodes" })}
-                  >
-                    <div className="space-y-2">
-                      {nodeOptions.length === 0 && <span className="text-xs text-[var(--color-text-tertiary)]">暂无可选节点</span>}
-                      {nodeOptions.map((node) => (
-                        <button
-                          key={node}
-                          type="button"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            toggleNode(node);
-                          }}
-                          className={cn(
-                            "block w-full rounded-lg border px-3 py-2 text-left text-sm",
-                            form.selectedNodes.includes(node) ? "border-[#0f172a] bg-white text-[#111827]" : "border-[var(--color-border)] bg-white text-[var(--color-text-secondary)]",
-                          )}
-                        >
-                          {node}
-                        </button>
-                      ))}
-                    </div>
-                  </TargetModeCard>
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setForm({ ...form, selectorType: "nodes" })}
+                      className={cn("flex w-full items-center gap-5 rounded-[24px] border-2 px-7 py-6 text-left transition-colors", form.selectorType === "nodes" ? "border-[#0f172a] bg-[#fbfcfe]" : "border-[#e2e8f0] bg-white")}
+                    >
+                      <Toggle enabled={form.selectorType === "nodes"} size="large" />
+                      <div>
+                        <p className="text-lg font-semibold text-[#111827]">指定节点</p>
+                        <p className="mt-1 text-base text-[#667085]">直接选择目标节点 ({form.selectedNodes.length})</p>
+                      </div>
+                    </button>
+                    {form.selectorType === "nodes" && (
+                      <div className="flex flex-wrap gap-3 px-7 pt-4">
+                        {nodeOptions.length === 0 && <span className="text-sm text-[var(--color-text-tertiary)]">暂无可选节点</span>}
+                        {nodeOptions.map((node) => (
+                          <button key={node} type="button" onClick={() => toggleNode(node)} className={cn("rounded-xl border-2 px-4 py-2.5 text-sm font-medium", form.selectedNodes.includes(node) ? "border-[#0f172a] bg-[#0f172a] text-white" : "border-[#e1e6ee] bg-white text-[#475467]")}>{node}</button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </CreateField>
             </div>
@@ -1114,40 +1182,6 @@ function CreatePreheatTaskModal({
   );
 }
 
-function TargetModeCard({
-  active,
-  title,
-  description,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  title: string;
-  description: string;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "min-h-[180px] rounded-2xl border p-5 text-left transition-colors",
-        active ? "border-[#0f172a] bg-[#fafbfc]" : "border-[var(--color-border-strong)] bg-white",
-      )}
-    >
-      <div className="mb-4 flex items-center gap-4">
-        <Toggle enabled={active} />
-        <div>
-          <p className="text-base font-semibold leading-6 text-[#111827]">{title}</p>
-          <p className="text-sm text-[var(--color-text-tertiary)]">{description}</p>
-        </div>
-      </div>
-      {children}
-    </button>
-  );
-}
-
 function StepDot({ active, done, label }: { active: boolean; done: boolean; label: string }) {
   return (
     <div className="flex items-center gap-2">
@@ -1159,10 +1193,11 @@ function StepDot({ active, done, label }: { active: boolean; done: boolean; labe
   );
 }
 
-function Toggle({ enabled }: { enabled: boolean }) {
+function Toggle({ enabled, size = "small" }: { enabled: boolean; size?: "small" | "large" }) {
+  const large = size === "large";
   return (
-    <span className={cn("relative inline-flex h-[22px] w-10 shrink-0 rounded-full transition-colors", enabled ? "bg-[#0f172a]" : "bg-[#d1d5db]")}>
-      <span className={cn("absolute top-[3px] h-4 w-4 rounded-full bg-white transition-all", enabled ? "left-[21px]" : "left-[3px]")} />
+    <span className={cn("relative inline-flex shrink-0 rounded-full transition-colors", large ? "h-9 w-16" : "h-[22px] w-10", enabled ? "bg-[#0f172a]" : "bg-[#d1d5db]")}>
+      <span className={cn("absolute rounded-full bg-white transition-all", large ? "top-1 h-7 w-7" : "top-[3px] h-4 w-4", enabled ? (large ? "left-8" : "left-[21px]") : (large ? "left-1" : "left-[3px]"))} />
     </span>
   );
 }
@@ -1201,7 +1236,22 @@ function BatchTaskDetailPage({ task, onBack, onRefresh, onDelete, onRetry, onRol
   const [actionLoading, setActionLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState("");
+  const [events, setEvents] = useState<BatchTaskEvent[]>(task.raw?.events || []);
+  const [auditRecords, setAuditRecords] = useState<BatchTaskAuditRecord[]>(task.raw?.auditRecords || []);
+  const [tabLoading, setTabLoading] = useState(false);
   const detail = getTaskDetail(task);
+  const realUpgrade = task.executionMode === "nodeUpgradeJob";
+  const realPreheat = task.executionMode === "imagePrePullJob";
+  const realExecution = realUpgrade || realPreheat;
+
+  useEffect(() => {
+    if (activeTab !== "events" && activeTab !== "audit") return;
+    setTabLoading(true);
+    const request = activeTab === "events"
+      ? getBatchTaskEvents(task.id).then((data) => setEvents(data.items))
+      : getBatchTaskAudit(task.id).then((data) => setAuditRecords(data.items));
+    void request.catch((err) => setRefreshError(err instanceof Error ? err.message : "页签数据加载失败")).finally(() => setTabLoading(false));
+  }, [activeTab, task.id]);
 
   const runAction = async (message: string, action: () => Promise<void>) => {
     setActionLoading(true);
@@ -1271,13 +1321,13 @@ function BatchTaskDetailPage({ task, onBack, onRefresh, onDelete, onRetry, onRol
               </button>
             </div>
           )}
-          <Button type="button" onClick={() => void runAction("计划已生成，当前不会执行真实节点操作", onRetry)} disabled={actionLoading} className="h-10 rounded-xl bg-[#0f172a] px-4 text-sm font-semibold text-white hover:bg-[#172033]">
+          <Button type="button" onClick={() => void runAction(task.raw?.status === "pending" ? "执行计划已下发" : "重试指令已下发", onRetry)} disabled={actionLoading || realExecution || !["pending", "failed", "partialSuccess", "cancelled"].includes(task.raw?.status || "")} className="h-10 rounded-xl bg-[#0f172a] px-4 text-sm font-semibold text-white hover:bg-[#172033]">
             <RotateCcw className="h-4 w-4" />
-            生成计划
+            {realExecution ? "已提交执行" : task.raw?.status === "pending" ? "执行任务" : "失败重试"}
           </Button>
-          <Button type="button" variant="outline" onClick={() => void runAction("任务已取消", onRollback)} disabled={actionLoading} className="h-10 rounded-xl bg-white px-4 text-sm font-semibold">
-            <Clock3 className="h-4 w-4" />
-            取消任务
+          <Button type="button" variant="outline" onClick={() => void runAction("回滚指令已记录", onRollback)} disabled={actionLoading || realExecution || !["running", "partialSuccess", "succeeded", "failed"].includes(task.raw?.status || "")} className="h-10 rounded-xl bg-white px-4 text-sm font-semibold">
+            <RotateCcw className="h-4 w-4" />
+            {realUpgrade ? "失败自动回滚" : realPreheat ? "无需回滚" : "回滚任务"}
           </Button>
           <button type="button" onClick={() => setMenuOpen((open) => !open)} className="action-button h-10 w-10 rounded-xl bg-white" aria-label="更多操作">
             <MoreHorizontal className="h-4 w-4" />
@@ -1313,14 +1363,13 @@ function BatchTaskDetailPage({ task, onBack, onRefresh, onDelete, onRetry, onRol
           <DetailInfo label="目标节点数" value={`${task.targetNodes} 个`} />
           <DetailInfo label="重试次数" value={detail.retryCount} />
           <DetailInfo label="容错失败率" value={detail.failureRate} />
-          <DetailInfo label="计划目标已生成" value={<span className="text-[#16a34a]">{detail.success}</span>} />
-          <DetailInfo label="计划目标生成失败" value={<span className="text-[#ff4d4f]">{detail.failed}</span>} />
+          <DetailInfo label="成功" value={<span className="text-[#16a34a]">{detail.success}</span>} />
+          <DetailInfo label="失败" value={<span className="text-[#ff4d4f]">{detail.failed}</span>} />
           <DetailInfo label="跳过" value={<span className="text-[#f59e0b]">{detail.skipped}</span>} />
           <DetailInfo label="创建时间" value={task.createTime} />
-          <DetailInfo label={task.type === "节点升级" ? "升级版本" : "镜像数量"} value={task.version || "1"} />
+          <DetailInfo label={task.type === "节点升级" ? "升级版本" : "镜像数量"} value={task.type === "节点升级" ? task.version || "-" : String((task.image || "").split(",").map((item) => item.trim()).filter(Boolean).length)} />
           <DetailInfo label="超时时间" value={detail.timeout} />
           <DetailInfo label="资源检查" value={detail.resourceCheck} />
-          <DetailInfo label="执行模式" value={task.executionMode === "planOnly" ? "计划态，不执行真实节点操作" : task.executionMode || "-"} />
         </div>
         <div className="mt-8 border-t border-[var(--color-border)] pt-6">
           <DetailInfo label="描述" value={task.description || "-"} />
@@ -1336,8 +1385,8 @@ function BatchTaskDetailPage({ task, onBack, onRefresh, onDelete, onRetry, onRol
 
       {activeTab === "detail" && <TaskStatusTable task={task} refreshing={refreshing} onRefresh={refreshDetail} />}
       {activeTab === "progress" && <ExecutionProgressPanel task={task} />}
-      {activeTab === "events" && <TaskEventsPanel />}
-      {activeTab === "audit" && <TaskAuditPanel task={task} />}
+      {activeTab === "events" && <TaskEventsPanel items={events} loading={tabLoading} />}
+      {activeTab === "audit" && <TaskAuditPanel items={auditRecords} loading={tabLoading} />}
 
     </div>
   );
@@ -1353,12 +1402,12 @@ function getTaskDetail(task: BatchTask) {
   return {
     concurrency: String(raw?.concurrency ?? "-"),
     retryCount: String(raw?.retryCount ?? "-"),
-    failureRate: raw?.failurePolicy === "stop" ? "失败即停止" : "失败继续",
+    failureRate: raw?.failureRateThreshold == null ? "-" : `${raw.failureRateThreshold}%`,
     skipped: targetResults.length > 0 ? String(targetResults.filter((item) => item.status === "skipped").length) : "-",
     success: raw?.successCount == null ? "-" : String(raw.successCount),
     failed: raw?.failedCount == null ? "-" : String(raw.failedCount),
     timeout: raw?.timeoutSeconds ? `${raw.timeoutSeconds} 秒` : "-",
-    resourceCheck: "第一阶段仅生成计划",
+    resourceCheck: raw?.resourceChecks?.length ? raw.resourceChecks.join("、") : "-",
   };
 }
 
@@ -1381,17 +1430,18 @@ function DetailTab({ active, icon, label, onClick }: { active: boolean; icon: Re
 }
 
 function stepStatusText(status: string): UpgradeStatus {
-  if (status === "running") return "计划已生成";
-  if (status === "succeeded" || status === "success") return "计划已完成";
-  if (status === "failed") return "计划生成失败";
-  if (status === "cancelled") return "计划已取消";
-  return "计划待生成";
+  if (status === "running") return "执行中";
+  if (status === "succeeded" || status === "success") return "成功";
+  if (status === "failed") return "失败";
+  if (status === "cancelled") return "已取消";
+  return "待执行";
 }
 
 function TaskStatusTable({ task, refreshing, onRefresh }: { task: BatchTask; refreshing: boolean; onRefresh: () => Promise<void> }) {
+  const preheat = task.type === "镜像预热";
   const rows = task.raw?.targetResults && task.raw.targetResults.length > 0
     ? task.raw.targetResults
-    : (task.raw?.targetRefs || []).map((target) => ({ target, status: "pending", message: "planOnly: waiting for execution plan" }));
+    : (task.raw?.targetRefs || []).map((target) => ({ target, status: "pending", message: "等待任务执行", currentVersion: "", targetVersion: preheat ? task.image : task.version, startedAt: null, finishedAt: null }));
   return (
     <section className="space-y-5">
       <div className="flex items-center justify-between">
@@ -1405,8 +1455,8 @@ function TaskStatusTable({ task, refreshing, onRefresh }: { task: BatchTask; ref
               <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">节点名称</TableHead>
               <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">状态</TableHead>
               <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">当前事件</TableHead>
-              <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">升级前版本</TableHead>
-              <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">升级后版本</TableHead>
+              <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">{preheat ? "镜像数量" : "升级前版本"}</TableHead>
+              <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">{preheat ? "镜像列表" : "升级后版本"}</TableHead>
               <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">开始时间</TableHead>
               <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">结束时间</TableHead>
             </TableRow>
@@ -1415,12 +1465,12 @@ function TaskStatusTable({ task, refreshing, onRefresh }: { task: BatchTask; ref
             {rows.map((row) => (
               <TableRow key={row.target} className="h-[76px]">
                 <TableCell className="px-6 text-sm font-semibold text-[#1e6bff]">{row.target}</TableCell>
-                <TableCell className="px-6"><StatusPill status={stepStatusText(row.status)} variant="upgrade" /></TableCell>
-                <TableCell className="px-6 text-sm text-[var(--color-text-secondary)]">{row.message || "计划态，尚未执行真实节点操作"}</TableCell>
-                <TableCell className="px-6 font-mono text-sm text-[var(--color-text-primary)]">-</TableCell>
-                <TableCell className="px-6 font-mono text-sm text-[var(--color-text-primary)]">{task.version || "-"}</TableCell>
-                <TableCell className="px-6 text-sm text-[var(--color-text-tertiary)]">{task.raw?.startedAt || "-"}</TableCell>
-                <TableCell className="px-6 text-sm text-[var(--color-text-tertiary)]">{task.raw?.finishedAt || "-"}</TableCell>
+                <TableCell className="px-6"><StatusPill status={stepStatusText(row.status)} variant={preheat ? "preheat" : "upgrade"} /></TableCell>
+                <TableCell className="px-6 text-sm text-[var(--color-text-secondary)]">{row.message || (preheat ? "等待镜像预热状态上报" : "等待节点升级状态上报")}</TableCell>
+                <TableCell className="px-6 font-mono text-sm text-[var(--color-text-primary)]">{row.currentVersion || "-"}</TableCell>
+                <TableCell className="max-w-[320px] px-6 font-mono text-sm text-[var(--color-text-primary)]"><span className="line-clamp-2">{row.targetVersion || (preheat ? task.image : task.version) || "-"}</span></TableCell>
+                <TableCell className="px-6 text-sm text-[var(--color-text-tertiary)]">{row.startedAt || task.raw?.startedAt || "-"}</TableCell>
+                <TableCell className="px-6 text-sm text-[var(--color-text-tertiary)]">{row.finishedAt || task.raw?.finishedAt || "-"}</TableCell>
               </TableRow>
             ))}
           </TableBody>
@@ -1455,18 +1505,18 @@ function ExecutionProgressPanel({ task }: { task: BatchTask }) {
         <h2 className="mb-6 text-base font-bold text-[var(--color-text-primary)]">执行步骤</h2>
         <div className="space-y-4">
           {steps.map((row, index) => (
-            <div key={row.name} className="flex items-center justify-between rounded-2xl bg-[#f8fafc] px-5 py-4">
+            <div key={`${row.name}-${index}`} className="flex items-center justify-between rounded-2xl bg-[#f8fafc] px-5 py-4">
               <div className="flex items-center gap-4">
                 <span className="flex h-10 w-10 items-center justify-center rounded-full bg-[#e0f2fe] text-sm font-bold text-[#2563eb]">{index + 1}</span>
                 <div>
                   <div className="flex items-center gap-3">
-                    <p className="text-base font-bold text-[var(--color-text-primary)]">{row.name}</p>
-                    <StatusPill status={stepStatusText(row.status)} variant="upgrade" />
+                    <p className="text-base font-bold text-[var(--color-text-primary)]">{row.displayName || row.name}</p>
+                    <StatusPill status={stepStatusText(row.status)} variant={task.type === "镜像预热" ? "preheat" : "upgrade"} />
                   </div>
-                  <p className="mt-1 text-sm text-[var(--color-text-tertiary)]">{row.message || "计划步骤，尚未接入真实执行器"}</p>
+                  <p className="mt-1 text-sm text-[var(--color-text-tertiary)]">{row.message || "等待 KubeEdge TaskManager 状态上报"}</p>
                 </div>
               </div>
-              <span className="rounded-md bg-[#eef2f7] px-3 py-1 font-mono text-sm font-semibold text-[var(--color-text-secondary)]">planOnly</span>
+              <span className="max-w-[360px] truncate rounded-md bg-[#eef2f7] px-3 py-1 font-mono text-sm font-semibold text-[var(--color-text-secondary)]">{task.type === "镜像预热" ? task.image || "-" : `${task.raw?.targetResults?.[0]?.currentVersion || "-"} → ${task.version || "-"}`}</span>
             </div>
           ))}
         </div>
@@ -1484,22 +1534,26 @@ function ProgressMetric({ label, value, tone }: { label: string; value: string; 
   );
 }
 
-function TaskEventsPanel() {
+function TaskEventsPanel({ items, loading }: { items: BatchTaskEvent[]; loading: boolean }) {
+  if (loading) return <DataLoading />;
+  if (items.length === 0) return <DataEmpty icon={<AlertTriangle className="h-12 w-12" />} title="暂无事件" description="任务执行过程中产生的事件将在这里显示" />;
   return (
-    <section className="flex min-h-[260px] flex-col items-center justify-center rounded-2xl bg-white text-center shadow-[0_18px_45px_rgba(15,23,42,0.04)]">
-      <AlertTriangle className="mb-4 h-12 w-12 text-[var(--color-text-tertiary)]" />
-      <p className="text-base font-semibold text-[var(--color-text-secondary)]">暂无事件</p>
-      <p className="mt-2 text-sm text-[var(--color-text-tertiary)]">第一阶段仅持久化任务计划，尚未接入真实执行事件</p>
-    </section>
+    <div className="table-card"><Table><TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)]"><TableHead className="px-6">时间</TableHead><TableHead className="px-6">类型</TableHead><TableHead className="px-6">原因</TableHead><TableHead className="px-6">消息</TableHead></TableRow></TableHeader><TableBody>{items.map((item, index) => <TableRow key={`${item.time}-${index}`} className="h-[76px]"><TableCell className="px-6 text-[var(--color-text-tertiary)]">{item.time}</TableCell><TableCell className="px-6"><span className={cn("rounded-lg px-3 py-1 text-sm", item.type === "Warning" ? "bg-red-50 text-red-500" : "bg-emerald-50 text-emerald-500")}>{item.type}</span></TableCell><TableCell className="px-6 font-semibold">{item.reason}</TableCell><TableCell className="px-6 text-[var(--color-text-secondary)]">{item.message}</TableCell></TableRow>)}</TableBody></Table></div>
   );
 }
 
-function TaskAuditPanel({ task }: { task: BatchTask }) {
+function TaskAuditPanel({ items, loading }: { items: BatchTaskAuditRecord[]; loading: boolean }) {
+  if (loading) return <DataLoading />;
+  if (items.length === 0) return <DataEmpty icon={<ClipboardList className="h-12 w-12" />} title="暂无审计记录" description="任务操作完成后将生成审计日志" />;
   return (
-    <section className="flex min-h-[300px] flex-col items-center justify-center rounded-2xl bg-white text-center shadow-[0_18px_45px_rgba(15,23,42,0.04)]">
-      <ClipboardList className="mb-4 h-12 w-12 text-[var(--color-text-tertiary)]" />
-      <p className="text-base font-semibold text-[var(--color-text-secondary)]">暂无审计记录</p>
-      <p className="mt-2 text-sm text-[var(--color-text-tertiary)]">{task.name} 当前为计划态任务，真实执行审计待后续执行器接入</p>
-    </section>
+    <div className="table-card"><Table><TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)]"><TableHead className="px-6">时间</TableHead><TableHead className="px-6">操作者</TableHead><TableHead className="px-6">操作</TableHead><TableHead className="px-6">结果</TableHead><TableHead className="px-6">说明</TableHead></TableRow></TableHeader><TableBody>{items.map((item, index) => <TableRow key={`${item.time}-${index}`} className="h-[76px]"><TableCell className="px-6 text-[var(--color-text-tertiary)]">{item.time}</TableCell><TableCell className="px-6">{item.actor}</TableCell><TableCell className="px-6 font-semibold">{item.action}</TableCell><TableCell className="px-6 text-emerald-500">{item.result === "success" ? "成功" : "失败"}</TableCell><TableCell className="px-6 text-[var(--color-text-secondary)]">{item.message}</TableCell></TableRow>)}</TableBody></Table></div>
   );
+}
+
+function DataLoading() {
+  return <section className="flex min-h-[260px] items-center justify-center rounded-2xl bg-white text-sm text-[var(--color-text-tertiary)]"><RefreshCw className="mr-2 h-4 w-4 animate-spin" />加载中...</section>;
+}
+
+function DataEmpty({ icon, title, description }: { icon: ReactNode; title: string; description: string }) {
+  return <section className="flex min-h-[300px] flex-col items-center justify-center rounded-2xl bg-white text-center shadow-[0_18px_45px_rgba(15,23,42,0.04)]"><div className="mb-4 text-[var(--color-text-tertiary)]">{icon}</div><p className="text-base font-semibold text-[var(--color-text-secondary)]">{title}</p><p className="mt-2 text-sm text-[var(--color-text-tertiary)]">{description}</p></section>;
 }

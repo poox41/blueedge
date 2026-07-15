@@ -1,5 +1,29 @@
 export type BatchTaskType = "nodeUpgrade" | "imagePreheat" | "batchWorkload";
 
+export interface BatchTaskStep {
+  name: string;
+  displayName: string;
+  status: string;
+  message: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface BatchTaskEvent {
+  time: string;
+  type: "Normal" | "Warning";
+  reason: string;
+  message: string;
+}
+
+export interface BatchTaskAuditRecord {
+  time: string;
+  actor: string;
+  action: string;
+  result: "success" | "failed";
+  message: string;
+}
+
 export interface BatchWorkloadPlanContainer {
   name: string;
   image: string;

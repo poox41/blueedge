@@ -5,7 +5,7 @@ import type {
   AccessConfigListResponse,
   AccessConfigWarning,
 } from "@/api/adapters/access-config.adapter";
-import type { BatchTaskDetailResponse, BatchTaskListResponse } from "@/api/adapters/batch-task.adapter";
+import type { BatchTaskAuditRecord, BatchTaskDetailResponse, BatchTaskEvent, BatchTaskListResponse } from "@/api/adapters/batch-task.adapter";
 import type { DeviceModelSummaryListResponse, DeviceModelSummaryResponse } from "@/api/adapters/device-model-summary.adapter";
 import type { DeviceSummaryListResponse, DeviceSummaryResponse } from "@/api/adapters/device-summary.adapter";
 import type { DeviceConfigPayload } from "@/lib/device-config";
@@ -101,6 +101,7 @@ export interface BatchTaskPayload {
   name: string;
   targetType: "node" | "nodeGroup" | "edgeUnit" | "deployment";
   targetRefs: string[];
+  labelSelector?: Record<string, string>;
   targetVersion?: string;
   image?: string;
   images?: string[];
@@ -108,9 +109,34 @@ export interface BatchTaskPayload {
   failurePolicy?: "continue" | "stop";
   timeoutSeconds?: number;
   retryCount?: number;
+  failureRateThreshold?: number;
+  resourceChecks?: string[];
+  userConfirm?: boolean;
+  credentialNamespace?: string;
+  credentialName?: string;
   description?: string;
   targets?: Array<Record<string, unknown>>;
   plan?: BatchWorkloadPlan;
+}
+
+export interface BatchWorkloadEvent {
+  name: string;
+  namespace: string;
+  type: "Normal" | "Warning" | string;
+  reason: string;
+  message: string;
+  component: string;
+  object: string;
+  time: string;
+}
+
+export interface BatchWorkloadAuditItem {
+  action: string;
+  result: "success" | "failed";
+  actor: string;
+  method: string;
+  sourceIP: string;
+  time: string;
 }
 
 export interface ProductOverview {
@@ -347,6 +373,26 @@ export async function cancelBatchTask(id: string): Promise<BatchTaskDetailRespon
   return res.data;
 }
 
+export async function retryBatchTask(id: string): Promise<BatchTaskDetailResponse> {
+  const res = await gatewayRequest<BatchTaskDetailResponse>(`/blueedge/batch-tasks/${encodeURIComponent(id)}/retry`, { method: "POST" });
+  return res.data;
+}
+
+export async function rollbackBatchTask(id: string): Promise<BatchTaskDetailResponse> {
+  const res = await gatewayRequest<BatchTaskDetailResponse>(`/blueedge/batch-tasks/${encodeURIComponent(id)}/rollback`, { method: "POST" });
+  return res.data;
+}
+
+export async function getBatchTaskEvents(id: string): Promise<{ items: BatchTaskEvent[] }> {
+  const res = await gatewayRequest<{ items: BatchTaskEvent[] }>(`/blueedge/batch-tasks/${encodeURIComponent(id)}/events`);
+  return res.data;
+}
+
+export async function getBatchTaskAudit(id: string): Promise<{ items: BatchTaskAuditRecord[] }> {
+  const res = await gatewayRequest<{ items: BatchTaskAuditRecord[] }>(`/blueedge/batch-tasks/${encodeURIComponent(id)}/audit`);
+  return res.data;
+}
+
 export async function deleteBatchTask(id: string): Promise<{ warnings?: Array<{ source: string; message: string }> }> {
   const res = await gatewayRequest<{ warnings?: Array<{ source: string; message: string }> }>(`/blueedge/batch-tasks/${encodeURIComponent(id)}`, {
     method: "DELETE",
@@ -362,8 +408,48 @@ export async function createBatchWorkloadTask(payload: BatchTaskPayload): Promis
   return res.data;
 }
 
+export async function listBatchWorkloads(): Promise<BatchTaskListResponse> {
+  const res = await gatewayRequest<BatchTaskListResponse>("/blueedge/workloads/batch");
+  return res.data;
+}
+
 export async function getBatchWorkloadTask(taskId: string): Promise<BatchTaskDetailResponse> {
   const res = await gatewayRequest<BatchTaskDetailResponse>(`/blueedge/workloads/batch/${encodeURIComponent(taskId)}`);
+  return res.data;
+}
+
+export async function updateBatchWorkloadMetadata(taskId: string, payload: { description: string }): Promise<BatchTaskDetailResponse> {
+  const res = await gatewayRequest<BatchTaskDetailResponse, { description: string }>(`/blueedge/workloads/batch/${encodeURIComponent(taskId)}`, { method: "PATCH", body: payload });
+  return res.data;
+}
+
+export async function getBatchWorkloadEvents(taskId: string): Promise<{ items: BatchWorkloadEvent[]; summary: { total: number; warning: number } }> {
+  const res = await gatewayRequest<{ items: BatchWorkloadEvent[]; summary: { total: number; warning: number } }>(`/blueedge/workloads/batch/${encodeURIComponent(taskId)}/events`);
+  return res.data;
+}
+
+export async function getBatchWorkloadAudit(taskId: string): Promise<{ items: BatchWorkloadAuditItem[]; warning?: string }> {
+  const res = await gatewayRequest<{ items: BatchWorkloadAuditItem[]; warning?: string }>(`/blueedge/workloads/batch/${encodeURIComponent(taskId)}/audit`);
+  return res.data;
+}
+
+export async function addBatchWorkloadDeployments(taskId: string, plan: BatchWorkloadPlan): Promise<BatchTaskDetailResponse> {
+  const res = await gatewayRequest<BatchTaskDetailResponse, { plan: BatchWorkloadPlan }>(`/blueedge/workloads/batch/${encodeURIComponent(taskId)}/deployments`, { method: "POST", body: { plan } });
+  return res.data;
+}
+
+export async function updateBatchWorkloadYaml(taskId: string, yaml: string): Promise<BatchTaskDetailResponse> {
+  const res = await gatewayRequest<BatchTaskDetailResponse, { yaml: string }>(`/blueedge/workloads/batch/${encodeURIComponent(taskId)}/yaml`, { method: "PUT", body: { yaml } });
+  return res.data;
+}
+
+export async function deleteBatchWorkload(taskId: string): Promise<{ message: string }> {
+  const res = await gatewayRequest<{ message: string }>(`/blueedge/workloads/batch/${encodeURIComponent(taskId)}`, { method: "DELETE" });
+  return res.data;
+}
+
+export async function deleteBatchWorkloadDeployment(taskId: string, deploymentName: string): Promise<{ message: string }> {
+  const res = await gatewayRequest<{ message: string }>(`/blueedge/workloads/batch/${encodeURIComponent(taskId)}/deployments/${encodeURIComponent(deploymentName)}`, { method: "DELETE" });
   return res.data;
 }
 

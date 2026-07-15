@@ -24,6 +24,11 @@ export interface BatchTaskApiItem {
   failurePolicy?: "continue" | "stop";
   timeoutSeconds?: number;
   retryCount?: number;
+  failureRateThreshold?: number;
+  resourceChecks?: string[];
+  userConfirm?: boolean;
+  credentialNamespace?: string;
+  credentialName?: string;
   progress?: number;
   totalTargets?: number;
   successCount?: number;
@@ -33,16 +38,48 @@ export interface BatchTaskApiItem {
   startedAt?: string | null;
   finishedAt?: string | null;
   description?: string;
-  steps?: Array<{ name: string; status: string; message?: string }>;
-  targetResults?: Array<{ target: string; status: string; message?: string }>;
+  steps?: Array<{ name: string; displayName?: string; status: string; message?: string; startedAt?: string | null; finishedAt?: string | null }>;
+  targetResults?: Array<{ target: string; status: string; message?: string; currentVersion?: string; targetVersion?: string; startedAt?: string | null; finishedAt?: string | null }>;
   errors?: Array<{ target?: string; message: string } | string>;
+  events?: BatchTaskEvent[];
+  auditRecords?: BatchTaskAuditRecord[];
   targets?: Array<{ namespace?: string; image?: string; [key: string]: unknown }>;
   plan?: BatchWorkloadPlan | null;
+  namespace?: string;
+  targetGroups?: string[];
+  workloads?: Array<{
+    name: string;
+    namespace: string;
+    nodeGroup: string;
+    replicas: number;
+    readyReplicas: number;
+    status: "running" | "succeeded" | "failed" | string;
+    image: string;
+    createdAt?: string;
+    uid?: string;
+  }>;
+  definitions?: Array<Record<string, any>>;
+  yaml?: string;
   rawRef?: {
     kind: string;
     namespace?: string;
     name: string;
   };
+}
+
+export interface BatchTaskEvent {
+  time: string;
+  type: "Normal" | "Warning";
+  reason: string;
+  message: string;
+}
+
+export interface BatchTaskAuditRecord {
+  time: string;
+  actor: string;
+  action: string;
+  result: "success" | "failed";
+  message: string;
 }
 
 export interface BatchTaskWarning {
@@ -67,13 +104,13 @@ export const batchTaskTypeText: Record<BatchTaskApiType, "节点升级" | "镜�
 };
 
 export const batchTaskStatusText: Record<BatchTaskApiStatus, string> = {
-  initializing: "计划初始化",
-  pending: "计划待生成",
-  running: "计划已生成",
-  partialSuccess: "计划部分生成",
-  succeeded: "计划已完成",
-  failed: "计划生成失败",
-  cancelled: "计划已取消",
+  initializing: "初始化",
+  pending: "待执行",
+  running: "执行中",
+  partialSuccess: "部分成功",
+  succeeded: "成功",
+  failed: "失败",
+  cancelled: "已取消",
 };
 
 export function formatBatchTime(value?: string | null): string {
@@ -101,26 +138,30 @@ export function toBatchTaskRow(item: BatchTaskApiItem) {
 
 export function toBatchWorkloadRow(item: BatchTaskApiItem) {
   const legacyTarget = Array.isArray(item.targets) ? item.targets[0] : null;
-  const namespace = item.plan?.namespace || legacyTarget?.namespace || "default";
+  const namespace = item.namespace || item.plan?.namespace || legacyTarget?.namespace || "default";
   const image = item.image || item.plan?.podTemplate.containers[0]?.image || legacyTarget?.image || "";
-  const targetGroups = Array.isArray(item.targetRefs) ? item.targetRefs : [];
+  const targetGroups = item.targetGroups || (Array.isArray(item.targetRefs) ? item.targetRefs : []);
   return {
     id: item.id,
     name: item.name,
     namespace,
     image,
     targetGroups,
-    status: item.status === "running" || item.status === "succeeded"
-      ? "部署计划已生成"
+    status: item.status === "succeeded"
+      ? "成功"
+      : item.status === "running"
+        ? "执行中"
       : item.status === "failed"
-        ? "部署计划生成失败"
+        ? "失败"
+        : item.status === "partialSuccess"
+          ? "部分成功"
         : item.status === "cancelled"
-          ? "部署计划已取消"
-          : "部署计划待生成",
+          ? "已取消"
+          : "待执行",
     createTime: formatBatchTime(item.createdAt),
     description: item.description || "",
-    rolloutPolicy: "planOnly，尚未执行真实工作负载下发",
-    rollbackPolicy: "第一阶段未接入自动回滚",
+    rolloutPolicy: "Kubernetes Deployment 滚动更新",
+    rollbackPolicy: "由 Deployment revision 管理",
     raw: item,
   };
 }

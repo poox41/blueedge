@@ -432,11 +432,13 @@ export function Nodes() {
     }
   };
   const openDetailWithFreshData = async (n: Node) => {
+    setError("");
     setSelected(n);
     setDetailOpen(true);
     try {
       const { item, warnings } = await getNodeSummary(n.name);
-      if (warnings?.length) setError(warnings.map((warning) => warning.message).join("；"));
+      const actionableWarnings = (warnings || []).filter((warning) => warning.source !== "metrics.node");
+      if (actionableWarnings.length) setError(actionableWarnings.map((warning) => warning.message).join("；"));
       const raw = item.raw || {};
       setSelected({
         ...n,

@@ -92,15 +92,22 @@ expect_contains "install command uses criAddress" "$install_command" '--remote-r
 expect_contains "install command uses driver" "$install_command" '--cgroupdriver=cgroupfs'
 expect_contains "delete AccessConfig" "$(request DELETE "/blueedge/access-configs/$ACCESS_CONFIG_NAME")" '"access-config.delete"'
 
-task_body="{\"name\":\"${PREFIX}-batch-task\",\"targetType\":\"deployment\",\"targetRefs\":[\"default/${PREFIX}-noop\"],\"images\":[\"nginx:1.25\"],\"description\":\"planOnly regression task\"}"
-task_created="$(request POST /blueedge/batch-tasks/image-preheat "$task_body")"
-expect_contains "create BatchTask" "$task_created" '"executionMode":"planOnly"'
-BATCH_TASK_ID="$(printf '%s' "$task_created" | sed -E 's/.*"id":"([^"]+)".*/\1/')"
-expect_contains "get BatchTask detail" "$(request GET "/blueedge/batch-tasks/$BATCH_TASK_ID")" '"item":'
-expect_contains "start BatchTask" "$(request POST "/blueedge/batch-tasks/$BATCH_TASK_ID/start")" '"status":"running"'
-expect_contains "cancel BatchTask" "$(request POST "/blueedge/batch-tasks/$BATCH_TASK_ID/cancel")" '"status":"cancelled"'
-expect_contains "delete BatchTask" "$(request DELETE "/blueedge/batch-tasks/$BATCH_TASK_ID")" '"warnings"'
-BATCH_TASK_ID=""
+if [ "${RUN_REAL_IMAGE_PREHEAT_TESTS:-false}" = "true" ]; then
+  if [ -z "${IMAGE_PREHEAT_NODE:-}" ]; then
+    printf 'IMAGE_PREHEAT_NODE is required when RUN_REAL_IMAGE_PREHEAT_TESTS=true\n' >&2
+    exit 1
+  fi
+  task_body="{\"name\":\"${PREFIX}-image-preheat\",\"targetType\":\"node\",\"targetRefs\":[\"$IMAGE_PREHEAT_NODE\"],\"images\":[\"nginx:1.25\"],\"failureRateThreshold\":10,\"resourceChecks\":[\"CPU\",\"内存\",\"磁盘\"],\"description\":\"real ImagePrePullJob regression task\"}"
+  task_created="$(request POST /blueedge/batch-tasks/image-preheat "$task_body")"
+  expect_contains "create real ImagePrePullJob" "$task_created" '"executionMode":"imagePrePullJob"'
+  BATCH_TASK_ID="$(printf '%s' "$task_created" | sed -E 's/.*"id":"([^"]+)".*/\1/')"
+  expect_contains "get ImagePrePullJob detail" "$(request GET "/blueedge/batch-tasks/$BATCH_TASK_ID")" '"rawRef":{"kind":"ImagePrePullJob"'
+  expect_contains "get ImagePrePullJob audit" "$(request GET "/blueedge/batch-tasks/$BATCH_TASK_ID/audit")" '"action":"create ImagePrePullJob"'
+  expect_contains "delete ImagePrePullJob" "$(request DELETE "/blueedge/batch-tasks/$BATCH_TASK_ID")" '"warnings"'
+  BATCH_TASK_ID=""
+else
+  printf 'SKIP real ImagePrePullJob regression. Set RUN_REAL_IMAGE_PREHEAT_TESTS=true and IMAGE_PREHEAT_NODE to execute an actual image pull.\n'
+fi
 
 workload_body="{\"name\":\"${PREFIX}-batch-workload\",\"targetType\":\"deployment\",\"targetRefs\":[\"edge-group\"],\"image\":\"nginx:1.25\",\"failurePolicy\":\"continue\",\"description\":\"plan schema regression\",\"plan\":{\"namespace\":\"default\",\"name\":\"${PREFIX}-deployment\",\"targetGroups\":[\"edge-group\"],\"replicas\":2,\"workloadType\":\"Deployment\",\"podTemplate\":{\"containers\":[{\"name\":\"main\",\"image\":\"nginx:1.25\",\"imagePullPolicy\":\"IfNotPresent\",\"command\":[\"/bin/sh\"],\"args\":[\"-c\",\"echo-ready\"],\"env\":[{\"name\":\"MODE\",\"value\":\"regression\"}],\"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"128Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"256Mi\"}}},{\"name\":\"sidecar\",\"image\":\"busybox:1.36\"}]}}}"
 workload_created="$(request POST /blueedge/workloads/batch "$workload_body")"

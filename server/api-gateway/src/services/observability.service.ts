@@ -231,9 +231,17 @@ function relatedResourcesView(kind: string, resource: any, pods: any[]) {
   };
 }
 
+export function nodeMetricsUnavailableWarning(name: string): EdgeUnitWarning {
+  return {
+    source: "metrics.node",
+    code: "metrics_unavailable",
+    message: `节点 ${name} 的 CPU、内存监控指标暂不可用，不影响节点健康状态和其他操作`,
+  };
+}
+
 async function getNodeMetricsView(name: string, warnings: EdgeUnitWarning[]) {
-  const data = await getK8sJson(`/apis/metrics.k8s.io/v1beta1/nodes/${encodeURIComponent(name)}`).catch((error) => {
-    warnings.push(warning("metrics.node", error, "node metrics unavailable"));
+  const data = await getK8sJson(`/apis/metrics.k8s.io/v1beta1/nodes/${encodeURIComponent(name)}`).catch(() => {
+    warnings.push(nodeMetricsUnavailableWarning(name));
     return null;
   });
   if (!data) return { available: false, cpuUsage: null, memoryUsage: null };
