@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { useNamespace } from "@/contexts/NamespaceContext";
 import yaml from "js-yaml";
-import { Download, Edit3, ExternalLink, FileCode2, Info, Maximize2, Minimize2, MoreHorizontal, Pencil, Plus, RefreshCw, Search, ShieldCheck, Trash2, Upload, X } from "lucide-react";
+import { ArrowLeft, Copy, Database, Download, Edit3, ExternalLink, FileCode2, Info, Maximize2, MessageSquareText, Minimize2, MoreHorizontal, Pencil, Plus, RefreshCw, Search, ShieldCheck, Tags, Trash2, Upload, X } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -23,7 +25,10 @@ import {
   createSecretResource,
   deleteConfigMapResource,
   deleteSecretResource,
+  getConfigMap,
+  getSecret,
   listConfigMaps,
+  listNamespaces,
   listSecrets,
   updateConfigMapResource,
   updateSecretResource,
@@ -63,13 +68,12 @@ type ConfigForm = {
   annotations: KvPair[];
 };
 
-const namespaces = ["aipc31", "default", "riscv", "kube-system", "blueedge", "emqx"];
 const namePattern = /^[a-z0-9]([a-z0-9-.]{0,61}[a-z0-9])?$/;
 
 const emptyForm = (): ConfigForm => ({
   name: "",
   alias: "",
-  namespace: "aipc31",
+  namespace: "default",
   description: "",
   dataPairs: [],
   labels: [],
@@ -95,16 +99,25 @@ const stringifyRecord = (record: Record<string, unknown>): Record<string, string
 
 const getMetadata = (resource: KubeResource) => asRecord(resource.metadata);
 
-const getCreatedAt = (resource: KubeResource) => String(resource.metadata?.creationTimestamp || "-");
+const getCreatedAt = (resource: KubeResource) => String(resource.metadata?.creationTimestamp || resource.creationTimestamp || "-");
 
 const getAnnotations = (resource: KubeResource): Record<string, string> => stringifyRecord(asRecord(resource.metadata?.annotations));
 
-const getLabels = (resource: KubeResource): Record<string, string> => stringifyRecord(asRecord(resource.metadata?.labels));
+const getEditableAnnotations = (resource: KubeResource): Record<string, string> => {
+  const annotations = getAnnotations(resource);
+  delete annotations["blueedge.io/alias"];
+  delete annotations.alias;
+  delete annotations["blueedge.io/description"];
+  delete annotations.description;
+  return annotations;
+};
+
+const getLabels = (resource: KubeResource): Record<string, string> => stringifyRecord(asRecord(resource.metadata?.labels || resource.labels));
 
 const maskSecretData = (resource: KubeResource): Record<string, string> => {
   const keys = new Set([
-    ...Object.keys(asRecord((resource as any).data)),
-    ...Object.keys(asRecord((resource as any).stringData)),
+    ...Object.keys(asRecord(resource.data)),
+    ...Object.keys(asRecord(resource.stringData)),
   ]);
   return Object.fromEntries(Array.from(keys).map((key) => [key, "******"]));
 };
@@ -114,7 +127,7 @@ const toConfigItem = (resource: KubeResource, type: ConfigType): ConfigItem => {
   const annotations = getAnnotations(resource);
   const data = type === "密钥"
     ? maskSecretData(resource)
-    : stringifyRecord(asRecord((resource as any).data));
+    : stringifyRecord(asRecord(resource.data));
   const name = String(metadata.name || resource.name || "-");
   const namespace = String(metadata.namespace || resource.namespace || "default");
   return {
@@ -133,18 +146,39 @@ const toConfigItem = (resource: KubeResource, type: ConfigType): ConfigItem => {
   };
 };
 
-const buildConfigYaml = (item: ConfigItem) => yaml.dump({
-  apiVersion: "v1",
-  kind: item.type === "密钥" ? "Secret" : "ConfigMap",
-  metadata: {
-    name: item.name,
-    namespace: item.namespace,
-    ...(Object.keys(item.labels).length > 0 ? { labels: item.labels } : {}),
-  },
-  ...(item.type === "密钥"
-    ? { type: "Opaque", stringData: Object.fromEntries(Object.keys(item.data || {}).map((key) => [key, ""])) }
-    : { data: item.data || {} }),
-}, { lineWidth: -1, noRefs: true });
+const buildConfigYaml = (item: ConfigItem) => {
+  if (item.type === "密钥") {
+    return yaml.dump({
+      apiVersion: "v1",
+      kind: "Secret",
+      metadata: {
+        name: item.name,
+        namespace: item.namespace,
+        ...(Object.keys(item.labels).length > 0 ? { labels: item.labels } : {}),
+        ...(Object.keys(getAnnotations(item.raw || {})).length > 0 ? { annotations: getAnnotations(item.raw || {}) } : {}),
+      },
+      type: String(item.raw?.type || "Opaque"),
+      stringData: Object.fromEntries(Object.keys(item.data || {}).map((key) => [key, ""])),
+    }, { lineWidth: -1, noRefs: true });
+  }
+
+  const resource = {
+    ...(item.raw || {}),
+    apiVersion: item.raw?.apiVersion || "v1",
+    kind: "ConfigMap",
+    metadata: {
+      ...(item.raw?.metadata || {}),
+      name: item.name,
+      namespace: item.namespace,
+      labels: item.labels,
+      annotations: getAnnotations(item.raw || {}),
+    },
+    data: item.data || {},
+  } as KubeResource;
+  const metadata = resource.metadata as KubeResource["metadata"] & { managedFields?: unknown };
+  if (metadata) delete metadata.managedFields;
+  return yaml.dump(resource, { lineWidth: -1, noRefs: true });
+};
 
 const buildConfigResource = (form: ConfigForm, type: ConfigType): KubeResource => {
   const labels = pairsToRecord(form.labels);
@@ -168,6 +202,36 @@ const buildConfigResource = (form: ConfigForm, type: ConfigType): KubeResource =
       ? { type: "Opaque", stringData: data }
       : { data }),
   };
+};
+
+const buildUpdatedConfigResource = (item: ConfigItem, form: ConfigForm): KubeResource => {
+  const labels = pairsToRecord(form.labels);
+  const annotations = {
+    ...(form.alias.trim() ? { "blueedge.io/alias": form.alias.trim() } : {}),
+    ...(form.description.trim() ? { "blueedge.io/description": form.description.trim() } : {}),
+    ...pairsToRecord(form.annotations),
+  };
+  const resource: KubeResource = {
+    ...(item.raw || {}),
+    apiVersion: item.raw?.apiVersion || "v1",
+    kind: item.type === "密钥" ? "Secret" : "ConfigMap",
+    metadata: {
+      ...(item.raw?.metadata || {}),
+      name: item.name,
+      namespace: item.namespace,
+      labels,
+      annotations,
+    },
+  };
+  if (item.type === "密钥") {
+    resource.stringData = pairsToRecord(form.dataPairs);
+    delete resource.data;
+  } else {
+    resource.data = pairsToRecord(form.dataPairs);
+  }
+  const metadata = resource.metadata as KubeResource["metadata"] & { managedFields?: unknown };
+  if (metadata) delete metadata.managedFields;
+  return resource;
 };
 
 const parseResourceYaml = (source: string, fallbackType: ConfigType): { resource: KubeResource; type: ConfigType } => {
@@ -242,52 +306,140 @@ const highlightYamlLine = (line: string): string => {
 const highlightYaml = (code: string): string => code.split("\n").map(highlightYamlLine).join("\n");
 
 export function ConfigMaps() {
+  const { selectedNamespace } = useNamespace();
+  const navigate = useNavigate();
+  const { resourceType, namespace: detailNamespace, name: detailName } = useParams<{ resourceType?: string; namespace?: string; name?: string }>();
   const [items, setItems] = useState<ConfigItem[]>([]);
   const [activeTab, setActiveTab] = useState<"config" | "secret">("config");
   const [search, setSearch] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [namespaceOptions, setNamespaceOptions] = useState<string[]>(["default"]);
+  const [refreshingNamespaces, setRefreshingNamespaces] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [yamlOpen, setYamlOpen] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [yamlTarget, setYamlTarget] = useState<ConfigItem | null>(null);
   const [updateTarget, setUpdateTarget] = useState<ConfigItem | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ConfigItem | null>(null);
+  const [detailItem, setDetailItem] = useState<ConfigItem | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState("");
+
+  const detailType: ConfigType | null = resourceType === "config" ? "配置项" : resourceType === "secret" ? "密钥" : null;
+  const isDetailRoute = Boolean(detailType && detailNamespace && detailName);
 
   const currentType: ConfigType = activeTab === "config" ? "配置项" : "密钥";
   const filtered = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     return items
       .filter((item) => item.type === currentType)
+      .filter((item) => selectedNamespace === "all" || item.namespace === selectedNamespace)
       .filter((item) => !keyword || [item.name, item.alias, item.namespace, formatLabels(item.labels)].some((value) => value.toLowerCase().includes(keyword)));
-  }, [currentType, items, search]);
+  }, [currentType, items, search, selectedNamespace]);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (preserveData = false) => {
     setIsLoading(true);
     setError("");
     try {
-      const [configMaps, secrets] = await Promise.all([listConfigMaps(), listSecrets()]);
+      const [namespaceItems, configMaps, secrets] = await Promise.all([listNamespaces(), listConfigMaps(), listSecrets()]);
+      const nextNamespaces = namespaceItems.filter((item) => item.value !== "all").map((item) => item.value);
+      setNamespaceOptions(nextNamespaces.length ? nextNamespaces : ["default"]);
       setItems([
         ...configMaps.map((item) => toConfigItem(item, "配置项")),
         ...secrets.map((item) => toConfigItem(item, "密钥")),
       ]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载配置项与密钥失败");
-      setItems([]);
+      if (!preserveData) setItems([]);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
+  const loadDetail = useCallback(async () => {
+    if (!detailType || !detailNamespace || !detailName) return;
+    setDetailLoading(true);
+    setDetailError("");
+    try {
+      const resource = detailType === "密钥"
+        ? await getSecret(detailNamespace, detailName)
+        : await getConfigMap(detailNamespace, detailName);
+      setDetailItem(toConfigItem(resource, detailType));
+    } catch (err) {
+      setDetailItem(null);
+      setDetailError(err instanceof Error ? err.message : `加载${detailType}详情失败`);
+    } finally {
+      setDetailLoading(false);
+    }
+  }, [detailName, detailNamespace, detailType]);
+
   useEffect(() => {
-    void loadData();
-  }, [loadData]);
+    const timer = window.setTimeout(() => {
+      if (isDetailRoute) {
+        void loadDetail();
+      } else {
+        setDetailItem(null);
+        void loadData();
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [isDetailRoute, loadData, loadDetail]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await loadData();
-    setRefreshing(false);
+    try {
+      await loadData(true);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const handleNamespaceRefresh = async () => {
+    setRefreshingNamespaces(true);
+    try {
+      await loadData(true);
+    } finally {
+      setRefreshingNamespaces(false);
+    }
+  };
+
+  const getExactItem = async (item: ConfigItem) => {
+    const resource = item.type === "密钥"
+      ? await getSecret(item.namespace, item.name)
+      : await getConfigMap(item.namespace, item.name);
+    return toConfigItem(resource, item.type);
+  };
+
+  const openYamlEditor = async (item: ConfigItem) => {
+    setMenuOpenId(null);
+    setError("");
+    try {
+      setYamlTarget(await getExactItem(item));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `加载${item.type}详情失败`);
+    }
+  };
+
+  const openUpdateDialog = async (item: ConfigItem) => {
+    setMenuOpenId(null);
+    setError("");
+    try {
+      setUpdateTarget(await getExactItem(item));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `加载${item.type}详情失败`);
+    }
+  };
+
+  const exportExactItem = async (item: ConfigItem) => {
+    setMenuOpenId(null);
+    setError("");
+    try {
+      handleExport(await getExactItem(item));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `导出${item.type}失败`);
+    }
   };
 
   const handleCreate = async (form: ConfigForm) => {
@@ -314,14 +466,15 @@ export function ConfigMaps() {
     setIsLoading(true);
     setError("");
     try {
-      const resource = buildConfigResource(form, updateTarget.type);
+      const resource = buildUpdatedConfigResource(updateTarget, form);
       if (updateTarget.type === "密钥") {
-        await updateSecretResource(form.namespace, resource);
+        await updateSecretResource(updateTarget.namespace, resource);
       } else {
-        await updateConfigMapResource(form.namespace, resource);
+        await updateConfigMapResource(updateTarget.namespace, resource);
       }
       setUpdateTarget(null);
-      await loadData();
+      if (isDetailRoute) await loadDetail();
+      else await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : `更新${updateTarget.type}失败`);
     } finally {
@@ -333,15 +486,29 @@ export function ConfigMaps() {
     setIsLoading(true);
     setError("");
     try {
-      const { resource, type } = parseResourceYaml(source, target.type);
-      const namespace = resource.metadata?.namespace || target.namespace;
+      const parsed = parseResourceYaml(source, target.type);
+      const type = parsed.type;
+      if (type !== target.type) throw new Error(`${target.type}不能通过 YAML 修改为${type}`);
+      const resource: KubeResource = {
+        ...(target.raw || {}),
+        ...parsed.resource,
+        metadata: {
+          ...(target.raw?.metadata || {}),
+          ...(parsed.resource.metadata || {}),
+          name: target.name,
+          namespace: target.namespace,
+        },
+      };
+      const metadata = resource.metadata as KubeResource["metadata"] & { managedFields?: unknown };
+      if (metadata) delete metadata.managedFields;
       if (type === "密钥") {
-        await updateSecretResource(namespace, resource);
+        await updateSecretResource(target.namespace, resource);
       } else {
-        await updateConfigMapResource(namespace, resource);
+        await updateConfigMapResource(target.namespace, resource);
       }
       setYamlTarget(null);
-      await loadData();
+      if (isDetailRoute) await loadDetail();
+      else await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "YAML 更新失败");
     } finally {
@@ -365,7 +532,8 @@ export function ConfigMaps() {
         await deleteConfigMapResource(deleteTarget.namespace, deleteTarget.name);
       }
       setDeleteTarget(null);
-      await loadData();
+      if (isDetailRoute) navigate("/configmaps");
+      else await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : `删除${deleteTarget.type}失败`);
     } finally {
@@ -397,6 +565,43 @@ export function ConfigMaps() {
     }
   };
 
+  if (isDetailRoute) {
+    return (
+      <>
+        <ConfigItemDetailPage
+          item={detailItem}
+          loading={detailLoading}
+          error={detailError || error}
+          onBack={() => navigate("/configmaps")}
+          onEditYaml={() => detailItem && setYamlTarget(detailItem)}
+          onUpdate={() => detailItem && setUpdateTarget(detailItem)}
+          onExport={() => detailItem && handleExport(detailItem)}
+          onDelete={() => detailItem && requestDelete(detailItem)}
+        />
+        <YamlCreateDialog
+          open={!!yamlTarget}
+          title={yamlTarget ? `编辑 YAML - ${yamlTarget.name}` : "编辑 YAML"}
+          type={yamlTarget?.type || detailType || "配置项"}
+          defaultValue={yamlTarget ? buildConfigYaml(yamlTarget) : undefined}
+          onOpenChange={(open) => !open && setYamlTarget(null)}
+          onSubmit={(source) => yamlTarget && handleYamlUpdate(yamlTarget, source)}
+        />
+        <CreateConfigItemDialog
+          open={!!updateTarget}
+          type={updateTarget?.type || detailType || "配置项"}
+          mode="update"
+          initialItem={updateTarget}
+          namespaces={Array.from(new Set([updateTarget?.namespace || detailNamespace || "default", ...namespaceOptions]))}
+          refreshingNamespaces={refreshingNamespaces}
+          onRefreshNamespaces={handleNamespaceRefresh}
+          onOpenChange={(open) => !open && setUpdateTarget(null)}
+          onSubmit={(form) => updateTarget && handleUpdate(updateTarget.id, form)}
+        />
+        <ConfigDeleteDialog target={deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)} onConfirm={confirmDelete} />
+      </>
+    );
+  }
+
   return (
     <div className="blueedge-page space-y-5">
       <div>
@@ -414,7 +619,7 @@ export function ConfigMaps() {
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
             <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={activeTab === "config" ? "搜索配置项..." : "搜索密钥..."} className="h-9 bg-white pl-9 text-sm" />
           </div>
-          <button type="button" onClick={handleRefresh} className="action-button h-9 w-9" title="刷新">
+          <button type="button" onClick={() => void handleRefresh()} disabled={refreshing || isLoading} className="action-button h-9 w-9" title="刷新">
             <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
           </button>
           <Button type="button" variant="outline" onClick={() => setYamlOpen(true)} className="h-9 rounded-xl px-4 text-xs font-semibold">YAML 创建</Button>
@@ -480,7 +685,15 @@ export function ConfigMaps() {
               </TableRow>
             ) : filtered.map((row) => (
               <TableRow key={row.id} className="h-[72px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
-                <TableCell className="px-4 py-3 text-sm font-medium text-[#1e6bff]">{row.name}</TableCell>
+                <TableCell className="px-4 py-3 text-sm font-medium text-[#1e6bff]">
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/configmaps/${row.type === "配置项" ? "config" : "secret"}/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.name)}`)}
+                    className="text-left hover:underline"
+                  >
+                    {row.name}
+                  </button>
+                </TableCell>
                 <TableCell className="px-4 py-3 text-xs text-[#374151]">{row.alias || "-"}</TableCell>
                 {activeTab === "secret" && <TableCell className="px-4 py-3 text-xs text-[#374151]">{row.namespace}</TableCell>}
                 <TableCell className="max-w-[360px] truncate px-4 py-3 text-xs text-[var(--color-text-secondary)]" title={formatLabels(row.labels)}>{formatLabels(row.labels)}</TableCell>
@@ -493,15 +706,9 @@ export function ConfigMaps() {
                     open={menuOpenId === row.id}
                     onOpenChange={(open) => setMenuOpenId(open ? row.id : null)}
                     type={row.type}
-                    onEditYaml={() => {
-                      setYamlTarget(row);
-                      setMenuOpenId(null);
-                    }}
-                    onUpdate={() => {
-                      setUpdateTarget(row);
-                      setMenuOpenId(null);
-                    }}
-                    onExport={() => handleExport(row)}
+                    onEditYaml={() => void openYamlEditor(row)}
+                    onUpdate={() => void openUpdateDialog(row)}
+                    onExport={() => void exportExactItem(row)}
                     onDelete={() => requestDelete(row)}
                   />
                 </TableCell>
@@ -511,7 +718,7 @@ export function ConfigMaps() {
         </Table>
       </div>
 
-      <CreateConfigItemDialog open={createOpen} type={currentType} onOpenChange={setCreateOpen} onSubmit={handleCreate} />
+      <CreateConfigItemDialog open={createOpen} type={currentType} namespaces={namespaceOptions} refreshingNamespaces={refreshingNamespaces} onRefreshNamespaces={handleNamespaceRefresh} onOpenChange={setCreateOpen} onSubmit={handleCreate} />
       <YamlCreateDialog open={yamlOpen} title={activeTab === "config" ? "YAML 创建配置项" : "YAML 创建密钥"} type={currentType} onOpenChange={setYamlOpen} onSubmit={handleYamlCreate} />
       <YamlCreateDialog
         open={!!yamlTarget}
@@ -526,26 +733,196 @@ export function ConfigMaps() {
         type={updateTarget?.type || currentType}
         mode="update"
         initialItem={updateTarget}
+        namespaces={namespaceOptions}
+        refreshingNamespaces={refreshingNamespaces}
+        onRefreshNamespaces={handleNamespaceRefresh}
         onOpenChange={(open) => !open && setUpdateTarget(null)}
         onSubmit={(form) => updateTarget && handleUpdate(updateTarget.id, form)}
       />
-      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <AlertDialogContent className="max-w-[520px] rounded-[24px]">
-          <AlertDialogHeader>
-            <AlertDialogTitle>确认删除{deleteTarget?.type}？</AlertDialogTitle>
-            <AlertDialogDescription>
-              即将删除 <span className="font-medium text-[var(--color-text-primary)]">{deleteTarget?.name}</span>
-              {deleteTarget?.mountTargets.length ? `，当前已被 ${deleteTarget.mountTargets.join("、")} 引用，删除后相关工作负载可能无法读取配置或凭证。` : "，删除成功后将重新拉取最新列表。"}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="h-9 rounded-xl">取消</AlertDialogCancel>
-            <AlertDialogAction className="h-9 rounded-xl bg-[#ff4d4f] text-white hover:bg-[#dc2626]" onClick={confirmDelete}>删除</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfigDeleteDialog target={deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)} onConfirm={confirmDelete} />
     </div>
   );
+}
+
+function ConfigDeleteDialog({ target, onOpenChange, onConfirm }: { target: ConfigItem | null; onOpenChange: (open: boolean) => void; onConfirm: () => Promise<void> }) {
+  return (
+    <AlertDialog open={!!target} onOpenChange={onOpenChange}>
+      <AlertDialogContent className="max-w-[520px] rounded-[24px]">
+        <AlertDialogHeader>
+          <AlertDialogTitle>确认删除{target?.type}？</AlertDialogTitle>
+          <AlertDialogDescription>
+            即将删除 <span className="font-medium text-[var(--color-text-primary)]">{target?.name}</span>
+            {target?.mountTargets.length ? `，当前已被 ${target.mountTargets.join("、")} 引用，删除后相关工作负载可能无法读取配置或凭证。` : "，删除成功后将重新拉取最新列表。"}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel className="h-9 rounded-xl">取消</AlertDialogCancel>
+          <AlertDialogAction className="h-9 rounded-xl bg-[#ff4d4f] text-white hover:bg-[#dc2626]" onClick={() => void onConfirm()}>删除</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+type ConfigDetailTab = "data" | "labels" | "annotations";
+
+function ConfigItemDetailPage({
+  item,
+  loading,
+  error,
+  onBack,
+  onEditYaml,
+  onUpdate,
+  onExport,
+  onDelete,
+}: {
+  item: ConfigItem | null;
+  loading: boolean;
+  error: string;
+  onBack: () => void;
+  onEditYaml: () => void;
+  onUpdate: () => void;
+  onExport: () => void;
+  onDelete: () => void;
+}) {
+  const [tab, setTab] = useState<ConfigDetailTab>("data");
+  const [selectedKey, setSelectedKey] = useState("");
+  const dataEntries = Object.entries(item?.data || {});
+  const labels = item?.labels || {};
+  const annotations = item?.raw ? getAnnotations(item.raw) : {};
+
+  if (loading) {
+    return <div className="blueedge-page flex min-h-[520px] items-center justify-center"><RefreshCw className="h-9 w-9 animate-spin text-[#94a3b8]" /></div>;
+  }
+
+  if (!item) {
+    return (
+      <div className="blueedge-page space-y-5">
+        <button type="button" onClick={onBack} className="inline-flex items-center gap-2 text-sm font-semibold text-[#475569]"><ArrowLeft className="h-4 w-4" />返回列表</button>
+        <div className="rounded-2xl border border-[#fecaca] bg-[#fef2f2] px-5 py-5 text-sm text-[#b91c1c]">{error || "配置项不存在或无权访问"}</div>
+      </div>
+    );
+  }
+
+  const effectiveSelectedKey = selectedKey && dataEntries.some(([key]) => key === selectedKey) ? selectedKey : dataEntries[0]?.[0] || "";
+  const selectedValue = item.data?.[effectiveSelectedKey] || "";
+  const tabItems: Array<{ id: ConfigDetailTab; label: string; icon: typeof Database }> = [
+    { id: "data", label: item.type === "配置项" ? "配置数据" : "密钥数据", icon: Database },
+    { id: "labels", label: "标签", icon: Tags },
+    { id: "annotations", label: "注解", icon: MessageSquareText },
+  ];
+
+  return (
+    <div className="blueedge-page space-y-6">
+      <div className="flex items-start justify-between gap-6">
+        <div className="flex min-w-0 items-center gap-4">
+          <button type="button" onClick={onBack} className="action-button h-11 w-11 shrink-0 rounded-xl" title="返回列表"><ArrowLeft className="h-5 w-5" /></button>
+          <div className="min-w-0">
+            <div className="flex items-center gap-3">
+              <h1 className="truncate text-xl font-semibold text-[#111827]">{item.name}</h1>
+              <span className="rounded-full bg-[#f3f4f6] px-3 py-1 text-xs font-semibold text-[#64748b]">● {item.type}</span>
+            </div>
+            <p className="mt-1 text-sm text-[#64748b]">{item.namespace} · {item.dataCount} 个数据项</p>
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <DetailActionButton icon={FileCode2} label="编辑 YAML" onClick={onEditYaml} />
+          <DetailActionButton icon={Pencil} label="更新" onClick={onUpdate} />
+          <DetailActionButton icon={Download} label="导出" onClick={onExport} />
+          <DetailActionButton icon={Trash2} label="删除" danger onClick={onDelete} />
+        </div>
+      </div>
+
+      {error && <div className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">{error}</div>}
+
+      <section className="rounded-2xl border border-[#eef2f7] bg-white px-6 py-6 shadow-[0_12px_35px_rgba(15,23,42,0.05)]">
+        <h2 className="mb-6 text-base font-semibold text-[#111827]">基础信息</h2>
+        <div className="grid grid-cols-4 gap-8">
+          <DetailField label={item.type === "配置项" ? "配置项名称" : "密钥名称"} value={item.name} />
+          <DetailField label={item.type === "配置项" ? "配置项别名" : "密钥别名"} value={item.alias || "-"} />
+          <DetailField label="描述" value={item.description || "-"} />
+          <DetailField label="创建时间" value={formatConfigDate(item.createTime)} />
+        </div>
+      </section>
+
+      <div className="flex items-center gap-2">
+        {tabItems.map(({ id, label, icon: Icon }) => (
+          <button key={id} type="button" onClick={() => setTab(id)} className={cn("inline-flex h-10 items-center gap-2 rounded-xl border px-4 text-sm font-semibold", tab === id ? "border-[#0f172a] bg-[#0f172a] text-white" : "border-[#dfe5ee] bg-white text-[#64748b] hover:bg-[#f8fafc]")}>
+            <Icon className="h-4 w-4" />{label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "data" ? (
+        <section className="rounded-2xl border border-[#eef2f7] bg-white px-6 py-6 shadow-[0_12px_35px_rgba(15,23,42,0.05)]">
+          <h2 className="mb-6 text-base font-semibold text-[#111827]">数据信息</h2>
+          {dataEntries.length === 0 ? <DetailEmptyState text="暂无配置数据" /> : (
+            <div className="grid min-h-[360px] grid-cols-[240px_1fr] overflow-hidden rounded-2xl border border-[#e2e8f0]">
+              <div className="border-r border-[#e2e8f0] bg-[#fbfcfe]">
+                <div className="border-b border-[#e2e8f0] px-5 py-4 text-sm font-semibold text-[#64748b]">Key List</div>
+                <div className="space-y-1 p-3">{dataEntries.map(([key]) => (
+                  <button key={key} type="button" onClick={() => setSelectedKey(key)} className={cn("block w-full truncate rounded-xl px-4 py-3 text-left text-sm font-semibold", effectiveSelectedKey === key ? "bg-[#eaf2ff] text-[#1e6bff]" : "text-[#334155] hover:bg-[#f1f5f9]")} title={key}>{key}</button>
+                ))}</div>
+              </div>
+              <div className="min-w-0 bg-[#fbfcfe]">
+                <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-white px-5 py-3">
+                  <div className="flex items-center gap-3"><span className="text-sm font-semibold text-[#334155]">Value</span><span className="rounded-full bg-[#f3f4f6] px-2 py-0.5 text-xs text-[#94a3b8]">YAML</span></div>
+                  <CopyButton value={selectedValue} />
+                </div>
+                <pre className="max-h-[520px] min-h-[306px] overflow-auto whitespace-pre-wrap break-words p-5 font-mono text-sm leading-7 text-[#334155]">{selectedValue}</pre>
+              </div>
+            </div>
+          )}
+        </section>
+      ) : (
+        <MetadataDetailTable title={tab === "labels" ? "标签" : "注解"} entries={tab === "labels" ? labels : annotations} />
+      )}
+    </div>
+  );
+}
+
+function DetailActionButton({ icon: Icon, label, danger, onClick }: { icon: typeof Pencil; label: string; danger?: boolean; onClick: () => void }) {
+  return <button type="button" onClick={onClick} className={cn("inline-flex h-10 items-center gap-2 rounded-xl border bg-white px-4 text-sm font-semibold hover:bg-[#f8fafc]", danger ? "border-[#fee2e2] text-[#ff4d4f] hover:bg-[#fff5f5]" : "border-[#dfe5ee] text-[#111827]")}><Icon className="h-4 w-4" />{label}</button>;
+}
+
+function DetailField({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0"><div className="truncate text-base font-semibold text-[#111827]" title={value}>{value}</div><div className="mt-2 text-sm text-[#94a3b8]">{label}</div></div>;
+}
+
+function MetadataDetailTable({ title, entries }: { title: string; entries: Record<string, string> }) {
+  const rows = Object.entries(entries);
+  return (
+    <section className="rounded-2xl border border-[#eef2f7] bg-white px-6 py-6 shadow-[0_12px_35px_rgba(15,23,42,0.05)]">
+      <h2 className="mb-6 text-base font-semibold text-[#111827]">{title}</h2>
+      {rows.length === 0 ? <DetailEmptyState text={`暂无${title}`} /> : (
+        <div className="overflow-hidden rounded-2xl border border-[#e2e8f0]">
+          <div className="grid grid-cols-[1fr_1.6fr_90px] bg-[#f8fafc] px-5 py-4 text-sm font-semibold text-[#64748b]"><span>Key</span><span>Value</span><span className="text-right">操作</span></div>
+          {rows.map(([key, value]) => <div key={key} className="grid grid-cols-[1fr_1.6fr_90px] items-center border-t border-[#e2e8f0] px-5 py-5 text-sm"><span className="break-all font-mono text-[#111827]">{key}</span><span className="break-all text-[#475569]">{value}</span><div className="flex justify-end"><CopyButton value={`${key}=${value}`} compact /></div></div>)}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function DetailEmptyState({ text }: { text: string }) {
+  return <div className="rounded-2xl border border-dashed border-[#d1d5db] bg-[#fafbfc] px-4 py-20 text-center text-sm text-[#94a3b8]">{text}</div>;
+}
+
+function CopyButton({ value, compact = false }: { value: string; compact?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    await navigator.clipboard.writeText(value);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1200);
+  };
+  return <button type="button" onClick={() => void copy()} className={cn("inline-flex items-center justify-center gap-2 rounded-xl border border-[#dfe5ee] bg-white text-sm font-semibold text-[#334155] hover:bg-[#f8fafc]", compact ? "h-9 w-9" : "h-9 px-4")} title="复制"><Copy className="h-4 w-4" />{!compact && (copied ? "已复制" : "复制")}</button>;
+}
+
+function formatConfigDate(value: string) {
+  if (!value || value === "-") return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { hour12: false }).replaceAll("/", "-");
 }
 
 function ConfigRowActions({ open, onOpenChange, type, onEditYaml, onUpdate, onExport, onDelete }: { open: boolean; onOpenChange: (open: boolean) => void; type: ConfigType; onEditYaml: () => void; onUpdate: () => void; onExport: () => void; onDelete: () => void }) {
@@ -601,6 +978,9 @@ function CreateConfigItemDialog({
   type,
   mode = "create",
   initialItem,
+  namespaces,
+  refreshingNamespaces,
+  onRefreshNamespaces,
   onOpenChange,
   onSubmit,
 }: {
@@ -608,10 +988,13 @@ function CreateConfigItemDialog({
   type: ConfigType;
   mode?: "create" | "update";
   initialItem?: ConfigItem | null;
+  namespaces: string[];
+  refreshingNamespaces: boolean;
+  onRefreshNamespaces: () => Promise<void>;
   onOpenChange: (open: boolean) => void;
   onSubmit: (form: ConfigForm) => void;
 }) {
-  const buildInitialForm = (): ConfigForm => initialItem ? {
+  const initialForm = useMemo<ConfigForm>(() => initialItem ? {
     name: initialItem.name,
     alias: initialItem.alias,
     namespace: initialItem.namespace,
@@ -620,11 +1003,10 @@ function CreateConfigItemDialog({
       ? Object.keys(initialItem.data || {}).map((key, index) => ({ id: `data-${index}-${key}`, key, value: "" }))
       : recordToPairs(initialItem.data, "data"),
     labels: recordToPairs(initialItem.labels, "label"),
-    annotations: [],
-  } : emptyForm();
-  const [form, setForm] = useState<ConfigForm>(() => buildInitialForm());
+    annotations: initialItem.raw ? recordToPairs(getEditableAnnotations(initialItem.raw), "annotation") : [],
+  } : emptyForm(), [initialItem]);
+  const [form, setForm] = useState<ConfigForm>(() => initialForm);
   const [submitted, setSubmitted] = useState(false);
-  const [refreshingNs, setRefreshingNs] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const isConfig = type === "配置项";
@@ -641,7 +1023,7 @@ function CreateConfigItemDialog({
 
   const handleOpenChange = (nextOpen: boolean) => {
     if (nextOpen) {
-      setForm(buildInitialForm());
+      setForm(initialForm);
       setSubmitted(false);
       onOpenChange(true);
       return;
@@ -668,9 +1050,12 @@ function CreateConfigItemDialog({
 
   useEffect(() => {
     if (!open) return;
-    setForm(buildInitialForm());
-    setSubmitted(false);
-  }, [initialItem, open]);
+    const timer = window.setTimeout(() => {
+      setForm(initialForm);
+      setSubmitted(false);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [initialForm, open]);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -692,7 +1077,7 @@ function CreateConfigItemDialog({
           <div className="space-y-5">
             <div>
               <CreateLabel label="名称" required />
-              <Input value={form.name} onChange={(event) => update({ name: event.target.value })} placeholder="请输入名称" className={cn("h-11 rounded-[12px] border-2 border-[#e2e8f0] px-4 text-sm shadow-sm focus-visible:ring-0", submitted && nameError && "border-[#ef4444]")} />
+              <Input value={form.name} onChange={(event) => update({ name: event.target.value })} disabled={mode === "update"} placeholder="请输入名称" className={cn("h-11 rounded-[12px] border-2 border-[#e2e8f0] px-4 text-sm shadow-sm focus-visible:ring-0", submitted && nameError && "border-[#ef4444]")} />
               <p className="mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">名称最长 63 个字符；必须由小写字母、数字字符、“-” 或 “.” 组成；必须以小写字母或数字字符开头及结尾。</p>
               {submitted && nameError && <p className="mt-1 text-xs text-[#ef4444]">{nameError}</p>}
             </div>
@@ -705,11 +1090,11 @@ function CreateConfigItemDialog({
               <div>
                 <CreateLabel label="命名空间" required />
                 <div className="flex gap-2">
-                  <select value={form.namespace} onChange={(event) => update({ namespace: event.target.value })} className="blueedge-native-select h-11 flex-1 rounded-[12px] border-2 px-4 text-sm">
+                  <select value={form.namespace} onChange={(event) => update({ namespace: event.target.value })} disabled={mode === "update"} className="blueedge-native-select h-11 flex-1 rounded-[12px] border-2 px-4 text-sm">
                     {namespaces.map((namespace) => <option key={namespace} value={namespace}>{namespace}</option>)}
                   </select>
-                  <button type="button" onClick={() => { setRefreshingNs(true); window.setTimeout(() => setRefreshingNs(false), 500); }} className="action-button h-11 w-11 rounded-[12px]" title="刷新命名空间">
-                    <RefreshCw className={cn("h-4 w-4", refreshingNs && "animate-spin")} />
+                  <button type="button" onClick={() => void onRefreshNamespaces()} disabled={refreshingNamespaces} className="action-button h-11 w-11 rounded-[12px]" title="刷新命名空间">
+                    <RefreshCw className={cn("h-4 w-4", refreshingNamespaces && "animate-spin")} />
                   </button>
                 </div>
               </div>
@@ -866,7 +1251,9 @@ function YamlCreateDialog({
   const lineCount = Math.max(19, yaml.split("\n").length);
 
   useEffect(() => {
-    if (open) setYaml(defaultValue || (type === "密钥" ? defaultSecretYaml : defaultConfigYaml));
+    if (!open) return;
+    const timer = window.setTimeout(() => setYaml(defaultValue || (type === "密钥" ? defaultSecretYaml : defaultConfigYaml)), 0);
+    return () => window.clearTimeout(timer);
   }, [defaultValue, open, type]);
 
   const handleUpload = (event: React.ChangeEvent<HTMLInputElement>) => {

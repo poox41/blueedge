@@ -8,6 +8,7 @@ import type {
 import type { BatchTaskDetailResponse, BatchTaskListResponse } from "@/api/adapters/batch-task.adapter";
 import type { DeviceModelSummaryListResponse, DeviceModelSummaryResponse } from "@/api/adapters/device-model-summary.adapter";
 import type { DeviceSummaryListResponse, DeviceSummaryResponse } from "@/api/adapters/device-summary.adapter";
+import type { DeviceConfigPayload } from "@/lib/device-config";
 import type { EdgeAppSummaryResponse } from "@/api/adapters/edgeapp-summary.adapter";
 import type { EdgeUnitDetailResponse, EdgeUnitListResponse, EdgeUnitWarning } from "@/api/adapters/edge-unit.adapter";
 import type { NodeGroupSummaryResponse } from "@/api/adapters/nodegroup-summary.adapter";
@@ -40,11 +41,61 @@ export interface AccessConfigPayload {
   kubeEdgeVersion: string;
   cloudCoreAddress: string;
   protocol?: string;
+  driver?: "systemd" | "cgroups";
+  criAddress?: string;
   registry?: string;
   description?: string;
+  labels?: Record<string, string>;
 }
 
 export type AccessConfigUpdatePayload = Omit<AccessConfigPayload, "name">;
+
+export interface BatchWorkloadPlanContainer {
+  name: string;
+  image: string;
+  imagePullPolicy?: "Always" | "IfNotPresent" | "Never";
+  command?: string[];
+  args?: string[];
+  env?: Array<{ name: string; value: string }>;
+  resources?: {
+    requests?: { cpu?: string; memory?: string };
+    limits?: { cpu?: string; memory?: string };
+  };
+  lifecycle?: { postStart?: string; preStop?: string };
+  healthChecks?: { startup?: boolean; readiness?: boolean; liveness?: boolean };
+  securityContext?: {
+    privileged?: boolean;
+    runAsUser?: number;
+    runAsGroup?: number;
+    readOnlyRootFilesystem?: boolean;
+    allowPrivilegeEscalation?: boolean;
+  };
+  volumes?: Array<{ name: string; type: string; mountPath: string; source?: string }>;
+}
+
+export interface BatchWorkloadPlan {
+  namespace: string;
+  name: string;
+  targetGroups: string[];
+  replicas: number;
+  workloadType: "Deployment";
+  metadata?: { labels?: Record<string, string>; annotations?: Record<string, string> };
+  podTemplate: {
+    labels?: Record<string, string>;
+    annotations?: Record<string, string>;
+    containers: BatchWorkloadPlanContainer[];
+    network?: { type: "none" | "portmap" | "host"; ports?: Array<{ containerName: string; containerPort: number; hostPort?: number }> };
+    terminationGracePeriodSeconds?: number;
+  };
+  strategy?: {
+    type: "RollingUpdate" | "Recreate";
+    maxUnavailable?: string;
+    maxSurge?: string;
+    revisionHistoryLimit?: number;
+    minReadySeconds?: number;
+    progressDeadlineSeconds?: number;
+  };
+}
 
 export interface BatchTaskPayload {
   name: string;
@@ -59,6 +110,7 @@ export interface BatchTaskPayload {
   retryCount?: number;
   description?: string;
   targets?: Array<Record<string, unknown>>;
+  plan?: BatchWorkloadPlan;
 }
 
 export interface ProductOverview {
@@ -66,6 +118,14 @@ export interface ProductOverview {
   workloads: { deployments: number; running: number };
   devices: { total: number; online: number };
   rules: { total: number };
+}
+
+export interface ConnectedClusterSummary {
+  name: string;
+  current: true;
+  kubernetesVersion: string;
+  nodeCount: number;
+  source: "kubeadm-config";
 }
 
 export interface ClusterMetrics {
@@ -103,8 +163,71 @@ export interface ClusterEvent {
   lastTimestamp: string;
 }
 
+export interface RuleDeliverySummary {
+  successMessages: number;
+  failMessages: number;
+  totalMessages: number;
+  errors: string[];
+  source: "Rule.status";
+  completeHistory: false;
+  warning: string;
+}
+
+export interface RuleAuditRecord {
+  manager: string;
+  operation: string;
+  apiVersion: string;
+  subresource: string;
+  time: string;
+}
+
+export interface RuleAuditResponse {
+  items: RuleAuditRecord[];
+  source: "metadata.managedFields";
+  completeAuditLog: false;
+  warning: string;
+}
+
+export interface RuleEventsResponse {
+  items: ClusterEvent[];
+  source: "core/v1 Event";
+}
+
+export interface DeploymentRevision {
+  revision: number;
+  current: boolean;
+  replicaSetName: string;
+  createdAt: string;
+  images: string[];
+  replicas: number;
+  availableReplicas: number;
+  yaml: unknown;
+}
+
+export interface DeploymentAuditRecord {
+  manager: string;
+  operation: string;
+  apiVersion: string;
+  subresource: string;
+  time: string;
+}
+
+export interface DeploymentExecResult {
+  pod: string;
+  container: string;
+  command: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+}
+
 export async function getProductOverview(): Promise<ProductOverview> {
   const res = await gatewayRequest<ProductOverview>("/overview");
+  return res.data;
+}
+
+export async function listConnectedClusters(): Promise<{ items: ConnectedClusterSummary[] }> {
+  const res = await gatewayRequest<{ items: ConnectedClusterSummary[] }>("/blueedge/clusters");
   return res.data;
 }
 
@@ -293,6 +416,28 @@ export async function getDeviceSummary(namespace: string, name: string): Promise
   return res.data;
 }
 
+export async function createDeviceConfig(payload: DeviceConfigPayload): Promise<DeviceSummaryResponse> {
+  const res = await gatewayRequest<DeviceSummaryResponse, DeviceConfigPayload>("/blueedge/devices", {
+    method: "POST",
+    body: payload,
+  });
+  return res.data;
+}
+
+export async function updateDeviceConfig(namespace: string, name: string, payload: DeviceConfigPayload): Promise<DeviceSummaryResponse> {
+  const res = await gatewayRequest<DeviceSummaryResponse, DeviceConfigPayload>(`/blueedge/devices/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: payload,
+  });
+  return res.data;
+}
+
+export async function deleteDeviceConfig(namespace: string, name: string): Promise<void> {
+  await gatewayRequest(`/blueedge/devices/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
 export async function getResourceObservability(
   kind: ObservabilityKind,
   namespace: string,
@@ -315,6 +460,36 @@ export async function getResourceLogs(
     params: options,
   });
   return res.data;
+}
+
+export async function listDeploymentRevisions(namespace: string, name: string): Promise<{ items: DeploymentRevision[]; currentRevision: number; source: string }> {
+  const res = await gatewayRequest<{ items: DeploymentRevision[]; currentRevision: number; source: string }>(`/blueedge/deployments/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/revisions`);
+  return res.data;
+}
+
+export async function rollbackDeploymentRevision(namespace: string, name: string, revision: number): Promise<void> {
+  await gatewayRequest(`/blueedge/deployments/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/revisions/${revision}/rollback`, {
+    method: "POST",
+  });
+}
+
+export async function runDeploymentAction(namespace: string, name: string, action: "start" | "stop" | "restart"): Promise<void> {
+  await gatewayRequest(`/blueedge/deployments/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/actions/${action}`, {
+    method: "POST",
+  });
+}
+
+export async function getDeploymentAudit(namespace: string, name: string): Promise<{ items: DeploymentAuditRecord[]; source: string; completeAuditLog: false; warning: string }> {
+  const res = await gatewayRequest<{ items: DeploymentAuditRecord[]; source: string; completeAuditLog: false; warning: string }>(`/blueedge/deployments/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/audit`);
+  return res.data;
+}
+
+export async function executeDeploymentCommand(namespace: string, name: string, payload: { pod: string; container: string; command: string }): Promise<DeploymentExecResult> {
+  const res = await gatewayRequest<{ item: DeploymentExecResult }, typeof payload>(`/blueedge/deployments/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/exec`, {
+    method: "POST",
+    body: payload,
+  });
+  return res.data.item;
 }
 
 export async function listStorageClasses(): Promise<StorageClassListResponse> {
@@ -359,6 +534,21 @@ export async function listClusterEvents(namespace?: string): Promise<ClusterEven
     params: { namespace },
   });
   return Array.isArray(res.data.items) ? res.data.items : [];
+}
+
+export async function getRuleDelivery(namespace: string, name: string): Promise<RuleDeliverySummary> {
+  const res = await gatewayRequest<RuleDeliverySummary>(`/blueedge/rules/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/delivery`);
+  return res.data;
+}
+
+export async function getRuleEvents(namespace: string, name: string): Promise<RuleEventsResponse> {
+  const res = await gatewayRequest<RuleEventsResponse>(`/blueedge/rules/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/events`);
+  return res.data;
+}
+
+export async function getRuleAudit(namespace: string, name: string): Promise<RuleAuditResponse> {
+  const res = await gatewayRequest<RuleAuditResponse>(`/blueedge/rules/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/audit`);
+  return res.data;
 }
 
 export async function getPodLogs(namespace: string, name: string, tailLines = 200): Promise<string> {

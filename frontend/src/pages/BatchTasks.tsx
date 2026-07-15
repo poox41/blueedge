@@ -45,6 +45,7 @@ import {
   listBatchTasks,
   startBatchTask,
 } from "@/api/services/product";
+import { listNodes } from "@/api/services/resources";
 import { cn } from "@/lib/utils";
 
 type BatchTaskType = "节点升级" | "镜像预热";
@@ -98,17 +99,15 @@ type PreheatForm = {
   resourceCheck: string[];
 };
 
-const edgeNodeOptions = ["edge-riscv-01", "edge-riscv-02", "edge-arm-03", "edge-x86-04"];
-
 const defaultUpgradeForm: UpgradeForm = {
   name: "",
   description: "",
   image: "",
   version: "",
   selectorType: "label",
-  labelKey: "arch",
-  labelValue: "riscv64",
-  selectedNodes: ["edge-riscv-01", "edge-riscv-02"],
+  labelKey: "",
+  labelValue: "",
+  selectedNodes: [],
   userConfirm: false,
   concurrency: "2",
   timeout: "",
@@ -121,11 +120,11 @@ const defaultPreheatForm: PreheatForm = {
   images: [""],
   description: "",
   selectorType: "label",
-  labelKey: "region",
-  labelValue: "store",
+  labelKey: "",
+  labelValue: "",
   credentialNamespace: "",
   credentialName: "",
-  selectedNodes: ["edge-x86-04"],
+  selectedNodes: [],
   concurrency: "2",
   timeout: "",
   failureRate: "10",
@@ -155,6 +154,7 @@ const preheatStatusStyle: Record<PreheatStatus, { className: string; dot: string
 
 export function BatchTasks() {
   const [tasks, setTasks] = useState<BatchTask[]>([]);
+  const [nodeOptions, setNodeOptions] = useState<string[]>([]);
   const [activeType, setActiveType] = useState<BatchTaskType>("节点升级");
   const [search, setSearch] = useState("");
   const [createUpgradeOpen, setCreateUpgradeOpen] = useState(false);
@@ -168,8 +168,12 @@ export function BatchTasks() {
     setLoading(true);
     setError("");
     try {
-      const data = await listBatchTasks();
+      const [data, nodes] = await Promise.all([
+        listBatchTasks(),
+        listNodes().catch(() => []),
+      ]);
       setTasks(data.items.filter((item) => item.type === "nodeUpgrade" || item.type === "imagePreheat").map((item) => toBatchTaskRow(item) as BatchTask));
+      setNodeOptions(nodes.map((node) => node.name));
     } catch (err) {
       setTasks([]);
       setError(err instanceof Error ? err.message : "批量任务加载失败");
@@ -259,6 +263,10 @@ export function BatchTasks() {
       <BatchTaskDetailPage
         task={detailTarget}
         onBack={() => setDetailTarget(null)}
+        onRefresh={async () => {
+          const data = await getBatchTask(detailTarget.id);
+          setDetailTarget(toBatchTaskRow(data.item) as BatchTask);
+        }}
         onDelete={async () => {
           try {
             await deleteBatchTask(detailTarget.id);
@@ -275,6 +283,7 @@ export function BatchTasks() {
             await loadTasks();
           } catch (err) {
             setError(err instanceof Error ? err.message : "启动批量任务失败");
+            throw err;
           }
         }}
         onRollback={async () => {
@@ -284,6 +293,7 @@ export function BatchTasks() {
             await loadTasks();
           } catch (err) {
             setError(err instanceof Error ? err.message : "取消批量任务失败");
+            throw err;
           }
         }}
       />
@@ -376,12 +386,14 @@ export function BatchTasks() {
         open={createUpgradeOpen}
         onOpenChange={setCreateUpgradeOpen}
         onSubmit={createUpgradeTask}
+        nodeOptions={nodeOptions}
       />
 
       <CreatePreheatTaskModal
         open={createPreheatOpen}
         onOpenChange={setCreatePreheatOpen}
         onSubmit={createPreheatTask}
+        nodeOptions={nodeOptions}
       />
 
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
@@ -505,10 +517,12 @@ function CreateUpgradeTaskModal({
   open,
   onOpenChange,
   onSubmit,
+  nodeOptions,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (form: UpgradeForm) => void;
+  nodeOptions: string[];
 }) {
   const [step, setStep] = useState(1);
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -689,7 +703,8 @@ function CreateUpgradeTaskModal({
                         <span className="text-xs text-[var(--color-text-tertiary)]">手动选择特定节点</span>
                       </div>
                       <div className="flex flex-wrap gap-2">
-                        {edgeNodeOptions.map((node) => (
+                        {nodeOptions.length === 0 && <span className="text-xs text-[var(--color-text-tertiary)]">暂无可选节点</span>}
+                        {nodeOptions.map((node) => (
                           <span
                             key={node}
                             onClick={(event) => {
@@ -815,10 +830,12 @@ function CreatePreheatTaskModal({
   open,
   onOpenChange,
   onSubmit,
+  nodeOptions,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (form: PreheatForm) => void;
+  nodeOptions: string[];
 }) {
   const [step, setStep] = useState(1);
   const [form, setForm] = useState(defaultPreheatForm);
@@ -1014,7 +1031,8 @@ function CreatePreheatTaskModal({
                     onClick={() => setForm({ ...form, selectorType: "nodes" })}
                   >
                     <div className="space-y-2">
-                      {edgeNodeOptions.map((node) => (
+                      {nodeOptions.length === 0 && <span className="text-xs text-[var(--color-text-tertiary)]">暂无可选节点</span>}
+                      {nodeOptions.map((node) => (
                         <button
                           key={node}
                           type="button"
@@ -1174,17 +1192,41 @@ function CreateField({
   );
 }
 
-function BatchTaskDetailPage({ task, onBack, onDelete, onRetry, onRollback }: { task: BatchTask; onBack: () => void; onDelete: () => void; onRetry: () => void; onRollback: () => void }) {
+function BatchTaskDetailPage({ task, onBack, onRefresh, onDelete, onRetry, onRollback }: { task: BatchTask; onBack: () => void; onRefresh: () => Promise<void>; onDelete: () => void; onRetry: () => Promise<void>; onRollback: () => Promise<void> }) {
   const [activeTab, setActiveTab] = useState<"detail" | "progress" | "events" | "audit">("detail");
   const [menuOpen, setMenuOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [toast, setToast] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [actionLoading, setActionLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
   const detail = getTaskDetail(task);
 
-  const runAction = (message: string, action: () => void) => {
-    action();
-    setToast(message);
-    window.setTimeout(() => setToast(""), 1600);
+  const runAction = async (message: string, action: () => Promise<void>) => {
+    setActionLoading(true);
+    setActionError("");
+    try {
+      await action();
+      setToast(message);
+      window.setTimeout(() => setToast(""), 1600);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "批量任务操作失败");
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const refreshDetail = async () => {
+    setRefreshing(true);
+    setRefreshError("");
+    try {
+      await onRefresh();
+    } catch (err) {
+      setRefreshError(err instanceof Error ? err.message : "批量任务详情刷新失败");
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   return (
@@ -1229,11 +1271,11 @@ function BatchTaskDetailPage({ task, onBack, onDelete, onRetry, onRollback }: { 
               </button>
             </div>
           )}
-          <Button type="button" onClick={() => runAction("计划已生成，当前不会执行真实节点操作", onRetry)} className="h-10 rounded-xl bg-[#0f172a] px-4 text-sm font-semibold text-white hover:bg-[#172033]">
+          <Button type="button" onClick={() => void runAction("计划已生成，当前不会执行真实节点操作", onRetry)} disabled={actionLoading} className="h-10 rounded-xl bg-[#0f172a] px-4 text-sm font-semibold text-white hover:bg-[#172033]">
             <RotateCcw className="h-4 w-4" />
             生成计划
           </Button>
-          <Button type="button" variant="outline" onClick={() => runAction("任务已取消", onRollback)} className="h-10 rounded-xl bg-white px-4 text-sm font-semibold">
+          <Button type="button" variant="outline" onClick={() => void runAction("任务已取消", onRollback)} disabled={actionLoading} className="h-10 rounded-xl bg-white px-4 text-sm font-semibold">
             <Clock3 className="h-4 w-4" />
             取消任务
           </Button>
@@ -1257,6 +1299,8 @@ function BatchTaskDetailPage({ task, onBack, onDelete, onRetry, onRollback }: { 
           )}
         </div>
       </section>
+      {actionError && <div className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">{actionError}</div>}
+      {refreshError && <div className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">{refreshError}</div>}
 
       <section className="rounded-2xl bg-white px-10 py-8 shadow-[0_18px_45px_rgba(15,23,42,0.04)]">
         <h2 className="mb-7 text-base font-bold text-[var(--color-text-primary)]">基本信息</h2>
@@ -1290,7 +1334,7 @@ function BatchTaskDetailPage({ task, onBack, onDelete, onRetry, onRollback }: { 
         <DetailTab active={activeTab === "audit"} icon={<ClipboardList className="h-4 w-4" />} label="审计" onClick={() => setActiveTab("audit")} />
       </section>
 
-      {activeTab === "detail" && <TaskStatusTable task={task} />}
+      {activeTab === "detail" && <TaskStatusTable task={task} refreshing={refreshing} onRefresh={refreshDetail} />}
       {activeTab === "progress" && <ExecutionProgressPanel task={task} />}
       {activeTab === "events" && <TaskEventsPanel />}
       {activeTab === "audit" && <TaskAuditPanel task={task} />}
@@ -1305,13 +1349,14 @@ function ServerIcon() {
 
 function getTaskDetail(task: BatchTask) {
   const raw = task.raw;
+  const targetResults = raw?.targetResults || [];
   return {
     concurrency: String(raw?.concurrency ?? "-"),
-    retryCount: String(raw?.retryCount ?? "0"),
+    retryCount: String(raw?.retryCount ?? "-"),
     failureRate: raw?.failurePolicy === "stop" ? "失败即停止" : "失败继续",
-    skipped: "0",
-    success: String(raw?.successCount ?? 0),
-    failed: String(raw?.failedCount ?? 0),
+    skipped: targetResults.length > 0 ? String(targetResults.filter((item) => item.status === "skipped").length) : "-",
+    success: raw?.successCount == null ? "-" : String(raw.successCount),
+    failed: raw?.failedCount == null ? "-" : String(raw.failedCount),
     timeout: raw?.timeoutSeconds ? `${raw.timeoutSeconds} 秒` : "-",
     resourceCheck: "第一阶段仅生成计划",
   };
@@ -1343,7 +1388,7 @@ function stepStatusText(status: string): UpgradeStatus {
   return "计划待生成";
 }
 
-function TaskStatusTable({ task }: { task: BatchTask }) {
+function TaskStatusTable({ task, refreshing, onRefresh }: { task: BatchTask; refreshing: boolean; onRefresh: () => Promise<void> }) {
   const rows = task.raw?.targetResults && task.raw.targetResults.length > 0
     ? task.raw.targetResults
     : (task.raw?.targetRefs || []).map((target) => ({ target, status: "pending", message: "planOnly: waiting for execution plan" }));
@@ -1351,7 +1396,7 @@ function TaskStatusTable({ task }: { task: BatchTask }) {
     <section className="space-y-5">
       <div className="flex items-center justify-between">
         <h2 className="text-base font-bold text-[var(--color-text-primary)]">{task.type === "节点升级" ? "节点升级计划状态" : "镜像预热计划状态"}</h2>
-        <button type="button" className="action-button h-10 w-10 bg-white"><RefreshCw className="h-4 w-4" /></button>
+        <button type="button" onClick={() => void onRefresh()} disabled={refreshing} className="action-button h-10 w-10 bg-white" title="刷新任务详情"><RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} /></button>
       </div>
       <div className="table-card">
         <Table>

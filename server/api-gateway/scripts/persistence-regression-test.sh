@@ -104,10 +104,10 @@ if [ "$PHASE" = "create" ]; then
   edge_body="{\"name\":\"$EDGE_UNIT_NAME\",\"nodeGroupRef\":\"$NODE_GROUP_REF\",\"clusterName\":\"persistence-regression\",\"accessType\":\"external\",\"kubeEdgeVersion\":\"v1.21.0\",\"insightStatus\":\"unknown\",\"monitorStatus\":\"unknown\",\"description\":\"persistence regression EdgeUnit\"}"
   request POST /blueedge/edge-units "$edge_body" >/dev/null
 
-  access_body="{\"name\":\"$ACCESS_CONFIG_NAME\",\"nodeName\":\"${PREFIX}node-placeholder\",\"edgeUnitRef\":\"$EDGE_UNIT_NAME\",\"architecture\":\"amd64\",\"os\":\"linux\",\"kubeEdgeVersion\":\"v1.21.0\",\"cloudCoreAddress\":\"127.0.0.1:10000\",\"protocol\":\"https\",\"description\":\"persistence regression AccessConfig\"}"
+  access_body="{\"name\":\"$ACCESS_CONFIG_NAME\",\"nodeName\":\"${PREFIX}node-placeholder\",\"edgeUnitRef\":\"$EDGE_UNIT_NAME\",\"architecture\":\"amd64\",\"os\":\"linux\",\"kubeEdgeVersion\":\"v1.21.0\",\"cloudCoreAddress\":\"127.0.0.1:10000\",\"protocol\":\"https\",\"driver\":\"systemd\",\"criAddress\":\"/run/containerd/containerd.sock\",\"labels\":{\"blueedge.io/persistence-test\":\"true\"},\"description\":\"persistence regression AccessConfig\"}"
   request POST /blueedge/access-configs "$access_body" >/dev/null
 
-  task_body="{\"name\":\"$BATCH_TASK_NAME\",\"targetType\":\"deployment\",\"targetRefs\":[\"default/${PREFIX}deployment-placeholder\"],\"image\":\"nginx:1.25\",\"failurePolicy\":\"continue\",\"description\":\"planOnly persistence regression\",\"targets\":[{\"namespace\":\"default\",\"executionMode\":\"planOnly\"}]}"
+  task_body="{\"name\":\"$BATCH_TASK_NAME\",\"targetType\":\"deployment\",\"targetRefs\":[\"edge-group\"],\"image\":\"nginx:1.25\",\"failurePolicy\":\"continue\",\"description\":\"planOnly persistence regression\",\"plan\":{\"namespace\":\"default\",\"name\":\"${PREFIX}deployment-placeholder\",\"targetGroups\":[\"edge-group\"],\"replicas\":2,\"workloadType\":\"Deployment\",\"podTemplate\":{\"containers\":[{\"name\":\"main\",\"image\":\"nginx:1.25\",\"command\":[\"/bin/sh\"],\"args\":[\"-c\",\"echo-ready\"],\"env\":[{\"name\":\"MODE\",\"value\":\"persistence\"}],\"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"128Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"256Mi\"}}},{\"name\":\"sidecar\",\"image\":\"busybox:1.36\"}]}}}"
   request POST /blueedge/workloads/batch "$task_body" >/dev/null
 
   verify_all

@@ -16,7 +16,10 @@ export interface AccessConfigView {
   kubeEdgeVersion: string;
   cloudCoreAddress: string;
   protocol: string;
+  driver: "systemd" | "cgroups" | "";
+  criAddress: string;
   registry: string;
+  labels: Record<string, string>;
   status: AccessConfigStatus;
   registered: boolean;
   ready: boolean;
@@ -37,6 +40,7 @@ export interface AccessConfigDetailResponse {
 export interface AccessConfigInstallCommandResponse {
   name: string;
   ready: boolean;
+  prepareCommand: string;
   command: string;
   commandTemplate: string;
   missingRequirements: string[];
@@ -70,7 +74,7 @@ export function toAccessConfigUiModel(item: AccessConfigView): AccessConfigUiMod
   return {
     ...item,
     statusLabel: statusLabel(item.status),
-    nodeLabel: `blueedge.io/edge-unit: ${item.edgeUnitRef}`,
+    nodeLabel: Object.entries(item.labels).map(([key, value]) => `${key}: ${value}`).join(", ") || "-",
     createdAt: formatCreatedAt(item.createdAt),
   };
 }

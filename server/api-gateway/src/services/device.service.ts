@@ -19,6 +19,7 @@ import {
   getEdgeUnitConfigMaps,
   getEdgeUnitNodes,
 } from "./edge-unit-source.service.js";
+import { getDeviceExtensionConfig } from "./device-config.service.js";
 
 const deviceCrdBasePath = "/apis/devices.kubeedge.io/v1beta1";
 const sensitiveFieldPattern = /(password|passwd|token|secret|credential|privatekey|private-key|cert|certificate|username|userName)/i;
@@ -193,6 +194,9 @@ function normalizeDeviceTwins(device: any) {
       reportedValue: reportedValue ?? "",
       status,
       lastUpdatedAt: firstString(item?.lastUpdatedAt, item?.lastUpdateTime, item?.reported?.metadata?.timestamp),
+      collectIntervalSeconds: Number(item?.collectCycle || 0),
+      reportIntervalSeconds: Number(item?.reportCycle || 0),
+      accessConfigured: Boolean(item?.visitors?.configData),
       metadata: sanitizeSensitive(objectValue(item?.metadata || item?.reported?.metadata || item?.desired?.metadata)),
     };
   });
@@ -379,9 +383,17 @@ export async function listDeviceSummaries(options: { namespace?: string; nodeNam
 export async function getDeviceSummary(namespace: string, name: string) {
   const warnings: EdgeUnitWarning[] = [];
   const device = await getDeviceFromK8s(namespace, name);
-  const sources = await collectDeviceSummarySources(warnings, namespace);
+  const [sources, extension] = await Promise.all([
+    collectDeviceSummarySources(warnings, namespace),
+    getDeviceExtensionConfig(namespace, name).catch((error) => {
+      warnings.push(warning("deviceExtension", error, "Device extension config unavailable"));
+      return null;
+    }),
+  ]);
+  const item = buildDeviceSummaryView(device, sources, warnings, { includeRaw: true, includeTwinItems: true });
+  item.extension = extension;
   return {
-    item: buildDeviceSummaryView(device, sources, warnings, { includeRaw: true, includeTwinItems: true }),
+    item,
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

@@ -25,7 +25,6 @@ interface NodeGroup {
   selectorType: "标签匹配" | "指定节点";
   description: string;
   raw: KubeResource;
-  localOnly?: boolean;
 }
 
 interface LabelRow {
@@ -206,7 +205,6 @@ export function NodeGroups() {
   const openDetail = async (n: NodeGroup) => {
     setSelected(n);
     setDetailOpen(true);
-    if (n.localOnly) return;
     try {
       const { item, warnings } = await getNodeGroupSummary(n.name);
       if (warnings?.length) setError(warnings.map((warning) => warning.message).join("；"));
@@ -230,16 +228,6 @@ export function NodeGroups() {
   const openDel = (n: NodeGroup) => { setDelItem(n); setDelOpen(true); };
   const confirmDel = async () => {
     if (!delItem) return;
-    if (delItem.localOnly) {
-      setData((prev) => prev.filter((item) => item.name !== delItem.name));
-      setDelOpen(false);
-      setDelItem(null);
-      if (selected?.name === delItem.name) {
-        setDetailOpen(false);
-        setSelected(null);
-      }
-      return;
-    }
     setIsLoading(true);
     setError("");
     try {

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNamespace } from "@/contexts/NamespaceContext";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -74,7 +75,6 @@ import {
   Pencil,
 } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
 import { edgeAppSummaryStatusText } from "@/api/adapters/edgeapp-summary.adapter";
 import { createEdgeApplicationResource, deleteEdgeApplicationResource, getDeployment, getEdgeApplication, listEdgeApplications, listNodeGroups, updateEdgeApplicationResource } from "@/api/services/resources";
@@ -432,7 +432,7 @@ export function EdgeApps() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [namespace, setNamespace] = useState("all");
+  const { selectedNamespace: namespace } = useNamespace();
   const [typeFilter, setTypeFilter] = useState("all");
   const [currentPage, setCurrentPage] = useState(1);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -1169,7 +1169,6 @@ spec:
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <NamespaceSelector value={namespace} onChange={(v) => { setNamespace(v); setCurrentPage(1); }} />
           <span className="text-sm text-[var(--color-text-tertiary)]">共 {filtered.length} 条</span>
         </div>
       </div>

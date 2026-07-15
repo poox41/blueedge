@@ -9,7 +9,7 @@ import {
   remove,
   update,
 } from "../repositories/blueedge-configmap.repository.js";
-import type { BatchTaskType } from "../types/batch-task.js";
+import type { BatchTaskType, BatchWorkloadPlan, BatchWorkloadPlanContainer } from "../types/batch-task.js";
 import type { EdgeUnitWarning } from "../types/warnings.js";
 import {
   dataOf,
@@ -109,6 +109,149 @@ function buildBatchTaskResults(targetRefs: string[], targets: any[] = []) {
   }));
 }
 
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value.trim() : fallback;
+}
+
+function positiveInteger(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function nonNegativeInteger(value: unknown, fallback = 0): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function stringMap(value: unknown): Record<string, string> {
+  return Object.fromEntries(Object.entries(objectValue(value)).map(([key, item]) => [key.trim(), String(item).trim()]).filter(([key]) => key));
+}
+
+function keyValueListMap(value: unknown): Record<string, string> {
+  if (!Array.isArray(value)) return {};
+  return Object.fromEntries(value.map(objectValue).map((item) => [stringValue(item.key), stringValue(item.value)]).filter(([key]) => key));
+}
+
+function stringList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value === "string") return value.split(/\s+/).map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
+function normalizeBatchWorkloadContainer(value: unknown, index: number): BatchWorkloadPlanContainer {
+  const item = objectValue(value);
+  const name = stringValue(item.name, `container-${index + 1}`);
+  const image = stringValue(item.image);
+  if (!name || !image || /\s/.test(image)) throw new Error(`plan.podTemplate.containers[${index}] requires a valid name and image`);
+  const envSource = Array.isArray(item.env) ? item.env : Array.isArray(item.envs) ? item.envs : [];
+  const env = envSource.map(objectValue).map((entry) => ({ name: stringValue(entry.name || entry.key), value: stringValue(entry.value) })).filter((entry) => entry.name);
+  const resources = objectValue(item.resources);
+  const requests = objectValue(resources.requests);
+  const limits = objectValue(resources.limits);
+  const volumes = Array.isArray(item.volumes)
+    ? item.volumes.map(objectValue).map((entry) => ({ name: stringValue(entry.name), type: stringValue(entry.type), mountPath: stringValue(entry.mountPath), source: stringValue(entry.source) })).filter((entry) => entry.name && entry.type && entry.mountPath)
+    : [];
+  const imagePullPolicy = stringValue(item.imagePullPolicy || item.pullPolicy);
+  if (imagePullPolicy && !["Always", "IfNotPresent", "Never"].includes(imagePullPolicy)) throw new Error(`plan.podTemplate.containers[${index}].imagePullPolicy is invalid`);
+  return {
+    name,
+    image,
+    ...(imagePullPolicy ? { imagePullPolicy: imagePullPolicy as BatchWorkloadPlanContainer["imagePullPolicy"] } : {}),
+    ...(stringList(item.command).length ? { command: stringList(item.command) } : {}),
+    ...(stringList(item.args).length ? { args: stringList(item.args) } : {}),
+    ...(env.length ? { env } : {}),
+    resources: {
+      requests: {
+        ...(stringValue(requests.cpu || item.cpuRequest) ? { cpu: stringValue(requests.cpu || item.cpuRequest) } : {}),
+        ...(stringValue(requests.memory || item.memoryRequest) ? { memory: stringValue(requests.memory || item.memoryRequest) } : {}),
+      },
+      limits: {
+        ...(stringValue(limits.cpu || item.cpuLimit) ? { cpu: stringValue(limits.cpu || item.cpuLimit) } : {}),
+        ...(stringValue(limits.memory || item.memoryLimit) ? { memory: stringValue(limits.memory || item.memoryLimit) } : {}),
+      },
+    },
+    lifecycle: {
+      ...(stringValue(objectValue(item.lifecycle).postStart || item.lifecyclePostStart) ? { postStart: stringValue(objectValue(item.lifecycle).postStart || item.lifecyclePostStart) } : {}),
+      ...(stringValue(objectValue(item.lifecycle).preStop || item.lifecyclePreStop) ? { preStop: stringValue(objectValue(item.lifecycle).preStop || item.lifecyclePreStop) } : {}),
+    },
+    healthChecks: {
+      startup: Boolean(objectValue(item.healthChecks).startup ?? item.startupProbe),
+      readiness: Boolean(objectValue(item.healthChecks).readiness ?? item.readinessProbe),
+      liveness: Boolean(objectValue(item.healthChecks).liveness ?? item.livenessProbe),
+    },
+    securityContext: {
+      privileged: Boolean(objectValue(item.securityContext).privileged ?? item.privileged),
+      runAsUser: nonNegativeInteger(objectValue(item.securityContext).runAsUser ?? item.runAsUser),
+      runAsGroup: nonNegativeInteger(objectValue(item.securityContext).runAsGroup ?? item.runAsGroup),
+      readOnlyRootFilesystem: Boolean(objectValue(item.securityContext).readOnlyRootFilesystem ?? item.readOnlyRootFilesystem),
+      allowPrivilegeEscalation: Boolean(objectValue(item.securityContext).allowPrivilegeEscalation ?? item.allowPrivilegeEscalation),
+    },
+    ...(volumes.length ? { volumes } : {}),
+  };
+}
+
+function normalizeBatchWorkloadPlan(body: unknown, name: string, targetRefs: string[]): BatchWorkloadPlan {
+  const bodyValue = objectValue(body);
+  const targets = Array.isArray(bodyValue.targets) ? bodyValue.targets : [];
+  const legacy = objectValue(targets[0]);
+  const source = Object.keys(objectValue(bodyValue.plan)).length ? objectValue(bodyValue.plan) : legacy;
+  const podTemplate = objectValue(source.podTemplate);
+  const containersSource = Array.isArray(podTemplate.containers)
+    ? podTemplate.containers
+    : Array.isArray(source.containers)
+      ? source.containers
+      : [{ name: "container-1", image: stringValue(source.image || bodyValue.image) }];
+  const containers = containersSource.map(normalizeBatchWorkloadContainer);
+  if (containers.length === 0) throw new Error("plan.podTemplate.containers is required");
+  const namespace = stringValue(source.namespace, "default");
+  const targetGroups = Array.isArray(source.targetGroups) ? source.targetGroups.map(String).map((item) => item.trim()).filter(Boolean) : targetRefs;
+  if (!targetGroups.length) throw new Error("plan.targetGroups is required");
+  const metadata = objectValue(source.metadata);
+  const podMetadata = objectValue(podTemplate.metadata);
+  const network = objectValue(podTemplate.network || source.network);
+  const networkType = stringValue(network.type || source.networkType, "none");
+  if (!["none", "portmap", "host"].includes(networkType)) throw new Error("plan.podTemplate.network.type is invalid");
+  const portsSource = Array.isArray(network.ports) ? network.ports : Array.isArray(source.ports) ? source.ports : [];
+  const ports = portsSource.map(objectValue).map((port) => ({
+    containerName: stringValue(port.containerName),
+    containerPort: positiveInteger(port.containerPort, 0),
+    ...(positiveInteger(port.hostPort, 0) ? { hostPort: positiveInteger(port.hostPort, 0) } : {}),
+  })).filter((port) => port.containerName && port.containerPort > 0);
+  const strategySource = objectValue(source.strategy);
+  const strategyType = stringValue(strategySource.type || source.strategy, "RollingUpdate");
+  if (!["RollingUpdate", "Recreate"].includes(strategyType)) throw new Error("plan.strategy.type is invalid");
+  return {
+    namespace,
+    name: stringValue(source.name, name),
+    targetGroups,
+    replicas: positiveInteger(source.replicas, 1),
+    workloadType: "Deployment",
+    metadata: {
+      labels: Object.keys(stringMap(metadata.labels)).length ? stringMap(metadata.labels) : keyValueListMap(source.workloadLabels),
+      annotations: Object.keys(stringMap(metadata.annotations)).length ? stringMap(metadata.annotations) : keyValueListMap(source.workloadAnnotations),
+    },
+    podTemplate: {
+      labels: Object.keys(stringMap(podMetadata.labels)).length ? stringMap(podMetadata.labels) : keyValueListMap(source.podLabels),
+      annotations: Object.keys(stringMap(podMetadata.annotations)).length ? stringMap(podMetadata.annotations) : keyValueListMap(source.podAnnotations),
+      containers,
+      network: { type: networkType as "none" | "portmap" | "host", ...(ports.length ? { ports } : {}) },
+      terminationGracePeriodSeconds: nonNegativeInteger(podTemplate.terminationGracePeriodSeconds ?? source.terminationGracePeriodSeconds, 30),
+    },
+    strategy: {
+      type: strategyType as "RollingUpdate" | "Recreate",
+      ...(stringValue(strategySource.maxUnavailable || source.maxUnavailable) ? { maxUnavailable: stringValue(strategySource.maxUnavailable || source.maxUnavailable) } : {}),
+      ...(stringValue(strategySource.maxSurge || source.maxSurge) ? { maxSurge: stringValue(strategySource.maxSurge || source.maxSurge) } : {}),
+      revisionHistoryLimit: nonNegativeInteger(strategySource.revisionHistoryLimit ?? source.revisionHistoryLimit, 10),
+      minReadySeconds: nonNegativeInteger(strategySource.minReadySeconds ?? source.minReadySeconds),
+      progressDeadlineSeconds: positiveInteger(strategySource.progressDeadlineSeconds ?? source.progressDeadlineSeconds, 600),
+    },
+  };
+}
+
 function normalizeBatchTaskPayload(body: any, type: string, existingData: Record<string, string> = {}) {
   const now = new Date().toISOString();
   const id = readStringField(body, "id") || existingData.id || newBatchTaskId(type === "batchWorkload" ? "batch-workload" : "batch-task");
@@ -116,8 +259,9 @@ function normalizeBatchTaskPayload(body: any, type: string, existingData: Record
   const targetType = readStringField(body, "targetType") || existingData.targetType || (type === "batchWorkload" ? "deployment" : "nodeGroup");
   const targetRefs = batchTaskTargetRefs(body);
   const persistedTargetRefs = parseJsonField<string[]>(existingData.targetRefs, []);
+  const plan = type === "batchWorkload" ? normalizeBatchWorkloadPlan(body, name, targetRefs.length ? targetRefs : persistedTargetRefs) : null;
   const images = readStringArrayField(body, "images");
-  const image = images.length > 0 ? images.join(", ") : readStringField(body, "image") || existingData.image || "";
+  const image = images.length > 0 ? images.join(", ") : readStringField(body, "image") || plan?.podTemplate.containers[0]?.image || existingData.image || "";
   const status = readStringField(body, "status") || existingData.status || "pending";
   const failurePolicy = readStringField(body, "failurePolicy") || existingData.failurePolicy || "continue";
   const concurrency = Math.max(1, Math.floor(readNumberField(body, "concurrency", Number(existingData.concurrency || 1))));
@@ -163,6 +307,7 @@ function normalizeBatchTaskPayload(body: any, type: string, existingData: Record
     resultsJson: existingData.resultsJson || JSON.stringify(buildBatchTaskResults(refs, targets)),
     errorsJson: existingData.errorsJson || "[]",
     targetsJson: JSON.stringify(targets),
+    planJson: plan ? JSON.stringify(plan) : existingData.planJson || "",
   };
 }
 
@@ -191,6 +336,7 @@ function buildBatchTaskView(configMap: any) {
   const data = dataOf(configMap);
   const targetRefs = parseJsonField<string[]>(data.targetRefs, []);
   const targets = parseJsonField<any[]>(data.targetsJson, []);
+  const plan = parseJsonField<BatchWorkloadPlan | null>(data.planJson, null);
   return {
     id: data.id,
     name: data.name,
@@ -217,6 +363,7 @@ function buildBatchTaskView(configMap: any) {
     targetResults: parseJsonField(data.resultsJson, []),
     errors: parseJsonField(data.errorsJson, []),
     targets,
+    plan,
     rawRef: {
       kind: "ConfigMap",
       namespace: metadata.namespace || blueedgeNamespace(),

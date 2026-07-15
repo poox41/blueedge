@@ -14,19 +14,12 @@ import {
   Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 
 interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
 }
-
-const edgeUnit = {
-  name: "edge-131",
-  status: "运行中",
-  type: "外接",
-  cluster: "ali-139-131",
-  version: "v1.21.0",
-};
 
 const navGroups = [
   {
@@ -70,6 +63,12 @@ function StatusPill({ children, tone = "success" }: { children: React.ReactNode;
 }
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
+  const { selectedEdgeUnit, loading, error } = useEdgeUnits();
+  const status = selectedEdgeUnit?.status === "running" ? "运行中" : selectedEdgeUnit?.status === "abnormal" ? "异常" : "未知";
+  const accessType = selectedEdgeUnit?.accessType === "external" ? "外接" : selectedEdgeUnit?.accessType === "dedicated" ? "专有" : "未配置";
+  const cluster = !selectedEdgeUnit?.clusterName || selectedEdgeUnit.clusterName === "unknown" ? "未配置" : selectedEdgeUnit.clusterName;
+  const version = !selectedEdgeUnit?.kubeEdgeVersion || selectedEdgeUnit.kubeEdgeVersion === "unknown" ? "未配置" : selectedEdgeUnit.kubeEdgeVersion;
+
   return (
     <aside
       className={cn(
@@ -127,14 +126,16 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         <div className="shrink-0 px-3 pb-3">
           <div className="rounded-[22px] border border-[#e8ecf3] bg-[#f6f7f9] p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
             <div className="mb-3 flex items-center justify-between">
-              <StatusPill>{edgeUnit.status}</StatusPill>
-              <StatusPill tone="warning">{edgeUnit.type}</StatusPill>
+              <StatusPill tone={status === "运行中" ? "success" : "warning"}>{loading ? "加载中" : status}</StatusPill>
+              <StatusPill tone="warning">{accessType}</StatusPill>
             </div>
-            <h3 className="mb-2 truncate text-sm font-bold text-[var(--color-text-primary)]">{edgeUnit.name}</h3>
+            <h3 className="mb-2 truncate text-sm font-bold text-[var(--color-text-primary)]">{selectedEdgeUnit?.name || "暂无边缘单元"}</h3>
             <div className="space-y-1 text-[11px] text-[var(--color-text-secondary)]">
-              <div className="flex items-center gap-1.5"><Server className="h-3 w-3 text-[var(--color-text-tertiary)]" />{edgeUnit.cluster}</div>
-              <div className="flex items-center gap-1.5"><Box className="h-3 w-3 text-[var(--color-text-tertiary)]" />KubeEdge {edgeUnit.version}</div>
+              <div className="flex items-center gap-1.5"><Server className="h-3 w-3 text-[var(--color-text-tertiary)]" />{cluster}</div>
+              <div className="flex items-center gap-1.5"><Box className="h-3 w-3 text-[var(--color-text-tertiary)]" />KubeEdge {version}</div>
+              <div className="flex items-center gap-1.5"><Cpu className="h-3 w-3 text-[var(--color-text-tertiary)]" />节点 {selectedEdgeUnit ? `${selectedEdgeUnit.nodes.ready}/${selectedEdgeUnit.nodes.total}` : "暂不可用"}</div>
             </div>
+            {error && <p className="mt-2 line-clamp-2 text-[11px] text-[var(--color-danger)]">{error}</p>}
             <div className="my-3 border-t border-[#e8ecf3]" />
             <NavLink to="/" className="flex h-8 items-center justify-center gap-1.5 rounded-xl border border-[#e8ecf3] bg-white text-xs font-semibold text-[var(--color-text-primary)] shadow-sm hover:bg-[var(--color-text-primary)] hover:text-white">
               <ChevronLeft className="h-3.5 w-3.5" />

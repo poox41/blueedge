@@ -11,12 +11,12 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Link2, Pencil } from "lucide-react";
-import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { formatLabels, getResourceCreatedAt, getResourceName, getResourceNamespace, mapSubjects } from "@/api/adapters/kube-resource.adapter";
 import { createRoleBindingResource, deleteRoleBindingResource, listRoleBindings, updateRoleBindingResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { useNamespace } from "@/contexts/NamespaceContext";
 
 interface RB { namespace: string; name: string; roleRef: string; labels: string; createdAt: string; subjects?: Array<{ kind: string; name: string; namespace: string }>; raw: KubeResource; }
 
@@ -82,7 +82,7 @@ export function RoleBindings() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [ns, setNs] = useState("all");
+  const { selectedNamespace: ns } = useNamespace();
   const [page, setPage] = useState(1);
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<RB | null>(null);
@@ -219,7 +219,7 @@ export function RoleBindings() {
       </div>
       <div className="flex items-center justify-between gap-4">
         <div className="toolbar-search relative"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-tertiary)]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm bg-white" /></div>
-        <div className="flex items-center gap-3"><NamespaceSelector value={ns} onChange={v => { setNs(v); setPage(1); }} /><span className="text-sm text-[var(--color-text-tertiary)]">共 {filtered.length} 条</span></div>
+        <div className="flex items-center gap-3"><span className="text-sm text-[var(--color-text-tertiary)]">共 {filtered.length} 条</span></div>
       </div>
       {error && <div className="rounded-md border border-orange-200 bg-orange-50 px-3 py-2 text-sm text-orange-700">{error}</div>}
       <div className="overflow-hidden rounded-xl border border-[var(--color-border)] bg-white shadow-sm">

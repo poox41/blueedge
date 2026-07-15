@@ -208,3 +208,54 @@ server/api-gateway/src/
 5. `BatchTasks.tsx` / `BatchWorkloads.tsx` 先接任务创建和任务状态查询。
 
 第二轮再做节点、边缘应用、Pod、设备、存储的 summary 聚合接口。
+
+## 10. 第二轮：前端 Mock 与假能力收口
+
+> 2026-07-13 审计补充。本轮只记录修复计划；审计过程中未修改 `frontend/src` 业务代码。
+
+### 10.1 P0：先消除验收阻塞项
+
+1. 统一全局 EdgeUnit 上下文
+   - 删除 `components/layout/Header.tsx` 中硬编码的 EdgeUnit 列表。
+   - 删除 `components/layout/Sidebar.tsx` 中固定的 `edge-131`、集群名和版本。
+   - Header、Sidebar 与业务页面共用 `/blueedge/edge-units` 的真实选中项。
+   - 切换 EdgeUnit 后必须真正刷新或筛选当前页面数据，禁止只修改 Header 本地状态。
+
+2. 收口 Rules 页面假数据
+   - 删除 `pages/Rules.tsx` 的 `fallbackEndpoints`、`fallbackRoutes` 生产数据降级。
+   - 接口为空时显示真实空态，接口失败时显示错误态，不回填示例规则。
+   - 保存失败后不得在本地插入或更新规则并提示成功。
+   - 静态事件、静态审计面板隐藏、禁用或明确标注“暂未开放”。
+
+3. 禁止无接口的写操作假成功
+   - `pages/Deployments.tsx` 的停止、重启入口在没有真实 API 前禁用或标注“暂未开放”。
+   - `pages/Nodes.tsx` 的别名保存若无持久化接口，应禁用或明确标注仅本地临时展示。
+   - `pages/BatchTasks.tsx` 的启动、取消操作必须等待真实请求完成后再提示结果。
+
+### 10.2 P1：清理静态详情和无效操作
+
+1. Deployment 详情不得展示硬编码容器、环境变量、调度配置；优先从 `raw` 解析，缺失时显示空态。
+2. BatchWorkload 定义详情不得展示固定生命周期、健康检查、标签和访问地址；从任务原始配置解析，缺失时标注未配置。
+3. Node CPU/内存进度条必须使用真实 metrics；不可用时显示 `available=false` 对应降级态，不使用固定百分比。
+4. Header、Dashboard、Namespace、Deployment Pod/Event、BatchTask 详情中的刷新按钮必须执行真实重新查询；否则禁用或移除。
+5. `useNamespaceOptions.ts` 的 `default` namespace 兜底可以保留，但接口失败应向页面暴露 warning/error，避免静默掩盖故障。
+
+### 10.3 P2：模板和死代码治理
+
+1. 保留不进入资源主数据流的表单模板：默认 YAML、默认镜像、默认字段、表单初始化值。
+2. 保留明确的空态和降级值：`[]`、`null`、`unknown`、`available=false`。
+3. 删除无引用的 `data/mockData.ts`。
+4. 确认无动态引用后删除未使用的 `components/ui/sidebar.tsx`。
+5. 删除 `Nodes.tsx`、`NodeGroups.tsx` 中已无生产来源的 `localOnly` 兼容分支。
+6. 登录页粒子动画中的 `Math.random` 和纯 UI 定时器不属于业务 Mock，可以保留。
+
+### 10.4 第二轮验收标准
+
+1. MainLayout 与 Dashboard 展示同一个真实 EdgeUnit，刷新页面后选中上下文和资源数据一致。
+2. EdgeUnit 接口失败时只出现 loading、empty、error 或 warnings，不出现硬编码 EdgeUnit。
+3. Rules 接口为空或失败时不出现示例规则；失败写操作不改变本地列表。
+4. 所有可点击的保存、停止、重启、启动、取消操作均有真实 API，或已禁用并标注未开放。
+5. Deployment、BatchWorkload、Node 详情不展示无法由接口证明的静态值。
+6. 所有刷新按钮均触发真实请求；无实现的刷新入口不对用户开放。
+7. 全量搜索后，生产数据流中的主数据 Mock 和假写操作均为 0。
+8. 完成 frontend build、gateway smoke test，并人工验证页面刷新和 Gateway 重启后的数据一致性。

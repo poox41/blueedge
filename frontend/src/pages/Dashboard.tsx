@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   AlertTriangle,
-  Bell,
   Box,
   CheckCircle2,
   ChevronDown,
@@ -36,9 +35,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { toWorkbenchEdgeUnit, type EdgeUnitWarning, type WorkbenchEdgeUnitModel } from "@/api/adapters/edge-unit.adapter";
-import { listEdgeUnits, updateEdgeUnit, type EdgeUnitUpdatePayload } from "@/api/services/product";
+import { toWorkbenchEdgeUnit, type WorkbenchEdgeUnitModel } from "@/api/adapters/edge-unit.adapter";
+import { updateEdgeUnit, type EdgeUnitUpdatePayload } from "@/api/services/product";
 import { useAuth } from "@/contexts/AuthContext";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 import { cn } from "@/lib/utils";
 
 type WorkbenchEdgeUnit = WorkbenchEdgeUnitModel;
@@ -158,7 +158,19 @@ function WorkbenchSidebar({ unit }: { unit: WorkbenchEdgeUnit }) {
   );
 }
 
-function WorkbenchTopbar({ unit, units, onSelectUnit }: { unit: WorkbenchEdgeUnit; units: WorkbenchEdgeUnit[]; onSelectUnit: (unit: WorkbenchEdgeUnit) => void }) {
+function WorkbenchTopbar({
+  unit,
+  units,
+  loading,
+  onSelectUnit,
+  onRefresh,
+}: {
+  unit: WorkbenchEdgeUnit;
+  units: WorkbenchEdgeUnit[];
+  loading: boolean;
+  onSelectUnit: (name: string) => void;
+  onRefresh: () => Promise<void>;
+}) {
   const { logout } = useAuth();
   return (
     <header className="flex h-[72px] shrink-0 items-center justify-between border-b border-[var(--color-border)] bg-white px-6">
@@ -185,7 +197,7 @@ function WorkbenchTopbar({ unit, units, onSelectUnit }: { unit: WorkbenchEdgeUni
               return (
                 <DropdownMenuItem
                   key={item.name}
-                  onClick={() => onSelectUnit(item)}
+                  onClick={() => onSelectUnit(item.name)}
                   className={cn(
                     "flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium text-[var(--color-text-primary)]",
                     active && "bg-[var(--color-brand-light)] text-[var(--color-brand)]",
@@ -202,10 +214,8 @@ function WorkbenchTopbar({ unit, units, onSelectUnit }: { unit: WorkbenchEdgeUni
         <span className="font-semibold text-[var(--color-text-primary)]">概览</span>
       </div>
       <div className="flex items-center gap-2">
-        <button className="blueedge-icon-button" aria-label="刷新"><RefreshCw className="h-4 w-4" /></button>
-        <button className="blueedge-icon-button relative" aria-label="通知">
-          <Bell className="h-4 w-4" />
-          <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[var(--color-danger)] ring-2 ring-white" />
+        <button type="button" className="blueedge-icon-button" aria-label="刷新边缘单元" onClick={() => void onRefresh()} disabled={loading}>
+          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
         </button>
         <button onClick={logout} className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-text-primary)] text-white" aria-label="退出登录">
           <User className="h-4 w-4" />
@@ -587,44 +597,19 @@ function OverviewEditDialog({
 }
 
 export function Dashboard() {
-  const [units, setUnits] = useState<WorkbenchEdgeUnit[]>([]);
-  const [unit, setUnit] = useState<WorkbenchEdgeUnit | null>(null);
-  const [warnings, setWarnings] = useState<EdgeUnitWarning[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  const { edgeUnits, selectedEdgeUnit, loading: isLoading, error, warnings, refreshEdgeUnits, selectEdgeUnit } = useEdgeUnits();
+  const units = edgeUnits.map(toWorkbenchEdgeUnit);
+  const unit = selectedEdgeUnit ? toWorkbenchEdgeUnit(selectedEdgeUnit) : null;
   const [isMutating, setIsMutating] = useState(false);
-  const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [editOpen, setEditOpen] = useState(false);
-
-  const loadData = useCallback(async () => {
-    setIsLoading(true);
-    setError("");
-    try {
-      const result = await listEdgeUnits();
-      const nextUnits = result.items.map(toWorkbenchEdgeUnit);
-      setUnits(nextUnits);
-      setWarnings(result.warnings || []);
-      setUnit((current) => nextUnits.find((item) => item.name === current?.name) || nextUnits[0] || null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "边缘单元加载失败");
-      setUnits([]);
-      setWarnings([]);
-      setUnit(null);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadData();
-  }, [loadData]);
 
   const handleSave = async (target: WorkbenchEdgeUnit, payload: EdgeUnitUpdatePayload) => {
     setIsMutating(true);
     setNotice("");
     try {
       await updateEdgeUnit(target.name, payload);
-      await loadData();
+      await refreshEdgeUnits();
       setNotice(`边缘单元 ${target.name} 元数据已更新。`);
     } catch (err) {
       setNotice(messageOfError(err, "边缘单元更新失败"));
@@ -652,7 +637,7 @@ export function Dashboard() {
           <Server className="mx-auto mb-4 h-10 w-10 text-[var(--color-text-tertiary)]" />
           <p className="text-base font-semibold text-[var(--color-text-primary)]">暂无边缘单元</p>
           <p className="mt-2 text-sm text-[var(--color-text-secondary)]">{error || "当前没有可展示的 KubeEdge NodeGroup"}</p>
-          <Button className="mt-5 h-10 rounded-xl px-5" onClick={() => void loadData()}>
+          <Button className="mt-5 h-10 rounded-xl px-5" onClick={() => void refreshEdgeUnits()}>
             <RefreshCw className="h-4 w-4" />
             重新加载
           </Button>
@@ -665,7 +650,7 @@ export function Dashboard() {
     <div className="flex h-screen w-screen overflow-hidden bg-[var(--color-bg-page)]">
       <WorkbenchSidebar unit={unit} />
       <div className="flex min-w-0 flex-1 flex-col">
-        <WorkbenchTopbar unit={unit} units={units} onSelectUnit={setUnit} />
+        <WorkbenchTopbar unit={unit} units={units} loading={isLoading} onSelectUnit={selectEdgeUnit} onRefresh={refreshEdgeUnits} />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-[1380px] space-y-6 px-8 py-8">
             {notice && (
@@ -676,7 +661,7 @@ export function Dashboard() {
             )}
             {warnings.length > 0 && (
               <div className="rounded-xl border border-[#fef3c7] bg-[#fffbeb] px-4 py-3 text-sm text-[#92400e]">
-                部分辅助数据加载失败：{warnings.map((item) => `${item.source}: ${item.message}`).join("；")}
+                部分辅助数据加载失败：{warnings.join("；")}
               </div>
             )}
             <div className="rounded-2xl border border-[var(--color-border)] bg-white px-5 py-4">

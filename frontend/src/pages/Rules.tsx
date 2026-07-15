@@ -1,479 +1,1191 @@
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { useState, useMemo, useEffect, useCallback } from "react";
-import { Button } from "@/components/ui/button";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNamespace } from "@/contexts/NamespaceContext";
+import {
+  AlertCircle,
+  ArrowLeft,
+  ArrowRight,
+  Bug,
+  ClipboardList,
+  Copy,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  RefreshCw,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, ArrowRight, Pencil } from "lucide-react";
-import { NamespaceSelector } from "@/components/common/NamespaceSelector";
-import { createRuleResource, deleteRuleResource, getRule, listRuleEndpoints, listRules, updateRuleResource } from "@/api/services/resources";
+import { createRuleResource, deleteRuleResource, getRule, listNamespaces, listRuleEndpoints, listRules, updateRuleResource } from "@/api/services/resources";
+import { getRuleAudit, getRuleDelivery, getRuleEvents } from "@/api/services/product";
+import type { ClusterEvent, RuleAuditResponse, RuleDeliverySummary } from "@/api/services/product";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, RuleEndpointView, RuleView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 
-interface Rule { namespace: string; name: string; source: string; sourceResource: string; target: string; targetResource: string; createdAt: string; raw: KubeResource; }
-type RouteKind = "rest-eventbus" | "eventbus-rest" | "rest-servicebus";
 type EndpointKind = "rest" | "eventbus" | "servicebus";
+type RouteTab = "delivery" | "events" | "audit";
+type RouteStatusTone = "success" | "danger" | "warning" | "neutral";
 
-const routeOptions: Array<{ value: RouteKind; label: string; sourceType: EndpointKind; targetType: EndpointKind }> = [
-  { value: "rest-eventbus", label: "Rest -> EventBus", sourceType: "rest", targetType: "eventbus" },
-  { value: "eventbus-rest", label: "EventBus -> Rest", sourceType: "eventbus", targetType: "rest" },
-  { value: "rest-servicebus", label: "Rest -> ServiceBus", sourceType: "rest", targetType: "servicebus" },
-];
+type MessageRouteRow = {
+  id: string;
+  namespace: string;
+  name: string;
+  source: string;
+  sourceResource: string;
+  target: string;
+  targetResource: string;
+  createdAt: string;
+  statusLabel: string;
+  statusTone: RouteStatusTone;
+  description: string;
+  raw: KubeResource;
+};
+
+type RouteForm = {
+  name: string;
+  namespace: string;
+  source: string;
+  sourceSearch: string;
+  sourceResource: string;
+  sourceNodeName: string;
+  target: string;
+  targetSearch: string;
+  targetResource: string;
+  description: string;
+};
 
 function normalizeEndpointType(type: string): EndpointKind {
-  const normalized = type.toLowerCase();
-  if (normalized === "rest") return "rest";
+  const normalized = type.toLowerCase().replace(/[\s_-]/g, "");
+  if (normalized === "rest" || normalized === "http") return "rest";
   if (normalized === "servicebus") return "servicebus";
   return "eventbus";
 }
 
-function endpointTypeText(type: string): string {
+function displayEndpointType(type: string): string {
   const normalized = normalizeEndpointType(type);
-  if (normalized === "rest") return "云端 rest";
-  if (normalized === "servicebus") return "边端 servicebus";
-  return "边端 eventbus";
+  if (normalized === "rest") return "Rest";
+  if (normalized === "servicebus") return "ServiceBus";
+  return "EventBus";
 }
 
-function endpointTypeClass(type: string): string {
+function endpointLocation(type: string): string {
+  return normalizeEndpointType(type) === "rest" ? "云端" : "边端";
+}
+
+function endpointTagText(endpoint?: RuleEndpointView) {
+  if (!endpoint) return "-";
+  return `${endpointLocation(endpoint.type)} ${normalizeEndpointType(endpoint.type)}`;
+}
+
+function endpointTagClass(type: string) {
   const normalized = normalizeEndpointType(type);
-  if (normalized === "rest") return "bg-[#E8F3FF] text-[#165DFF]";
-  if (normalized === "servicebus") return "bg-[#FFF7E8] text-[#D25F00]";
-  return "bg-[#E8FFEA] text-[#00B42A]";
+  if (normalized === "rest") return "bg-[#e3f2fd] text-[#1e88e5]";
+  if (normalized === "servicebus") return "bg-[var(--color-warning-soft)] text-[#d97706]";
+  return "bg-[var(--color-success-soft)] text-[var(--color-success)]";
 }
 
-function endpointMatchesNamespace(endpoint: RuleEndpointView, namespace: string): boolean {
-  return endpoint.namespace === namespace || !endpoint.namespace;
+function endpointAddress(endpoint?: RuleEndpointView): string {
+  if (!endpoint) return "-";
+  const properties = endpoint.raw.spec?.properties as Record<string, unknown> | undefined;
+  const value =
+    endpoint.targetResource ||
+    (typeof properties?.targetResource === "string" ? properties.targetResource : "") ||
+    (typeof properties?.resource === "string" ? properties.resource : "") ||
+    (typeof properties?.topic === "string" ? properties.topic : "") ||
+    (typeof properties?.path === "string" ? properties.path : "");
+  if (value) return value;
+  return "未配置";
 }
 
-function endpointMatchesType(endpoint: RuleEndpointView, type: EndpointKind): boolean {
-  return normalizeEndpointType(endpoint.type) === type;
+function sourceTargetAllowed(sourceType: string, targetType: string): boolean {
+  const source = normalizeEndpointType(sourceType);
+  const target = normalizeEndpointType(targetType);
+  return (
+    (source === "rest" && target === "eventbus") ||
+    (source === "eventbus" && target === "rest") ||
+    (source === "rest" && target === "servicebus")
+  );
 }
 
-function findEndpoint(endpoints: RuleEndpointView[], name: string): RuleEndpointView | undefined {
-  return endpoints.find((endpoint) => endpoint.name === name);
+function findEndpoint(endpoints: RuleEndpointView[], namespace: string, name: string): RuleEndpointView | undefined {
+  return endpoints.find((endpoint) => endpoint.namespace === namespace && endpoint.name === name)
+    || endpoints.find((endpoint) => endpoint.namespace === "default" && endpoint.name === name);
 }
 
 function resourceValue(raw: KubeResource, key: "sourceResource" | "targetResource"): string {
   const value = raw.spec?.[key];
+  if (typeof value === "string") return value;
   if (!value || typeof value !== "object" || Array.isArray(value)) return "";
   const resource = value as Record<string, unknown>;
-  if (typeof resource.path === "string") return resource.path;
-  if (typeof resource.topic === "string") return resource.topic;
   if (typeof resource.resource === "string") return resource.resource;
+  if (typeof resource.path === "string") return resource.path;
+  if (typeof resource.topic === "string" && typeof resource.node_name === "string") return `${resource.node_name}/${resource.topic}`;
+  if (typeof resource.topic === "string") return resource.topic;
   return "";
 }
 
-function resourceNodeName(raw: KubeResource, key: "sourceResource" | "targetResource", fallback: string): string {
-  const value = raw.spec?.[key];
-  if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
+function nodeNameValue(raw: KubeResource): string {
+  const value = raw.spec?.sourceResource;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
   const resource = value as Record<string, unknown>;
-  return typeof resource.node_name === "string" ? resource.node_name : fallback;
+  return typeof resource.node_name === "string" ? resource.node_name : "";
 }
 
-function buildRuleResourceMap(
-  type: EndpointKind,
-  role: "source" | "target",
-  value: string,
-  nodeName?: string,
-): Record<string, string> {
-  const trimmed = value.trim();
-  if (type === "eventbus") {
-    return {
-      ...(role === "source" && nodeName ? { node_name: nodeName } : {}),
-      ...(trimmed ? { topic: trimmed } : {}),
-    };
-  }
-  if (type === "rest") {
-    return trimmed ? { [role === "source" ? "path" : "resource"]: trimmed } : {};
-  }
-  return trimmed ? { path: trimmed } : {};
-}
-
-function toRuleRow(item: RuleView): Rule {
+function toRouteRow(item: RuleView): MessageRouteRow {
+  const rawStatus = item.raw.status || {};
+  const declared = String(rawStatus.phase || rawStatus.state || "").trim();
+  const errors = rawStatus.errors;
+  const hasErrors = Array.isArray(errors) ? errors.length > 0 : Boolean(errors);
+  const normalized = declared.toLowerCase();
+  const statusTone: RouteStatusTone = hasErrors || ["failed", "error", "disabled"].includes(normalized)
+    ? "danger"
+    : ["enabled", "ready", "running", "active"].includes(normalized)
+      ? "success"
+      : declared
+        ? "warning"
+        : "neutral";
   return {
+    id: `${item.namespace}-${item.name}`,
     namespace: item.namespace,
     name: item.name,
     source: item.source,
-    sourceResource: item.sourceResource || "",
+    sourceResource: resourceValue(item.raw, "sourceResource") || item.sourceResource || "",
     target: item.target,
-    targetResource: item.targetResource || "",
-    createdAt: item.createdAt,
+    targetResource: resourceValue(item.raw, "targetResource") || item.targetResource || "",
+    createdAt: formatCreatedAt(item.createdAt),
+    statusLabel: declared || (hasErrors ? "异常" : "未声明"),
+    statusTone,
+    description: item.raw.metadata?.annotations?.description || item.raw.metadata?.labels?.description || "",
     raw: item.raw,
   };
 }
 
-function yaml(n: Rule) {
-  return `apiVersion: rules.kubeedge.io/v1
-kind: Rule
-metadata:
-  name: ${n.name}
-  namespace: ${n.namespace}
-spec:
-  source: ${n.source}
-  sourceResource: ${n.sourceResource || '""'}
-  target: ${n.target}
-  targetResource: ${n.targetResource || '""'}`;
+function formatCreatedAt(value: string) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-function buildRuleResource(form: {
-  name: string;
-  namespace: string;
-  routeKind: RouteKind;
-  source: string;
-  sourceResource: string;
-  sourceNodeName: string;
-  target: string;
-  targetResource: string;
-  description: string;
-}): KubeResource {
-  const route = routeOptions.find((item) => item.value === form.routeKind) || routeOptions[0];
+function validName(name: string) {
+  return /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/.test(name) && name.length <= 253;
+}
+
+function buildResource(type: EndpointKind, role: "source" | "target", value: string, nodeName: string): Record<string, string> {
+  const trimmed = value.trim();
+  if (type === "eventbus") {
+    return {
+      ...(role === "source" && nodeName.trim() ? { node_name: nodeName.trim() } : {}),
+      ...(trimmed ? { topic: trimmed } : {}),
+    };
+  }
+  if (type === "rest") return trimmed ? { [role === "source" ? "path" : "resource"]: trimmed } : {};
+  return trimmed ? { path: trimmed } : {};
+}
+
+function buildRuleResource(form: RouteForm, source?: RuleEndpointView, target?: RuleEndpointView, current?: MessageRouteRow): KubeResource {
+  const sourceType = source ? normalizeEndpointType(source.type) : "rest";
+  const targetType = target ? normalizeEndpointType(target.type) : "eventbus";
+  const currentMetadata = current?.raw.metadata ? { ...current.raw.metadata } as Record<string, unknown> : {};
+  delete currentMetadata.managedFields;
+  const currentAnnotations = current?.raw.metadata?.annotations || {};
+  const annotations = { ...currentAnnotations };
+  if (form.description.trim()) annotations.description = form.description.trim();
+  else delete annotations.description;
+  const labels = { ...(current?.raw.metadata?.labels || {}) };
+  delete labels.description;
   return {
+    ...(current?.raw || {}),
     apiVersion: "rules.kubeedge.io/v1",
     kind: "Rule",
     metadata: {
-      name: form.name,
+      ...currentMetadata,
+      name: form.name.trim(),
       namespace: form.namespace,
-      labels: form.description.trim() ? { description: form.description.trim() } : undefined,
+      labels: Object.keys(labels).length > 0 ? labels : undefined,
+      annotations: Object.keys(annotations).length > 0 ? annotations : undefined,
     },
     spec: {
+      ...(current?.raw.spec || {}),
       source: form.source,
-      sourceResource: buildRuleResourceMap(route.sourceType, "source", form.sourceResource, form.sourceNodeName),
+      sourceResource: buildResource(sourceType, "source", form.sourceResource, form.sourceNodeName),
       target: form.target,
-      targetResource: buildRuleResourceMap(route.targetType, "target", form.targetResource),
+      targetResource: buildResource(targetType, "target", form.targetResource, ""),
     },
   };
 }
 
+function routeYaml(row: MessageRouteRow) {
+  return `apiVersion: rules.kubeedge.io/v1
+kind: Rule
+metadata:
+  name: ${row.name}
+  namespace: ${row.namespace}
+spec:
+  source: ${row.source}
+  sourceResource: ${row.sourceResource || '""'}
+  target: ${row.target}
+  targetResource: ${row.targetResource || '""'}`;
+}
+
+const emptyForm: RouteForm = {
+  name: "",
+  namespace: "default",
+  source: "",
+  sourceSearch: "",
+  sourceResource: "",
+  sourceNodeName: "",
+  target: "",
+  targetSearch: "",
+  targetResource: "",
+  description: "",
+};
+
 export function Rules() {
+  const { selectedNamespace } = useNamespace();
   const namespaces = useNamespaceOptions();
-  const [data, setData] = useState<Rule[]>([]);
-  const [endpointOptions, setEndpointOptions] = useState<RuleEndpointView[]>([]);
+  const [refreshedNamespaces, setRefreshedNamespaces] = useState<Array<{ value: string; label: string }> | null>(null);
+  const namespaceItems = useMemo(
+    () => (refreshedNamespaces || namespaces).filter((item) => item.value !== "all"),
+    [namespaces, refreshedNamespaces],
+  );
+  const [routes, setRoutes] = useState<MessageRouteRow[]>([]);
+  const [endpoints, setEndpoints] = useState<RuleEndpointView[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [search, setSearch] = useState("");
-  const [ns, setNs] = useState("all");
-  const [page, setPage] = useState(1);
-  const [detailOpen, setDetailOpen] = useState(false);
-  const [selected, setSelected] = useState<Rule | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
-  const [delOpen, setDelOpen] = useState(false);
-  const [delItem, setDelItem] = useState<Rule | null>(null);
-  const [form, setForm] = useState({
-    name: "",
-    namespace: "default",
-    routeKind: "rest-eventbus" as RouteKind,
-    source: "",
-    sourceResource: "",
-    sourceNodeName: "",
-    target: "",
-    targetResource: "",
-    description: "",
-  });
-  const [editItem, setEditItem] = useState<Rule | null>(null);
-  const [editForm, setEditForm] = useState({ source: "", sourceResource: "", sourceNodeName: "", target: "", targetResource: "", description: "" });
-  const pageSize = 10;
+  const [form, setForm] = useState<RouteForm>(emptyForm);
+  const [editing, setEditing] = useState<MessageRouteRow | null>(null);
+  const [detail, setDetail] = useState<MessageRouteRow | null>(null);
+  const [activeTab, setActiveTab] = useState<RouteTab>("delivery");
+  const [delivery, setDelivery] = useState<RuleDeliverySummary | null>(null);
+  const [detailEvents, setDetailEvents] = useState<ClusterEvent[]>([]);
+  const [audit, setAudit] = useState<RuleAuditResponse | null>(null);
+  const [panelLoading, setPanelLoading] = useState<Record<RouteTab, boolean>>({ delivery: false, events: false, audit: false });
+  const [panelErrors, setPanelErrors] = useState<Partial<Record<RouteTab, string>>>({});
+  const [menuTarget, setMenuTarget] = useState<MessageRouteRow | null>(null);
+  const [menuPosition, setMenuPosition] = useState({ top: 0, left: 0 });
+  const [deleteTarget, setDeleteTarget] = useState<MessageRouteRow | null>(null);
+  const [refreshingNamespaces, setRefreshingNamespaces] = useState(false);
 
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (preserveData = false) => {
     setIsLoading(true);
     setError("");
     try {
-      const [rules, endpoints] = await Promise.all([
-        listRules(ns === "all" ? undefined : ns),
-        listRuleEndpoints(ns === "all" ? undefined : ns).catch(() => []),
-      ]);
-      setData(rules.map(toRuleRow));
-      setEndpointOptions(endpoints);
-      setPage(1);
+      const [ruleItems, endpointItems] = await Promise.all([listRules(), listRuleEndpoints()]);
+      setEndpoints(endpointItems);
+      setRoutes(ruleItems.map(toRouteRow));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "规则数据加载失败");
-      setData([]);
+      setError(err instanceof Error ? err.message : "消息路由数据加载失败");
+      if (!preserveData) {
+        setEndpoints([]);
+        setRoutes([]);
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [ns]);
+  }, []);
 
   useEffect(() => {
-    void loadData();
+    const timer = window.setTimeout(() => void loadData(), 0);
+    return () => window.clearTimeout(timer);
   }, [loadData]);
 
-  const filtered = useMemo(() => {
-    let r = data;
-    if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
-    return r;
-  }, [data, ns, search]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const start = (page - 1) * pageSize;
-  const paginated = filtered.slice(start, start + pageSize);
+  useEffect(() => {
+    if (!createOpen) return;
+    const timer = window.setTimeout(() => {
+      setForm((current) => ({
+        ...current,
+        namespace: namespaceItems.some((item) => item.value === current.namespace) ? current.namespace : namespaceItems[0]?.value || current.namespace || "default",
+      }));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [createOpen, namespaceItems]);
 
-  const openDetail = async (d: Rule) => {
-    setSelected(d);
-    setDetailOpen(true);
-    try {
-      setSelected(toRuleRow(await getRule(d.namespace, d.name)));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载规则详情失败");
-    }
+  const filteredRoutes = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    return routes.filter((route) => (selectedNamespace === "all" || route.namespace === selectedNamespace) && (!keyword || route.name.toLowerCase().includes(keyword)));
+  }, [routes, search, selectedNamespace]);
+
+  const sourceEndpoint = findEndpoint(endpoints, form.namespace, form.source);
+  const targetEndpoint = findEndpoint(endpoints, form.namespace, form.target);
+  const sourceOptions = useMemo(
+    () => filterEndpoints(endpoints, form.namespace, form.sourceSearch),
+    [endpoints, form.namespace, form.sourceSearch],
+  );
+  const targetOptions = useMemo(() => {
+    const items = filterEndpoints(endpoints, form.namespace, form.targetSearch);
+    if (!sourceEndpoint) return items;
+    return items.filter((endpoint) => sourceTargetAllowed(sourceEndpoint.type, endpoint.type));
+  }, [endpoints, form.namespace, form.targetSearch, sourceEndpoint]);
+  const validDirection = sourceEndpoint && targetEndpoint ? sourceTargetAllowed(sourceEndpoint.type, targetEndpoint.type) : false;
+  const canSave =
+    validName(form.name.trim()) &&
+    Boolean(
+        form.namespace &&
+        form.source &&
+        form.target &&
+        validDirection &&
+        form.sourceResource.trim() &&
+        form.targetResource.trim(),
+    );
+
+  const openCreate = () => {
+    setEditing(null);
+    setForm({ ...emptyForm, namespace: namespaceItems[0]?.value || "default" });
+    setCreateOpen(true);
   };
-  const openEdit = async (d: Rule) => {
-    setIsLoading(true);
-    setError("");
+
+  const openEdit = (route: MessageRouteRow) => {
+    setEditing(route);
+    setForm({
+      name: route.name,
+      namespace: route.namespace,
+      source: route.source,
+      sourceSearch: "",
+      sourceResource: route.sourceResource,
+      sourceNodeName: nodeNameValue(route.raw),
+      target: route.target,
+      targetSearch: "",
+      targetResource: route.targetResource,
+      description: route.description,
+    });
+    setCreateOpen(true);
+  };
+
+  const loadRoutePanel = async (tab: RouteTab, namespace: string, name: string) => {
+    setPanelLoading((current) => ({ ...current, [tab]: true }));
+    setPanelErrors((current) => ({ ...current, [tab]: undefined }));
     try {
-      const detail = toRuleRow(await getRule(d.namespace, d.name));
-      setEditItem(detail);
-      setEditForm({
-        source: detail.source,
-        sourceResource: resourceValue(detail.raw, "sourceResource") || detail.sourceResource || "",
-        sourceNodeName: resourceNodeName(detail.raw, "sourceResource", ""),
-        target: detail.target,
-        targetResource: resourceValue(detail.raw, "targetResource") || detail.targetResource || "",
-        description: detail.raw.metadata?.labels?.description || "",
-      });
-      setEditOpen(true);
+      if (tab === "delivery") setDelivery(await getRuleDelivery(namespace, name));
+      if (tab === "events") setDetailEvents((await getRuleEvents(namespace, name)).items);
+      if (tab === "audit") setAudit(await getRuleAudit(namespace, name));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载规则详情失败");
+      const message = err instanceof Error ? err.message : "消息路由详情数据加载失败";
+      setPanelErrors((current) => ({ ...current, [tab]: message }));
+      if (tab === "delivery") setDelivery(null);
+      if (tab === "events") setDetailEvents([]);
+      if (tab === "audit") setAudit(null);
     } finally {
-      setIsLoading(false);
+      setPanelLoading((current) => ({ ...current, [tab]: false }));
     }
   };
-  const openDel = (d: Rule) => { setDelItem(d); setDelOpen(true); };
-  const confirmDel = async () => {
-    if (!delItem) return;
-    setIsLoading(true);
-    setError("");
+
+  const openDetail = async (route: MessageRouteRow) => {
+    setDetail(route);
+    setActiveTab("delivery");
+    setDelivery(null);
+    setDetailEvents([]);
+    setAudit(null);
+    setPanelErrors({});
+    void Promise.all([
+      loadRoutePanel("delivery", route.namespace, route.name),
+      loadRoutePanel("events", route.namespace, route.name),
+      loadRoutePanel("audit", route.namespace, route.name),
+    ]);
     try {
-      await deleteRuleResource(delItem.namespace, delItem.name);
-      setDelOpen(false);
-      setDelItem(null);
-      await loadData();
+      const fresh = await getRule(route.namespace, route.name);
+      setDetail(toRouteRow(fresh));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "删除规则失败");
-    } finally {
-      setIsLoading(false);
+      setError(err instanceof Error ? err.message : "加载消息路由详情失败");
     }
   };
-  const handleCreate = async () => {
+
+  const saveRoute = async () => {
+    const source = findEndpoint(endpoints, form.namespace, form.source);
+    const target = findEndpoint(endpoints, form.namespace, form.target);
+    if (!source || !target || !canSave) return;
+    const resource = buildRuleResource(form, source, target, editing || undefined);
     setIsLoading(true);
     setError("");
+    setNotice("");
     try {
-      const source = findEndpoint(endpointOptions, form.source);
-      const target = findEndpoint(endpointOptions, form.target);
-      const route = routeOptions.find((item) => item.value === form.routeKind) || routeOptions[0];
-      if (!source || !target) throw new Error("请选择源端点和目的端点");
-      if (!endpointMatchesType(source, route.sourceType) || !endpointMatchesType(target, route.targetType)) {
-        throw new Error(`当前转发路径需要 ${route.label} 类型的端点`);
+      if (editing) {
+        await updateRuleResource(editing.namespace, resource);
+      } else {
+        await createRuleResource(resource);
       }
-      await createRuleResource(buildRuleResource(form));
+      await loadData(true);
+      setNotice(editing ? "消息路由更新成功" : "消息路由创建成功");
       setCreateOpen(false);
-      setForm({ name: "", namespace: "default", routeKind: "rest-eventbus", source: "", sourceResource: "", sourceNodeName: "", target: "", targetResource: "", description: "" });
-      await loadData();
+      setEditing(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "创建规则失败");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-  const handleEdit = async () => {
-    if (!editItem) return;
-    setIsLoading(true);
-    setError("");
-    try {
-      const sourceEndpoint = findEndpoint(endpointOptions, editForm.source);
-      const targetEndpoint = findEndpoint(endpointOptions, editForm.target);
-      const sourceType = sourceEndpoint ? normalizeEndpointType(sourceEndpoint.type) : "rest";
-      const targetType = targetEndpoint ? normalizeEndpointType(targetEndpoint.type) : "rest";
-      const updated: KubeResource = {
-        ...editItem.raw,
-        metadata: {
-          ...(editItem.raw.metadata || {}),
-          labels: {
-            ...(editItem.raw.metadata?.labels || {}),
-            ...(editForm.description.trim() ? { description: editForm.description.trim() } : {}),
-          },
-        },
-        spec: {
-          ...(editItem.raw.spec || {}),
-          source: editForm.source,
-          sourceResource: buildRuleResourceMap(sourceType, "source", editForm.sourceResource, editForm.sourceNodeName),
-          target: editForm.target,
-          targetResource: buildRuleResourceMap(targetType, "target", editForm.targetResource),
-        },
-      };
-      await updateRuleResource(editItem.namespace, updated);
-      setEditOpen(false);
-      setEditItem(null);
-      await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "更新规则失败");
+      setError(err instanceof Error ? err.message : "消息路由保存失败");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const currentRoute = routeOptions.find((item) => item.value === form.routeKind) || routeOptions[0];
-  const namespaceEndpoints = endpointOptions.filter((endpoint) => endpointMatchesNamespace(endpoint, form.namespace));
-  const sourceEndpointOptions = namespaceEndpoints.filter((endpoint) => endpointMatchesType(endpoint, currentRoute.sourceType));
-  const targetEndpointOptions = namespaceEndpoints.filter((endpoint) => endpointMatchesType(endpoint, currentRoute.targetType));
-  const sourceEndpoint = findEndpoint(endpointOptions, form.source);
-  const targetEndpoint = findEndpoint(endpointOptions, form.target);
-  const editSourceEndpoint = findEndpoint(endpointOptions, editForm.source);
-  const editSourceType = editSourceEndpoint ? normalizeEndpointType(editSourceEndpoint.type) : "rest";
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setIsLoading(true);
+    setError("");
+    setNotice("");
+    try {
+      await deleteRuleResource(deleteTarget.namespace, deleteTarget.name);
+      await loadData();
+      if (detail?.id === deleteTarget.id) setDetail(null);
+      setDeleteTarget(null);
+      setNotice("消息路由删除成功");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "删除消息路由失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const openMenu = (route: MessageRouteRow, button: HTMLButtonElement) => {
+    const rect = button.getBoundingClientRect();
+    const width = 160;
+    setMenuPosition({
+      top: rect.bottom + 10,
+      left: Math.min(window.innerWidth - width - 16, Math.max(16, rect.right - width)),
+    });
+    setMenuTarget((current) => (current?.id === route.id ? null : route));
+  };
+
+  const refreshNamespaces = async () => {
+    setRefreshingNamespaces(true);
+    setError("");
+    try {
+      const nextNamespaces = await listNamespaces();
+      setRefreshedNamespaces(nextNamespaces);
+      await loadData(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "命名空间刷新失败");
+    } finally {
+      setRefreshingNamespaces(false);
+    }
+  };
+
+  if (detail) {
+    return (
+      <>
+        <RouteDetailPage
+          route={detail}
+          endpoints={endpoints}
+          activeTab={activeTab}
+          delivery={delivery}
+          events={detailEvents}
+          audit={audit}
+          panelLoading={panelLoading}
+          panelErrors={panelErrors}
+          onTabChange={setActiveTab}
+          onRefresh={(tab) => loadRoutePanel(tab, detail.namespace, detail.name)}
+          onBack={() => setDetail(null)}
+          onEdit={() => openEdit(detail)}
+          onDelete={() => setDeleteTarget(detail)}
+        />
+        <CreateRouteDialog
+          open={createOpen}
+          form={form}
+          editing={editing}
+          namespaceItems={namespaceItems}
+          sourceOptions={sourceOptions}
+          targetOptions={targetOptions}
+          sourceEndpoint={sourceEndpoint}
+          targetEndpoint={targetEndpoint}
+          canSave={Boolean(canSave)}
+          refreshingNamespaces={refreshingNamespaces}
+          onOpenChange={(open) => {
+            setCreateOpen(open);
+            if (!open) setEditing(null);
+          }}
+          onChange={setForm}
+          onRefreshNamespaces={refreshNamespaces}
+          onSave={saveRoute}
+        />
+        <ConfirmDeleteDialog target={deleteTarget} loading={isLoading} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDelete} />
+      </>
+    );
+  }
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold text-[#1D2129]">规则</h1>
+    <div className="blueedge-page space-y-5">
+      <div>
+        <h1 className="mb-1 text-lg font-semibold text-[var(--color-text-primary)]">消息路由</h1>
+        <p className="text-xs text-[var(--color-text-secondary)]">定义消息在云端与边缘端点之间的转发规则</p>
+      </div>
+
+      <div className="page-toolbar">
+        <div className="relative w-[240px] transition-all focus-within:w-[300px]">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="按消息路由名称搜索"
+            className="h-10 rounded-xl border-2 border-[var(--color-input-border)] bg-white pl-10 text-sm shadow-sm"
+          />
+        </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="h-8 px-3 text-sm border-[#C9CDD4] text-[#4E5969] hover:border-[#165DFF] hover:text-[#165DFF]" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />刷新</Button>
-          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
-            <DialogTrigger asChild><Button size="sm" className="h-8 px-3 text-sm bg-[#165DFF] hover:bg-[#165DFF]/90 text-white"><Plus className="w-3.5 h-3.5 mr-1" />创建规则</Button></DialogTrigger>
-            <DialogContent className="max-w-[720px] max-h-[88vh] grid grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0">
-              <DialogHeader className="px-6 py-4 border-b border-[#E5E6EB]"><DialogTitle className="text-base">创建消息路由</DialogTitle></DialogHeader>
-              <div className="min-h-0 overflow-y-auto px-6 py-4 space-y-4">
-                <div className="rounded-md border border-[#94BFFF] bg-[#E8F3FF] px-4 py-3 text-sm leading-6 text-[#1D2129]">
-                  <p className="font-medium mb-1">当前支持如下三种消息转发路径</p>
-                  <p>1.Rest &gt; EventBus：用户应用调用云端的 REST API 发送消息，最终消息发送到边缘中的 MQTT broker。</p>
-                  <p>2.EventBus &gt; Rest：用户向边缘中的 MQTT broker 发布消息，最终将消息发送到云端的 REST API。</p>
-                  <p>3.Rest &gt; ServiceBus：用户应用调用云端 REST API 发送消息，最终消息发送到边缘应用。</p>
-                </div>
-                <div className="grid grid-cols-[128px_1fr] items-center gap-3">
-                  <Label className="text-sm text-right text-[#4E5969]">转发路径</Label>
-                  <select value={form.routeKind} onChange={e => {
-                    const routeKind = e.target.value as RouteKind;
-                    setForm({ ...form, routeKind, source: "", sourceResource: "", sourceNodeName: "", target: "", targetResource: "" });
-                  }} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">
-                    {routeOptions.map((route) => (<option key={route.value} value={route.value}>{route.label}</option>))}
-                  </select>
-                </div>
-                <div className="grid grid-cols-[128px_1fr] items-center gap-3">
-                  <Label className="text-sm text-right text-[#4E5969]">消息路由名称 <span className="text-[#F53F3F]">*</span></Label><Input placeholder="请输入消息路由名称" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" />
-                </div>
-                <div className="grid grid-cols-[128px_1fr] items-center gap-3">
-                  <Label className="text-sm text-right text-[#4E5969]">命名空间 <span className="text-[#F53F3F]">*</span></Label>
-                    <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value, source: "", target: "" })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
-                </div>
-                <div className="grid grid-cols-[128px_1fr] items-center gap-3"><Label className="text-sm text-right text-[#4E5969]">源端点 <span className="text-[#F53F3F]">*</span></Label>
-                  <div className="relative">
-                    <select value={form.source} onChange={e => setForm({ ...form, source: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 pr-28 border-[#C9CDD4]"><option value="">选择端点</option>{sourceEndpointOptions.map(e => (<option key={e.name} value={e.name}>{e.name}</option>))}</select>
-                    {sourceEndpoint && <Badge className={cn("absolute right-8 top-1/2 -translate-y-1/2 text-xs font-normal", endpointTypeClass(sourceEndpoint.type))}>{endpointTypeText(sourceEndpoint.type)}</Badge>}
-                  </div>
-                </div>
-                <div className="grid grid-cols-[128px_1fr] items-center gap-3"><Label className="text-sm text-right text-[#4E5969]">源端点资源 <span className="text-[#F53F3F]">*</span></Label>
-                  {currentRoute.sourceType === "eventbus" ? (
-                    <div className="grid grid-cols-[180px_1fr] gap-2">
-                      <Input placeholder="请输入 node_name，如 aipc-31" value={form.sourceNodeName} onChange={e => setForm({ ...form, sourceNodeName: e.target.value })} className="h-9 text-sm" />
-                      <Input placeholder="请输入一个 topic" value={form.sourceResource} onChange={e => setForm({ ...form, sourceResource: e.target.value })} className="h-9 text-sm" />
-                    </div>
-                  ) : (
-                    <Input placeholder="请输入 Rest 路径，如 /abc/bc" value={form.sourceResource} onChange={e => setForm({ ...form, sourceResource: e.target.value })} className="h-9 text-sm" />
-                  )}
-                </div>
-                <div className="grid grid-cols-[128px_1fr] items-center gap-3"><Label className="text-sm text-right text-[#4E5969]">目的端点 <span className="text-[#F53F3F]">*</span></Label>
-                  <div className="relative">
-                    <select value={form.target} onChange={e => setForm({ ...form, target: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 pr-28 border-[#C9CDD4]"><option value="">选择端点</option>{targetEndpointOptions.map(e => (<option key={e.name} value={e.name}>{e.name}</option>))}</select>
-                    {targetEndpoint && <Badge className={cn("absolute right-8 top-1/2 -translate-y-1/2 text-xs font-normal", endpointTypeClass(targetEndpoint.type))}>{endpointTypeText(targetEndpoint.type)}</Badge>}
-                  </div>
-                </div>
-                <div className="grid grid-cols-[128px_1fr] items-center gap-3"><Label className="text-sm text-right text-[#4E5969]">目的端点资源 <span className="text-[#F53F3F]">*</span></Label>
-                  <Input
-                    placeholder={currentRoute.targetType === "eventbus" ? "请输入 EventBus Topic" : currentRoute.targetType === "rest" ? "请输入 Rest 地址，如 http://abc.com/bc" : "请输入 ServiceBus 路径，如 /request_path"}
-                    value={form.targetResource}
-                    onChange={e => setForm({ ...form, targetResource: e.target.value })}
-                    className="h-9 text-sm"
-                  />
-                </div>
-                <div className="grid grid-cols-[128px_1fr] items-start gap-3"><Label className="pt-2 text-sm text-right text-[#4E5969]">描述</Label><Textarea placeholder="请输入消息路由描述" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="min-h-20 text-sm" /></div>
-              </div>
-              <DialogFooter className="px-6 py-4 border-t border-[#E5E6EB] bg-white"><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleCreate} disabled={!form.name || !form.source || !form.target || !form.sourceResource || !form.targetResource || (currentRoute.sourceType === "eventbus" && !form.sourceNodeName)}>创建</Button></DialogFooter>
-            </DialogContent>
-          </Dialog>
-          <Dialog open={editOpen} onOpenChange={setEditOpen}>
-            <DialogContent className="max-w-lg">
-              <DialogHeader><DialogTitle className="text-base">编辑规则</DialogTitle></DialogHeader>
-              <div className="space-y-4 py-2">
-                <div className="grid grid-cols-2 gap-4"><Info label="名称" value={editItem?.name || "-"} /><Info label="命名空间" value={editItem?.namespace || "-"} /></div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">源端点</Label>
-                    <select value={editForm.source} onChange={e => setEditForm({ ...editForm, source: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option value="">选择端点</option>{endpointOptions.map(e => (<option key={e.name} value={e.name}>{e.name}</option>))}</select>
-                  </div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标端点</Label>
-                    <select value={editForm.target} onChange={e => setEditForm({ ...editForm, target: e.target.value })} className="w-full h-9 text-sm border rounded-md px-2 border-[#C9CDD4]"><option value="">选择端点</option>{endpointOptions.map(e => (<option key={e.name} value={e.name}>{e.name}</option>))}</select>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">源资源</Label><Input value={editForm.sourceResource} onChange={e => setEditForm({ ...editForm, sourceResource: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">目标资源</Label><Input value={editForm.targetResource} onChange={e => setEditForm({ ...editForm, targetResource: e.target.value })} className="h-9 text-sm" /></div>
-                </div>
-                {editSourceType === "eventbus" && (
-                  <div className="space-y-1.5"><Label className="text-xs text-[#4E5969]">源节点 node_name</Label><Input value={editForm.sourceNodeName} onChange={e => setEditForm({ ...editForm, sourceNodeName: e.target.value })} className="h-9 text-sm" /></div>
-                )}
-              </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" className="bg-[#165DFF] text-white" onClick={handleEdit} disabled={!editItem || !editForm.source || !editForm.target}>保存</Button></DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <button type="button" onClick={() => void loadData(true)} className="action-button h-10 w-10" title="刷新" disabled={isLoading}>
+            <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
+          </button>
+          <button type="button" onClick={openCreate} className="blueedge-primary-button h-10 rounded-xl px-4">
+            <Plus className="h-4 w-4" />
+            创建消息路由
+          </button>
         </div>
       </div>
-      <div className="flex items-center justify-between gap-4">
-        <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#C9CDD4]" /><Input placeholder="请输入名称搜索" value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="pl-9 h-9 text-sm border-[#C9CDD4] bg-white" /></div>
-        <div className="flex items-center gap-3"><NamespaceSelector value={ns} onChange={v => { setNs(v); setPage(1); }} /><span className="text-sm text-[#86909C]">共 {filtered.length} 条</span></div>
-      </div>
-      {error && <div className="rounded-md border border-[#F77234]/20 bg-[#FFF7E8] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
-      <div className="bg-white rounded-lg border border-[#E5E6EB] overflow-hidden">
-        <Table><TableHeader><TableRow className="bg-[#F7F8FA] hover:bg-[#F7F8FA]">
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">命名空间</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">名称</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">源端点</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">目标端点</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4">创建时间</TableHead>
-          <TableHead className="text-sm font-medium text-[#1D2129] h-10 px-4 w-[140px]">操作</TableHead>
-        </TableRow></TableHeader>
-        <TableBody>{isLoading ? (<TableRow><TableCell colSpan={6} className="text-center py-16 text-[#86909C] text-sm">正在加载规则数据...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={6} className="text-center py-16 text-[#86909C] text-sm">暂无规则数据</TableCell></TableRow>) : paginated.map(row => (
-          <TableRow key={row.name} className="hover:bg-[#F7F8FA] transition-colors border-b border-[#F2F3F5]">
-            <TableCell className="text-sm text-[#4E5969] px-4 py-3">{row.namespace}</TableCell>
-            <TableCell className="text-sm text-[#165DFF] font-medium px-4 py-3 cursor-pointer hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
-            <TableCell className="px-4 py-3"><Badge variant="outline" className="text-xs font-normal bg-[#E8F3FF] text-[#165DFF]">{row.source}</Badge></TableCell>
-            <TableCell className="px-4 py-3"><Badge variant="outline" className="text-xs font-normal bg-[#E8FFEA] text-[#00B42A]">{row.target}</Badge></TableCell>
-            <TableCell className="text-sm text-[#86909C] px-4 py-3">{row.createdAt}</TableCell>
-            <TableCell className="px-4 py-3"><div className="flex items-center gap-1"><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openDetail(row)}><Eye className="w-3.5 h-3.5 mr-1" />详情</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#165DFF] hover:bg-[#E8F3FF]" onClick={() => openEdit(row)}><Pencil className="w-3.5 h-3.5 mr-1" />编辑</Button><Button variant="ghost" size="sm" className="h-7 px-2 text-xs text-[#F53F3F] hover:bg-[#FFECE8]" onClick={() => openDel(row)}><Trash2 className="w-3.5 h-3.5 mr-1" />删除</Button></div></TableCell>
-          </TableRow>
-        ))}</TableBody></Table>
-      </div>
-      {filtered.length > pageSize && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-[#86909C]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
-          <Pagination><PaginationContent>
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="h-7 w-7 p-0 border-[#C9CDD4]"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (<PaginationItem key={p}><Button variant={page === p ? "default" : "outline"} size="sm" onClick={() => setPage(p)} className={cn("h-7 w-7 p-0 text-xs", page === p ? "bg-[#165DFF] text-white" : "border-[#C9CDD4] text-[#4E5969]")}>{p}</Button></PaginationItem>))}
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="h-7 w-7 p-0 border-[#C9CDD4]"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
-          </PaginationContent></Pagination>
-        </div>
+
+      {error && <div className="rounded-xl border border-[#fde68a] bg-[var(--color-warning-soft)] px-4 py-3 text-sm text-[#b45309]">{error}</div>}
+      {notice && <div className="rounded-xl border border-[#bbf7d0] bg-[#f0fdf4] px-4 py-3 text-sm text-[#15803d]">{notice}</div>}
+
+      <section className="table-card overflow-visible">
+        <Table className="min-w-[980px] table-fixed">
+          <TableHeader>
+            <TableRow className="h-12 bg-white hover:bg-white">
+              <TableHead className="w-[22%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">消息路由名称</TableHead>
+              <TableHead className="w-[20%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">源端点</TableHead>
+              <TableHead className="w-[20%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">目的端点</TableHead>
+              <TableHead className="w-[13%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">命名空间</TableHead>
+              <TableHead className="w-[17%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
+              <TableHead className="w-[8%] px-5 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {isLoading ? (
+              <TableRow>
+                <TableCell colSpan={6}>
+                  <div className="blueedge-empty-state min-h-[160px]">
+                    <span className="text-sm">正在加载消息路由数据...</span>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : filteredRoutes.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6}>
+                  <div className="blueedge-empty-state min-h-[180px]">
+                    <span className="blueedge-empty-state-icon" aria-hidden="true" />
+                    <span className="text-sm">暂无消息路由</span>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ) : (
+              filteredRoutes.map((route) => {
+                const source = findEndpoint(endpoints, route.namespace, route.source);
+                const target = findEndpoint(endpoints, route.namespace, route.target);
+                return (
+                  <TableRow key={route.id} className="h-[72px] cursor-pointer border-t border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]" onClick={() => openDetail(route)}>
+                    <TableCell className="px-5">
+                      <span className="text-sm font-semibold text-[var(--color-brand)]">{route.name}</span>
+                    </TableCell>
+                    <TableCell className="px-5">
+                      <EndpointCell name={route.source} endpoint={source} />
+                    </TableCell>
+                    <TableCell className="px-5">
+                      <EndpointCell name={route.target} endpoint={target} />
+                    </TableCell>
+                    <TableCell className="px-5 text-sm font-medium text-[var(--color-text-primary)]">{route.namespace}</TableCell>
+                    <TableCell className="px-5 text-sm text-[var(--color-text-tertiary)]">{route.createdAt}</TableCell>
+                    <TableCell className="px-5 text-right" onClick={(event) => event.stopPropagation()}>
+                      <button type="button" className="action-button h-10 w-10" title="更多" onClick={(event) => openMenu(route, event.currentTarget)}>
+                        <MoreHorizontal className="h-4 w-4" />
+                      </button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+          </TableBody>
+        </Table>
+      </section>
+
+      {menuTarget && (
+        <>
+          <button type="button" aria-label="关闭操作菜单" className="fixed inset-0 z-[70] cursor-default" onClick={() => setMenuTarget(null)} />
+          <div className="fixed z-[90] rounded-2xl border border-[#eef2f7] bg-white p-2 shadow-[0_18px_45px_rgba(15,23,42,0.14)]" style={{ top: menuPosition.top, left: menuPosition.left, width: 160 }}>
+            <button
+              type="button"
+              className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-medium text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]"
+              onClick={() => {
+                setDeleteTarget(menuTarget);
+                setMenuTarget(null);
+              }}
+            >
+              <Trash2 className="h-4 w-4" />
+              删除
+            </button>
+          </div>
+        </>
       )}
-      <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
-        <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
-          <SheetHeader className="pb-4 border-b border-[#E5E6EB]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle><Badge variant="outline" className="text-xs font-normal w-fit mt-2">{selected?.namespace}</Badge></SheetHeader>
-          {selected && (<Tabs defaultValue="overview" className="mt-4"><TabsList className="bg-[#F7F8FA] h-9"><TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger><TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger></TabsList>
-            <TabsContent value="overview" className="mt-3 space-y-4">
-              <div className="grid grid-cols-2 gap-3"><Info label="名称" value={selected.name} /><Info label="命名空间" value={selected.namespace} /><Info label="源端点" value={selected.source} /><Info label="目标端点" value={selected.target} /><Info label="源资源" value={selected.sourceResource || "-"} /><Info label="目标资源" value={selected.targetResource || "-"} /></div>
-              <div className="bg-[#F7F8FA] rounded-lg p-4"><div className="flex items-center justify-center gap-4"><Badge variant="outline" className="text-xs bg-[#E8F3FF] text-[#165DFF]">{selected.source}</Badge><ArrowRight className="w-5 h-5 text-[#86909C]" /><Badge variant="outline" className="text-xs bg-[#E8FFEA] text-[#00B42A]">{selected.target}</Badge></div><p className="text-center text-xs text-[#86909C] mt-2">数据流向</p></div>
-            </TabsContent>
-            <TabsContent value="yaml" className="mt-3"><div className="relative"><pre className="bg-[#0A1628] text-[#C9CDD4] rounded-lg p-4 text-xs font-mono overflow-x-auto">{yaml(selected)}</pre><Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(yaml(selected))}><Copy className="w-3.5 h-3.5" /></Button></div></TabsContent>
-          </Tabs>)}
-        </SheetContent>
-      </Sheet>
-      <AlertDialog open={delOpen} onOpenChange={setDelOpen}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle className="text-base">确认删除规则？</AlertDialogTitle><AlertDialogDescription className="text-sm">即将删除规则 <span className="font-medium text-[#1D2129]">{delItem?.name}</span>，此操作不可恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel><AlertDialogAction className="h-8 text-sm bg-[#F53F3F] text-white hover:bg-[#F53F3F]/90" onClick={confirmDel}>确认删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
-      </AlertDialog>
+
+      <CreateRouteDialog
+        open={createOpen}
+        form={form}
+        editing={editing}
+        namespaceItems={namespaceItems}
+        sourceOptions={sourceOptions}
+        targetOptions={targetOptions}
+        sourceEndpoint={sourceEndpoint}
+        targetEndpoint={targetEndpoint}
+        canSave={Boolean(canSave)}
+        refreshingNamespaces={refreshingNamespaces}
+        onOpenChange={(open) => {
+          setCreateOpen(open);
+          if (!open) setEditing(null);
+        }}
+        onChange={setForm}
+        onRefreshNamespaces={refreshNamespaces}
+        onSave={saveRoute}
+      />
+
+      <ConfirmDeleteDialog target={deleteTarget} loading={isLoading} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDelete} />
     </div>
   );
 }
 
-function Info({ label, value }: { label: string; value: string }) {
-  return (<div className="bg-[#F7F8FA] rounded-md px-3 py-2"><p className="text-xs text-[#86909C] mb-0.5">{label}</p><p className="text-sm text-[#1D2129] font-medium truncate">{value}</p></div>);
+function filterEndpoints(endpoints: RuleEndpointView[], namespace: string, keyword: string) {
+  const normalized = keyword.trim().toLowerCase();
+  return endpoints.filter((endpoint) => {
+    const namespaceMatched = !namespace || endpoint.namespace === namespace || endpoint.namespace === "default";
+    return namespaceMatched && (!normalized || endpoint.name.toLowerCase().includes(normalized));
+  });
+}
+
+function EndpointCell({ name, endpoint }: { name: string; endpoint?: RuleEndpointView }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span className="truncate text-sm font-medium text-[var(--color-text-primary)]">{name || "-"}</span>
+      {endpoint && <EndpointTag type={endpoint.type} />}
+    </div>
+  );
+}
+
+function EndpointTag({ type }: { type: string }) {
+  return <span className={cn("rounded-md px-2 py-0.5 text-xs font-semibold", endpointTagClass(type))}>{displayEndpointType(type)}</span>;
+}
+
+function StatusPill({ label, tone }: { label: string; tone: RouteStatusTone }) {
+  return (
+    <span className={cn(
+      "inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold",
+      tone === "success" && "bg-[var(--color-success-soft)] text-[var(--color-success)]",
+      tone === "danger" && "bg-[var(--color-danger-soft)] text-[var(--color-danger)]",
+      tone === "warning" && "bg-[var(--color-warning-soft)] text-[#b45309]",
+      tone === "neutral" && "bg-[#f1f5f9] text-[#64748b]",
+    )}>
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      {label}
+    </span>
+  );
+}
+
+function CreateRouteDialog({
+  open,
+  form,
+  editing,
+  namespaceItems,
+  sourceOptions,
+  targetOptions,
+  sourceEndpoint,
+  targetEndpoint,
+  canSave,
+  refreshingNamespaces,
+  onOpenChange,
+  onChange,
+  onRefreshNamespaces,
+  onSave,
+}: {
+  open: boolean;
+  form: RouteForm;
+  editing: MessageRouteRow | null;
+  namespaceItems: Array<{ value: string; label: string }>;
+  sourceOptions: RuleEndpointView[];
+  targetOptions: RuleEndpointView[];
+  sourceEndpoint?: RuleEndpointView;
+  targetEndpoint?: RuleEndpointView;
+  canSave: boolean;
+  refreshingNamespaces: boolean;
+  onOpenChange: (open: boolean) => void;
+  onChange: (form: RouteForm) => void;
+  onRefreshNamespaces: () => Promise<void>;
+  onSave: () => void;
+}) {
+  const [showHelp, setShowHelp] = useState(true);
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[min(720px,calc(100vh-48px))] w-[calc(100vw-48px)] max-w-[620px] gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[620px]" showCloseButton={false}>
+        <DialogHeader className="flex h-14 flex-row items-center gap-3 border-b border-[var(--color-border)] px-6 text-left">
+          <button type="button" onClick={() => onOpenChange(false)} className="action-button h-10 w-10 rounded-xl">
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+          <DialogTitle className="text-base font-semibold">{editing ? "编辑消息路由" : "创建消息路由"}</DialogTitle>
+        </DialogHeader>
+
+        <div className="max-h-[calc(100vh-168px)] overflow-y-auto px-7 py-5">
+          <div className="space-y-5">
+            {showHelp && (
+              <div className="flex items-start gap-2 rounded-xl border border-[#d6e4ff] bg-[var(--color-brand-light)] p-3">
+                <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-brand)]" />
+                <div className="flex-1">
+                  <p className="mb-1.5 text-xs font-semibold text-[var(--color-brand)]">当前支持如下三种消息转发路径</p>
+                  <div className="space-y-1 text-xs leading-5 text-[var(--color-text-secondary)]">
+                    <p>1. Rest -&gt; EventBus：用户应用调用云端的 REST API 发送消息，最终消息发送到边缘中的 MQTT broker。</p>
+                    <p>2. EventBus -&gt; Rest：用户向边缘中的 MQTT broker 发布消息，最终将消息发送到云端的 REST API。</p>
+                    <p>3. Rest -&gt; ServiceBus：用户应用调用云端 REST API 发送消息，最终消息发送到边缘应用。</p>
+                  </div>
+                </div>
+                <button type="button" onClick={() => setShowHelp(false)} className="action-button h-7 w-7 rounded-lg">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+
+            <RouteTextField label="消息路由名称" required disabled={Boolean(editing)} value={form.name} onChange={(value) => onChange({ ...form, name: value })} placeholder="请输入消息路由名称" />
+            <p className="-mt-3 text-xs leading-5 text-[var(--color-text-tertiary)]">支持小写英文字母、数字和中横线（-）；必须以小写英文字母或数字开头和结尾；长度限制为 1~253 个字符。</p>
+
+            <div>
+              <RouteLabel required>命名空间</RouteLabel>
+              <div className="flex items-center gap-2">
+                <select disabled={Boolean(editing)} value={form.namespace} onChange={(event) => onChange({ ...form, namespace: event.target.value, source: "", target: "" })} className="h-10 min-w-0 flex-1 rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm outline-none focus:border-[var(--color-brand)] disabled:cursor-not-allowed disabled:bg-[#f3f4f6] disabled:text-[#64748b]">
+                  {namespaceItems.length === 0 && <option value="default">default</option>}
+                  {namespaceItems.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                </select>
+                <button type="button" onClick={() => void onRefreshNamespaces()} className="action-button h-10 w-10 rounded-xl" title="刷新命名空间" disabled={refreshingNamespaces}>
+                  <RefreshCw className={cn("h-4 w-4", refreshingNamespaces && "animate-spin")} />
+                </button>
+                <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">创建命名空间暂未开放</span>
+              </div>
+            </div>
+
+            <EndpointPicker
+              label="源端点"
+              required
+              showSearch={!editing}
+              searchValue={form.sourceSearch}
+              selectValue={form.source}
+              searchPlaceholder="搜索端点"
+              selectPlaceholder="请选择源端点"
+              options={sourceOptions}
+              onSearchChange={(value) => onChange({ ...form, sourceSearch: value })}
+              onSelectChange={(value) => onChange({ ...form, source: value, target: "", targetResource: "" })}
+            />
+            <RouteTextField label="源端点资源" required value={form.sourceResource} onChange={(value) => onChange({ ...form, sourceResource: value })} placeholder={resourcePlaceholder(sourceEndpoint, "source")} />
+
+            <EndpointPicker
+              label="目的端点"
+              required
+              showSearch={!editing}
+              searchValue={form.targetSearch}
+              selectValue={form.target}
+              searchPlaceholder="搜索端点"
+              selectPlaceholder="请选择目的端点"
+              options={targetOptions}
+              onSearchChange={(value) => onChange({ ...form, targetSearch: value })}
+              onSelectChange={(value) => onChange({ ...form, target: value })}
+            />
+            <RouteTextField label="目的端点资源" required value={form.targetResource} onChange={(value) => onChange({ ...form, targetResource: value })} placeholder={resourcePlaceholder(targetEndpoint, "target")} />
+
+            <div>
+              <RouteLabel>描述</RouteLabel>
+              <Textarea value={form.description} onChange={(event) => onChange({ ...form, description: event.target.value })} placeholder="请输入消息路由描述" className="min-h-[48px] resize-none rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 py-3 text-sm" />
+            </div>
+
+            {(sourceEndpoint || targetEndpoint) && (
+              <div className="space-y-3 border-t border-[var(--color-border)] pt-5">
+                <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">路由预览</h3>
+                <div className="flex items-center gap-3">
+                  <RoutePreviewCard endpoint={sourceEndpoint} resource={form.sourceResource} />
+                  <div className="flex shrink-0 flex-col items-center gap-1 text-[var(--color-text-tertiary)]">
+                    <ArrowRight className="h-5 w-5 text-[var(--color-brand)]" />
+                    <span className="text-xs">路由</span>
+                  </div>
+                  <RoutePreviewCard endpoint={targetEndpoint} resource={form.targetResource} />
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter className="h-16 border-t border-[var(--color-border)] px-6 py-3">
+          <button type="button" onClick={() => onOpenChange(false)} className="blueedge-muted-button h-10 rounded-xl px-5 text-sm">取消</button>
+          <button type="button" onClick={onSave} disabled={!canSave} className="blueedge-primary-button h-10 rounded-xl px-6 text-sm disabled:cursor-not-allowed disabled:bg-[#9ca3af] disabled:opacity-70">
+            {editing ? "保存" : "创建"}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function resourcePlaceholder(endpoint: RuleEndpointView | undefined, role: "source" | "target") {
+  const type = endpoint ? normalizeEndpointType(endpoint.type) : "rest";
+  if (type === "eventbus") return "请输入 EventBus Topic";
+  if (type === "servicebus") return "请输入 ServiceBus 资源";
+  return role === "source" ? "请输入 Rest 路径，如 /abc/bc" : "请输入 Rest 路径";
+}
+
+function RouteLabel({ children, required }: { children: string; required?: boolean }) {
+  return (
+    <Label className="mb-1.5 block text-sm font-semibold text-[var(--color-text-primary)]">
+      {children} {required && <span className="text-[var(--color-danger)]">*</span>}
+    </Label>
+  );
+}
+
+function RouteTextField({ label, required, disabled, value, onChange, placeholder }: { label: string; required?: boolean; disabled?: boolean; value: string; onChange: (value: string) => void; placeholder: string }) {
+  return (
+    <div>
+      <RouteLabel required={required}>{label}</RouteLabel>
+      <Input disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="h-10 rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm disabled:cursor-not-allowed disabled:bg-[#f3f4f6]" />
+    </div>
+  );
+}
+
+function EndpointPicker({
+  label,
+  required,
+  showSearch = true,
+  searchValue,
+  selectValue,
+  searchPlaceholder,
+  selectPlaceholder,
+  options,
+  onSearchChange,
+  onSelectChange,
+}: {
+  label: string;
+  required?: boolean;
+  showSearch?: boolean;
+  searchValue: string;
+  selectValue: string;
+  searchPlaceholder: string;
+  selectPlaceholder: string;
+  options: RuleEndpointView[];
+  onSearchChange: (value: string) => void;
+  onSelectChange: (value: string) => void;
+}) {
+  return (
+    <div>
+      <RouteLabel required={required}>{label}</RouteLabel>
+      {showSearch && <Input value={searchValue} onChange={(event) => onSearchChange(event.target.value)} placeholder={searchPlaceholder} className="mb-2 h-10 rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm" />}
+      <select value={selectValue} onChange={(event) => onSelectChange(event.target.value)} className="h-10 w-full rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]">
+        <option value="">{selectPlaceholder}</option>
+        {options.map((endpoint) => (
+          <option key={`${endpoint.namespace}-${endpoint.name}`} value={endpoint.name}>
+            {endpoint.name}    {endpointTagText(endpoint)}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+function RoutePreviewCard({ endpoint, resource }: { endpoint?: RuleEndpointView; resource?: string }) {
+  return (
+    <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-soft)] p-4">
+      {!endpoint ? (
+        <p className="py-7 text-center text-xs text-[var(--color-text-tertiary)]">请选择端点</p>
+      ) : (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <EndpointTag type={endpoint.type} />
+            <span className="text-xs text-[var(--color-text-tertiary)]">{endpointTagText(endpoint)}</span>
+          </div>
+          <p className="truncate text-sm font-semibold text-[var(--color-text-primary)]">{endpoint.name}</p>
+          <p className="truncate font-mono text-xs text-[var(--color-text-secondary)]">{endpointAddress(endpoint)}</p>
+          {resource && <p className="truncate text-xs text-[var(--color-brand)]">资源: {resource}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RouteDetailPage({
+  route,
+  endpoints,
+  activeTab,
+  delivery,
+  events,
+  audit,
+  panelLoading,
+  panelErrors,
+  onTabChange,
+  onRefresh,
+  onBack,
+  onEdit,
+  onDelete,
+}: {
+  route: MessageRouteRow;
+  endpoints: RuleEndpointView[];
+  activeTab: RouteTab;
+  delivery: RuleDeliverySummary | null;
+  events: ClusterEvent[];
+  audit: RuleAuditResponse | null;
+  panelLoading: Record<RouteTab, boolean>;
+  panelErrors: Partial<Record<RouteTab, string>>;
+  onTabChange: (tab: RouteTab) => void;
+  onRefresh: (tab: RouteTab) => Promise<void>;
+  onBack: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const source = findEndpoint(endpoints, route.namespace, route.source);
+  const target = findEndpoint(endpoints, route.namespace, route.target);
+  return (
+    <div className="blueedge-page space-y-5">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={onBack} className="action-button h-10 w-10">
+            <ArrowLeft className="h-4 w-4" />
+          </button>
+          <div>
+            <h1 className="text-lg font-semibold text-[var(--color-text-primary)]">{route.name}</h1>
+            <p className="text-xs text-[var(--color-text-secondary)]">{route.namespace} · {route.createdAt}</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={onEdit} className="blueedge-primary-button h-10 rounded-xl px-4">
+            <Pencil className="h-4 w-4" />
+            编辑
+          </button>
+          <button type="button" onClick={onDelete} className="blueedge-muted-button h-10 rounded-xl px-4 text-[var(--color-danger)]">
+            <Trash2 className="h-4 w-4" />
+            删除
+          </button>
+        </div>
+      </div>
+
+      <section className="blueedge-card p-7">
+        <h2 className="mb-5 text-sm font-semibold text-[var(--color-text-primary)]">基本信息</h2>
+        <div className="grid grid-cols-4 gap-x-6 gap-y-5">
+          <InfoField label="消息路由名称" value={route.name} />
+          <InfoField label="命名空间" value={route.namespace} />
+          <InfoField label="创建时间" value={route.createdAt} />
+          <InfoField label="状态" value={<StatusPill label={route.statusLabel} tone={route.statusTone} />} />
+        </div>
+      </section>
+
+      <section className="blueedge-card p-7">
+        <h2 className="mb-5 text-sm font-semibold text-[var(--color-text-primary)]">路由规则</h2>
+        <div className="flex items-stretch gap-6">
+          <DetailEndpointCard title="源端点" endpoint={source} fallbackName={route.source} resource={route.sourceResource} />
+          <div className="flex shrink-0 flex-col items-center justify-center gap-2">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--color-brand-light)]">
+              <ArrowRight className="h-5 w-5 text-[var(--color-brand)]" />
+            </div>
+            <span className="text-xs text-[var(--color-text-tertiary)]">路由</span>
+          </div>
+          <DetailEndpointCard title="目的端点" endpoint={target} fallbackName={route.target} resource={route.targetResource} />
+        </div>
+      </section>
+
+      <div className="flex items-center gap-2">
+        <TabButton active={activeTab === "delivery"} onClick={() => onTabChange("delivery")} icon={<ArrowRight className="h-4 w-4" />} label="投递记录" />
+        <TabButton active={activeTab === "events"} onClick={() => onTabChange("events")} icon={<Bug className="h-4 w-4" />} label="事件" />
+        <TabButton active={activeTab === "audit"} onClick={() => onTabChange("audit")} icon={<ClipboardList className="h-4 w-4" />} label="审计" />
+      </div>
+
+      <section className="blueedge-card p-7">
+        {activeTab === "delivery" && (
+          <DeliveryPanel data={delivery} loading={panelLoading.delivery} error={panelErrors.delivery} onRefresh={() => onRefresh("delivery")} />
+        )}
+        {activeTab === "events" && <EventsPanel events={events} loading={panelLoading.events} error={panelErrors.events} onRefresh={() => onRefresh("events")} />}
+        {activeTab === "audit" && <AuditPanel data={audit} loading={panelLoading.audit} error={panelErrors.audit} onRefresh={() => onRefresh("audit")} />}
+      </section>
+
+      <div className="hidden">
+        <pre>{routeYaml(route)}</pre>
+        <button type="button" onClick={() => navigator.clipboard.writeText(routeYaml(route))}><Copy /></button>
+      </div>
+    </div>
+  );
+}
+
+function InfoField({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div>
+      <p className="mb-1.5 text-xs text-[var(--color-text-tertiary)]">{label}</p>
+      <div className="break-all text-sm font-semibold text-[var(--color-text-primary)]">{value}</div>
+    </div>
+  );
+}
+
+function DetailEndpointCard({ title, endpoint, fallbackName, resource }: { title: string; endpoint?: RuleEndpointView; fallbackName: string; resource: string }) {
+  return (
+    <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-soft)] p-5">
+      <p className="mb-3 text-xs font-semibold text-[var(--color-text-secondary)]">{title}</p>
+      <div className="space-y-2">
+        {endpoint && (
+          <div className="flex items-center gap-2">
+            <EndpointTag type={endpoint.type} />
+            <span className="text-xs text-[var(--color-text-tertiary)]">{endpointTagText(endpoint)}</span>
+          </div>
+        )}
+        <p className="text-base font-semibold text-[var(--color-text-primary)]">{endpoint?.name || fallbackName}</p>
+        <p className="font-mono text-sm text-[var(--color-text-secondary)]">{endpointAddress(endpoint)}</p>
+        {resource && <p className="text-sm text-[var(--color-brand)]">资源: {resource}</p>}
+      </div>
+    </div>
+  );
+}
+
+function TabButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex h-10 items-center gap-2 rounded-xl border px-4 text-sm font-semibold transition-colors",
+        active ? "border-[var(--color-text-primary)] bg-[var(--color-text-primary)] text-white" : "border-[var(--color-border-strong)] bg-white text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  );
+}
+
+function PanelRefreshButton({ loading, onRefresh }: { loading: boolean; onRefresh: () => Promise<void> }) {
+  return (
+    <button type="button" onClick={() => void onRefresh()} disabled={loading} className="action-button h-9 w-9" title="刷新真实数据">
+      <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+    </button>
+  );
+}
+
+function PanelError({ message }: { message?: string }) {
+  return message ? <div className="mb-4 rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#b91c1c]">{message}</div> : null;
+}
+
+function DeliveryPanel({ data, loading, error, onRefresh }: { data: RuleDeliverySummary | null; loading: boolean; error?: string; onRefresh: () => Promise<void> }) {
+  return (
+    <div>
+      <div className="mb-5 flex items-start justify-between">
+        <div>
+          <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">投递统计</h2>
+          <p className="mt-1 text-xs text-[var(--color-text-secondary)]">真实来源：KubeEdge Rule.status</p>
+        </div>
+        <PanelRefreshButton loading={loading} onRefresh={onRefresh} />
+      </div>
+      <PanelError message={error} />
+      {loading && !data ? (
+        <div className="blueedge-empty-state min-h-36 text-sm">正在读取真实投递状态...</div>
+      ) : data ? (
+        <>
+          <div className="grid grid-cols-3 gap-4">
+            <DeliveryMetric label="总投递数" value={data.totalMessages} tone="neutral" />
+            <DeliveryMetric label="成功" value={data.successMessages} tone="success" />
+            <DeliveryMetric label="失败" value={data.failMessages} tone="danger" />
+          </div>
+          {data.errors.length > 0 && <div className="mt-4 rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#b91c1c]">{data.errors.join("；")}</div>}
+          <div className="mt-4 rounded-xl border border-dashed border-[var(--color-border)] bg-[var(--color-bg-soft)] px-4 py-5 text-center">
+            <p className="text-sm font-medium text-[var(--color-text-secondary)]">集群未提供逐条投递历史</p>
+            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{data.warning}</p>
+          </div>
+        </>
+      ) : !error ? <div className="blueedge-empty-state min-h-36 text-sm">暂无投递状态</div> : null}
+    </div>
+  );
+}
+
+function DeliveryMetric({ label, value, tone }: { label: string; value: number; tone: "success" | "danger" | "neutral" }) {
+  return (
+    <div className={cn("rounded-xl border p-5", tone === "success" && "border-[#bbf7d0] bg-[#f0fdf4]", tone === "danger" && "border-[#fecaca] bg-[#fef2f2]", tone === "neutral" && "border-[var(--color-border)] bg-[var(--color-bg-soft)]")}>
+      <p className="text-xs text-[var(--color-text-secondary)]">{label}</p>
+      <p className={cn("mt-2 text-2xl font-semibold", tone === "success" && "text-[var(--color-success)]", tone === "danger" && "text-[var(--color-danger)]", tone === "neutral" && "text-[var(--color-text-primary)]")}>{value}</p>
+    </div>
+  );
+}
+
+function EventsPanel({ events, loading, error, onRefresh }: { events: ClusterEvent[]; loading: boolean; error?: string; onRefresh: () => Promise<void> }) {
+  const abnormal = events.filter((event) => event.type !== "Normal").length;
+  return (
+    <div>
+      <div className="mb-5 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">事件</h2>
+          <p className="mt-1 text-xs text-[var(--color-text-secondary)]">展示当前 Rule 的真实 Kubernetes Events</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="rounded-full bg-[#f1f5f9] px-3 py-1 text-xs text-[#64748b]">总数 {events.length}</span>
+          <span className="rounded-full bg-[#fff7ed] px-3 py-1 text-xs text-[#c2410c]">异常 {abnormal}</span>
+          <PanelRefreshButton loading={loading} onRefresh={onRefresh} />
+        </div>
+      </div>
+      <PanelError message={error} />
+      <div className="overflow-hidden rounded-2xl border border-[var(--color-border)]">
+        <Table>
+          <TableHeader><TableRow><TableHead>级别</TableHead><TableHead>对象</TableHead><TableHead>事件</TableHead><TableHead>描述</TableHead><TableHead>次数</TableHead><TableHead>时间</TableHead></TableRow></TableHeader>
+          <TableBody>
+            {events.length === 0 ? <TableRow><TableCell colSpan={6} className="py-12 text-center text-[var(--color-text-tertiary)]">{loading ? "正在读取真实事件..." : error ? "事件接口读取失败" : "当前 Rule 没有关联事件"}</TableCell></TableRow> : events.map((event, index) => (
+              <TableRow key={`${event.name}-${event.lastTimestamp}-${index}`}>
+                <TableCell><span className={cn("rounded-full px-2.5 py-1 text-xs font-semibold", event.type === "Normal" ? "bg-[#f1f5f9] text-[#64748b]" : "bg-[#fee2e2] text-[#dc2626]")}>● {event.type}</span></TableCell>
+                <TableCell>{event.involvedObject.kind}/{event.involvedObject.name}</TableCell>
+                <TableCell className="font-semibold">{event.reason}</TableCell>
+                <TableCell className="max-w-[360px] whitespace-normal text-[var(--color-text-secondary)]">{event.message}</TableCell>
+                <TableCell>{event.count || 1}</TableCell>
+                <TableCell>{formatCreatedAt(event.lastTimestamp)}</TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+    </div>
+  );
+}
+
+function AuditPanel({ data, loading, error, onRefresh }: { data: RuleAuditResponse | null; loading: boolean; error?: string; onRefresh: () => Promise<void> }) {
+  const records = data?.items || [];
+  return (
+    <div>
+      <div className="mb-5 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">审计</h2>
+          <p className="mt-1 text-xs text-[var(--color-text-secondary)]">真实来源：metadata.managedFields；不包含操作者 IP</p>
+        </div>
+        <div className="flex items-center gap-2"><span className="rounded-full bg-[#f1f5f9] px-3 py-1 text-xs text-[#64748b]">记录 {records.length}</span><PanelRefreshButton loading={loading} onRefresh={onRefresh} /></div>
+      </div>
+      <PanelError message={error} />
+      <div className="overflow-hidden rounded-2xl border border-[var(--color-border)]">
+        <Table>
+          <TableHeader><TableRow><TableHead>管理器</TableHead><TableHead>操作</TableHead><TableHead>API 版本</TableHead><TableHead>子资源</TableHead><TableHead>时间</TableHead></TableRow></TableHeader>
+          <TableBody>
+            {records.length === 0 ? <TableRow><TableCell colSpan={5} className="py-12 text-center text-[var(--color-text-tertiary)]">{loading ? "正在读取真实变更记录..." : error ? "审计接口读取失败" : "当前 Rule 没有 managedFields 记录"}</TableCell></TableRow> : records.map((record, index) => (
+              <TableRow key={`${record.manager}-${record.time}-${index}`}><TableCell className="font-semibold">{record.manager}</TableCell><TableCell>{record.operation}</TableCell><TableCell>{record.apiVersion}</TableCell><TableCell>{record.subresource || "资源主体"}</TableCell><TableCell>{formatCreatedAt(record.time)}</TableCell></TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      {data?.warning && <p className="mt-3 text-xs text-[var(--color-text-tertiary)]">{data.warning}</p>}
+    </div>
+  );
+}
+
+function ConfirmDeleteDialog({ target, loading, onCancel, onConfirm }: { target: MessageRouteRow | null; loading: boolean; onCancel: () => void; onConfirm: () => void }) {
+  return (
+    <AlertDialog open={Boolean(target)} onOpenChange={(open) => !open && onCancel()}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle className="text-base">确认删除消息路由？</AlertDialogTitle>
+          <AlertDialogDescription>
+            即将删除消息路由 <span className="font-semibold text-[var(--color-text-primary)]">{target?.name}</span>，此操作不可恢复。
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel className="h-10 rounded-xl text-sm">取消</AlertDialogCancel>
+          <AlertDialogAction className="h-10 rounded-xl text-sm" disabled={loading} onClick={onConfirm}>删除</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
 }

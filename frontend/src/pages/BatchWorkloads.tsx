@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNamespace } from "@/contexts/NamespaceContext";
 import type { ReactNode } from "react";
 import {
   AlertTriangle,
@@ -42,7 +43,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { toBatchWorkloadRow } from "@/api/adapters/batch-task.adapter";
 import type { BatchTaskApiItem } from "@/api/adapters/batch-task.adapter";
-import { createBatchWorkloadTask, deleteBatchTask, listBatchTasks } from "@/api/services/product";
+import { createBatchWorkloadTask, deleteBatchTask, listBatchTasks, type BatchWorkloadPlan, type BatchWorkloadPlanContainer } from "@/api/services/product";
+import { listNamespaces } from "@/api/services/resources";
 import { cn } from "@/lib/utils";
 
 type BatchWorkload = {
@@ -157,6 +159,62 @@ const defaultBatchImageForm = (): BatchImageCreateForm => ({
   terminationGracePeriodSeconds: "30",
 });
 
+const keyValueRecord = (items: BatchKeyValue[]): Record<string, string> => Object.fromEntries(items.filter((item) => item.key.trim()).map((item) => [item.key.trim(), item.value.trim()]));
+const optionalNumber = (value: string): number | undefined => value.trim() === "" || !Number.isFinite(Number(value)) ? undefined : Number(value);
+const compactStringList = (value: string): string[] => value.split(/\s+/).map((item) => item.trim()).filter(Boolean);
+
+function toPlanContainer(container: BatchContainerForm): BatchWorkloadPlanContainer {
+  return {
+    name: container.name.trim(),
+    image: container.image.trim(),
+    imagePullPolicy: container.pullPolicy,
+    env: container.envs.filter((item) => item.key.trim()).map((item) => ({ name: item.key.trim(), value: item.value })),
+    resources: {
+      requests: { ...(container.cpuRequest.trim() ? { cpu: container.cpuRequest.trim() } : {}), ...(container.memoryRequest.trim() ? { memory: container.memoryRequest.trim() } : {}) },
+      limits: { ...(container.cpuLimit.trim() ? { cpu: container.cpuLimit.trim() } : {}), ...(container.memoryLimit.trim() ? { memory: container.memoryLimit.trim() } : {}) },
+    },
+    lifecycle: { ...(container.lifecyclePostStart.trim() ? { postStart: container.lifecyclePostStart.trim() } : {}), ...(container.lifecyclePreStop.trim() ? { preStop: container.lifecyclePreStop.trim() } : {}) },
+    healthChecks: { startup: container.startupProbe, readiness: container.readinessProbe, liveness: container.livenessProbe },
+    securityContext: {
+      privileged: container.privileged,
+      ...(optionalNumber(container.runAsUser) !== undefined ? { runAsUser: optionalNumber(container.runAsUser) } : {}),
+      ...(optionalNumber(container.runAsGroup) !== undefined ? { runAsGroup: optionalNumber(container.runAsGroup) } : {}),
+      readOnlyRootFilesystem: container.readOnlyRootFilesystem,
+      allowPrivilegeEscalation: container.allowPrivilegeEscalation,
+    },
+    volumes: container.volumes.filter((item) => item.name.trim() && item.mountPath.trim()).map((item) => ({ name: item.name.trim(), type: item.type, mountPath: item.mountPath.trim(), ...(item.source.trim() ? { source: item.source.trim() } : {}) })),
+  };
+}
+
+function toBatchWorkloadPlan(form: BatchImageCreateForm, targetGroups: string[] = [form.namespace]): BatchWorkloadPlan {
+  return {
+    namespace: form.namespace,
+    name: form.name.trim(),
+    targetGroups,
+    replicas: Number(form.replicas),
+    workloadType: "Deployment",
+    metadata: { labels: keyValueRecord(form.workloadLabels), annotations: keyValueRecord(form.workloadAnnotations) },
+    podTemplate: {
+      labels: keyValueRecord(form.podLabels),
+      annotations: keyValueRecord(form.podAnnotations),
+      containers: form.containers.map(toPlanContainer),
+      network: {
+        type: form.networkType,
+        ports: form.ports.filter((item) => item.containerName && Number(item.containerPort) > 0).map((item) => ({ containerName: item.containerName, containerPort: Number(item.containerPort), ...(Number(item.hostPort) > 0 ? { hostPort: Number(item.hostPort) } : {}) })),
+      },
+      terminationGracePeriodSeconds: Number(form.terminationGracePeriodSeconds),
+    },
+    strategy: {
+      type: form.strategy,
+      maxUnavailable: `${form.maxUnavailable}${form.maxUnavailableUnit === "%" ? "%" : ""}`,
+      maxSurge: `${form.maxSurge}${form.maxSurgeUnit === "%" ? "%" : ""}`,
+      revisionHistoryLimit: Number(form.revisionHistoryLimit),
+      minReadySeconds: Number(form.minReadySeconds),
+      progressDeadlineSeconds: Number(form.progressDeadlineSeconds),
+    },
+  };
+}
+
 const defaultBatchYaml = `apiVersion: batch/v1
 kind: BatchDeployment
 metadata:
@@ -201,27 +259,14 @@ const highlightYamlLine = (line: string): string => {
 
 const highlightYaml = (code: string): string => code.split("\n").map(highlightYamlLine).join("\n");
 
-const batchWorkloadYaml = (item: BatchWorkload) => `apiVersion: batch/v1
-kind: BatchDeployment
-metadata:
-  name: ${item.name}
-  namespace: ${item.namespace}
-spec:
-  image: ${item.image}
-  targetGroups:
-${item.targetGroups.map((group) => `    - ${group}`).join("\n")}
-  rolloutPolicy: ${item.rolloutPolicy}
-  rollbackPolicy: ${item.rollbackPolicy}
-`;
-
 export function BatchWorkloads() {
+  const { selectedNamespace } = useNamespace();
   const [items, setItems] = useState<BatchWorkload[]>([]);
   const [search, setSearch] = useState("");
   const [yamlOpen, setYamlOpen] = useState(false);
   const [imageOpen, setImageOpen] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [definitionTarget, setDefinitionTarget] = useState<BatchWorkload | null>(null);
-  const [yamlTarget, setYamlTarget] = useState<BatchWorkload | null>(null);
   const [deployTarget, setDeployTarget] = useState<BatchWorkload | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BatchWorkload | null>(null);
   const [loading, setLoading] = useState(false);
@@ -247,9 +292,10 @@ export function BatchWorkloads() {
 
   const filtered = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    if (!keyword) return items;
-    return items.filter((item) => [item.name, item.namespace, item.image].some((value) => value.toLowerCase().includes(keyword)));
-  }, [items, search]);
+    return items
+      .filter((item) => selectedNamespace === "all" || item.namespace === selectedNamespace)
+      .filter((item) => !keyword || [item.name, item.namespace, item.image].some((value) => value.toLowerCase().includes(keyword)));
+  }, [items, search, selectedNamespace]);
 
   const createFromYaml = async (yaml: string) => {
     const name = yaml.match(/\n\s*name:\s*([^\n]+)/)?.[1]?.trim() || `batch-workload-${Date.now().toString().slice(-5)}`;
@@ -265,9 +311,16 @@ export function BatchWorkloads() {
         failurePolicy: "continue",
         description: "YAML 批量工作负载计划",
         targets: [{ namespace, image, yaml }],
+        plan: {
+          namespace,
+          name,
+          targetGroups: targetGroups.length ? targetGroups : ["default"],
+          replicas: 1,
+          workloadType: "Deployment",
+          podTemplate: { containers: [{ name: "container-1", image }] },
+        },
       });
       setYamlOpen(false);
-      setYamlTarget(null);
       await loadItems();
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建批量工作负载失败");
@@ -284,7 +337,20 @@ export function BatchWorkloads() {
         image: primaryImage,
         failurePolicy: "continue",
         description: form.description || "镜像批量工作负载计划",
-        targets: [{ namespace: form.namespace || "default", image: primaryImage, replicas: Number(form.replicas || 1), containers: form.containers }],
+        targets: [{
+          namespace: form.namespace || "default",
+          image: primaryImage,
+          replicas: Number(form.replicas || 1),
+          containers: form.containers,
+          workloadLabels: form.workloadLabels,
+          podLabels: form.podLabels,
+          workloadAnnotations: form.workloadAnnotations,
+          podAnnotations: form.podAnnotations,
+          networkType: form.networkType,
+          ports: form.ports,
+          strategy: form.strategy,
+        }],
+        plan: toBatchWorkloadPlan(form),
       });
       setImageOpen(false);
       await loadItems();
@@ -310,20 +376,6 @@ export function BatchWorkloads() {
         <BatchWorkloadDefinitionPage
           item={definitionTarget}
           onBack={() => setDefinitionTarget(null)}
-          onEditYaml={() => setYamlTarget(definitionTarget)}
-          onEditSection={() => setImageOpen(true)}
-        />
-        <BatchYamlEditor
-          open={!!yamlTarget}
-          title="编辑 YAML"
-          defaultValue={yamlTarget ? batchWorkloadYaml(yamlTarget) : defaultBatchYaml}
-          onSubmit={(yaml) => {
-            if (!yamlTarget) return;
-            void yaml;
-            setError("第一阶段批量工作负载仅支持创建计划和删除，不支持本地编辑假保存");
-            setYamlTarget(null);
-          }}
-          onCancel={() => setYamlTarget(null)}
         />
         <ImageCreateDialog open={imageOpen} onOpenChange={setImageOpen} onCreate={createFromImage} />
       </div>
@@ -404,10 +456,6 @@ export function BatchWorkloads() {
                         setDefinitionTarget(item);
                         setMenuOpenId(null);
                       }}
-                      onEditYaml={() => {
-                        setYamlTarget(item);
-                        setMenuOpenId(null);
-                      }}
                       onDeploy={() => {
                         setDeployTarget(item);
                         setMenuOpenId(null);
@@ -426,39 +474,28 @@ export function BatchWorkloads() {
       </section>
 
       <BatchYamlEditor open={yamlOpen} title="YAML 批量创建工作负载" defaultValue={defaultBatchYaml} onSubmit={createFromYaml} onCancel={() => setYamlOpen(false)} />
-      <BatchYamlEditor
-        open={!!yamlTarget}
-        title="编辑 YAML"
-        defaultValue={yamlTarget ? batchWorkloadYaml(yamlTarget) : defaultBatchYaml}
-        onSubmit={(yaml) => {
-          if (!yamlTarget) return;
-          void yaml;
-          setError("第一阶段批量工作负载仅支持创建计划和删除，不支持本地编辑假保存");
-          setYamlTarget(null);
-        }}
-        onCancel={() => setYamlTarget(null)}
-      />
       <ImageCreateDialog open={imageOpen} onOpenChange={setImageOpen} onCreate={createFromImage} />
       <DeployDialog
         item={deployTarget}
         onOpenChange={(open) => !open && setDeployTarget(null)}
-        onCreatePlan={async ({ targetGroups, replicas, containers }) => {
+        onCreatePlan={async (plan) => {
           if (!deployTarget) return;
           await createBatchWorkloadTask({
             name: `${deployTarget.name}-deploy-plan-${Date.now().toString(36)}`,
             targetType: "deployment",
-            targetRefs: targetGroups,
-            image: containers[0]?.image || deployTarget.image,
+            targetRefs: plan.targetGroups,
+            image: plan.podTemplate.containers[0]?.image || deployTarget.image,
             failurePolicy: "continue",
             description: `部署计划：${deployTarget.name}，仅生成计划，不创建 Kubernetes Deployment`,
             targets: [{
               namespace: deployTarget.namespace,
               sourceTaskId: deployTarget.id,
-              replicas,
-              containers,
-              targetGroups,
+              replicas: plan.replicas,
+              containers: plan.podTemplate.containers,
+              targetGroups: plan.targetGroups,
               executionMode: "planOnly",
             }],
+            plan,
           });
           await loadItems();
           setDeployTarget(null);
@@ -483,11 +520,10 @@ export function BatchWorkloads() {
   );
 }
 
-function BatchWorkloadActions({ open, onOpenChange, onView, onEditYaml, onDeploy, onDelete }: {
+function BatchWorkloadActions({ open, onOpenChange, onView, onDeploy, onDelete }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onView: () => void;
-  onEditYaml: () => void;
   onDeploy: () => void;
   onDelete: () => void;
 }) {
@@ -520,7 +556,7 @@ function BatchWorkloadActions({ open, onOpenChange, onView, onEditYaml, onDeploy
           <button type="button" className="fixed inset-0 z-30 cursor-default" onClick={() => onOpenChange(false)} aria-label="关闭菜单" />
           <div className="fixed z-40 w-[164px] overflow-hidden rounded-2xl border border-[#e5e7eb] bg-white py-2 text-left shadow-[0_18px_45px_rgba(15,23,42,0.18)]" style={{ top: menuPosition.top, left: menuPosition.left }}>
             <BatchActionMenuItem icon={<Eye className="h-4 w-4" />} label="查看定义" onClick={onView} />
-            <BatchActionMenuItem icon={<Pencil className="h-4 w-4" />} label="编辑 YAML" onClick={onEditYaml} />
+            <BatchActionMenuItem disabled icon={<Pencil className="h-4 w-4" />} label="编辑 YAML（暂未支持）" onClick={() => undefined} />
             <BatchActionMenuItem icon={<Upload className="h-4 w-4" />} label="创建部署计划" onClick={onDeploy} />
             <div className="my-2 border-t border-[#eef2f7]" />
             <BatchActionMenuItem danger icon={<Trash2 className="h-4 w-4" />} label="删除" onClick={onDelete} />
@@ -531,14 +567,17 @@ function BatchWorkloadActions({ open, onOpenChange, onView, onEditYaml, onDeploy
   );
 }
 
-function BatchActionMenuItem({ icon, label, onClick, danger = false }: { icon: ReactNode; label: string; onClick: () => void; danger?: boolean }) {
+function BatchActionMenuItem({ icon, label, onClick, danger = false, disabled = false }: { icon: ReactNode; label: string; onClick: () => void; danger?: boolean; disabled?: boolean }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      disabled={disabled}
+      title={disabled ? "当前版本暂不支持编辑已创建计划" : undefined}
       className={cn(
         "flex h-10 w-full items-center gap-3 px-5 text-sm font-medium hover:bg-[#f8fafc]",
         danger ? "text-[#ff4d4f]" : "text-[#374151]",
+        disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
       )}
     >
       <span className={cn("text-[#94a3b8]", danger && "text-[#ff4d4f]")}>{icon}</span>
@@ -658,6 +697,27 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
   const [advancedTab, setAdvancedTab] = useState(0);
   const [activeContainerIndex, setActiveContainerIndex] = useState(0);
   const [form, setForm] = useState<BatchImageCreateForm>(() => defaultBatchImageForm());
+  const [namespaceOptions, setNamespaceOptions] = useState<Array<{ value: string; label: string }>>([{ value: "default", label: "default" }]);
+  const [refreshingNamespaces, setRefreshingNamespaces] = useState(false);
+  const [namespaceError, setNamespaceError] = useState("");
+
+  const refreshNamespaces = async () => {
+    setRefreshingNamespaces(true);
+    setNamespaceError("");
+    try {
+      const items = (await listNamespaces()).filter((item) => item.value !== "all");
+      if (items.length > 0) {
+        setNamespaceOptions(items);
+        setForm((current) => items.some((item) => item.value === current.namespace)
+          ? current
+          : { ...current, namespace: items[0].value });
+      }
+    } catch (err) {
+      setNamespaceError(err instanceof Error ? err.message : "命名空间刷新失败");
+    } finally {
+      setRefreshingNamespaces(false);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -665,6 +725,7 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
     setAdvancedTab(0);
     setActiveContainerIndex(0);
     setForm(defaultBatchImageForm());
+    void refreshNamespaces();
   }, [open]);
 
   const close = () => onOpenChange(false);
@@ -727,13 +788,11 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
                 <div className="flex gap-2">
                   <select value={form.namespace} onChange={(event) => setForm({ ...form, namespace: event.target.value })} className="blueedge-native-select h-10 flex-1 rounded-[10px] border-2 text-sm">
                     <option value="">请选择命名空间</option>
-                    <option value="riscv">riscv</option>
-                    <option value="default">default</option>
-                    <option value="kube-system">kube-system</option>
-                    <option value="production">production</option>
+                    {namespaceOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                   </select>
-                  <button type="button" className="action-button h-10 w-10"><RefreshCw className="h-[15px] w-[15px]" /></button>
+                  <button type="button" onClick={() => void refreshNamespaces()} disabled={refreshingNamespaces} className="action-button h-10 w-10" title="刷新命名空间"><RefreshCw className={cn("h-[15px] w-[15px]", refreshingNamespaces && "animate-spin")} /></button>
                 </div>
+                {namespaceError && <p className="mt-2 text-xs text-[var(--color-danger)]">{namespaceError}</p>}
               </CreateField>
               <CreateField label="实例" required>
                 <Input type="number" min={1} value={form.replicas} onChange={(event) => setForm({ ...form, replicas: event.target.value })} className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
@@ -1174,9 +1233,30 @@ function BatchKeyValueEditor({ items, onChange, addText, emptyText }: { items: B
   );
 }
 
-function BatchWorkloadDefinitionPage({ item, onBack, onEditYaml, onEditSection }: { item: BatchWorkload; onBack: () => void; onEditYaml: () => void; onEditSection: () => void }) {
+function BatchWorkloadDefinitionPage({ item, onBack }: { item: BatchWorkload; onBack: () => void }) {
   const [activeTab, setActiveTab] = useState<"containers" | "labels" | "access">("containers");
   const [containerTab, setContainerTab] = useState<"base" | "lifecycle" | "health" | "env" | "storage" | "security">("base");
+  const plan = item.raw?.plan;
+  const planTarget = (plan || (Array.isArray(item.raw?.targets) ? item.raw.targets[0] : null)) as BatchWorkloadPlan | Record<string, unknown> | null;
+  const planContainers = plan?.podTemplate.containers || (Array.isArray((planTarget as Record<string, unknown> | null)?.containers) ? (planTarget as { containers: BatchWorkloadPlanContainer[] }).containers : []);
+  const container = planContainers[0];
+  const planValue = (value: unknown) => value === undefined || value === null || value === "" ? "未配置" : String(value);
+  const booleanValue = (value: unknown) => value === true ? "已启用" : value === false ? "未启用" : "未配置";
+  const keyValueText = (value: unknown) => Array.isArray(value) && value.length
+    ? value.map((entry) => {
+      const item = entry as Partial<BatchKeyValue> & { name?: string };
+      const name = item.name || item.key;
+      return name ? `${name}=${item.value || ""}` : "";
+    }).filter(Boolean)
+    : value && typeof value === "object"
+      ? Object.entries(value as Record<string, unknown>).map(([key, item]) => `${key}=${String(item)}`)
+      : [];
+  const legacyPlanTarget = planTarget && !("podTemplate" in planTarget) ? planTarget as Record<string, unknown> : {};
+  const workloadLabels = plan?.metadata?.labels || legacyPlanTarget.workloadLabels;
+  const podLabels = plan?.podTemplate.labels || legacyPlanTarget.podLabels;
+  const workloadAnnotations = plan?.metadata?.annotations || legacyPlanTarget.workloadAnnotations;
+  const podAnnotations = plan?.podTemplate.annotations || legacyPlanTarget.podAnnotations;
+  const planNetwork = plan?.podTemplate.network;
   const containerTabs = [
     { id: "base", label: "基本信息" },
     { id: "lifecycle", label: "生命周期" },
@@ -1187,12 +1267,19 @@ function BatchWorkloadDefinitionPage({ item, onBack, onEditYaml, onEditSection }
   ] as const;
 
   const renderContainerDefinition = () => {
-    if (containerTab === "lifecycle") return <DefinitionGrid items={[["启动后处理", "未配置"], ["停止前处理", "未配置"], ["启动命令", "默认"], ["工作目录", "/"]]} />;
-    if (containerTab === "health") return <DefinitionGrid items={[["存活检查", "HTTP /healthz"], ["就绪检查", "HTTP /ready"], ["初始延迟", "10s"], ["检查周期", "5s"]]} />;
-    if (containerTab === "env") return <DefinitionGrid items={[["ENV", "production"], ["EDGE_MODE", "batch"], ["CONFIG_SOURCE", "configmap"], ["SECRET_REF", "未配置"]]} />;
-    if (containerTab === "storage") return <DefinitionGrid items={[["挂载卷", "config-volume"], ["挂载路径", "/etc/config"], ["存储类型", "ConfigMap"], ["读写权限", "只读"]]} />;
-    if (containerTab === "security") return <DefinitionGrid items={[["特权模式", "关闭"], ["只读根文件系统", "关闭"], ["运行用户", "默认"], ["权限提升", "禁止"]]} />;
-    return <DefinitionGrid items={[["容器镜像", item.image], ["资源配额", "CPU 100m / Memory 128Mi"], ["环境变量", "3 项"], ["启动命令", "默认"]]} />;
+    if (!container) return <div className="py-8 text-center text-sm text-[var(--color-text-tertiary)]">当前计划未保存容器配置</div>;
+    if (containerTab === "lifecycle") return <DefinitionGrid items={[["启动后处理", planValue(container.lifecycle?.postStart)], ["停止前处理", planValue(container.lifecycle?.preStop)], ["启动命令", planValue(container.command?.join(" "))], ["运行参数", planValue(container.args?.join(" "))]]} />;
+    if (containerTab === "health") return <DefinitionGrid items={[["存活检查", booleanValue(container.healthChecks?.liveness)], ["就绪检查", booleanValue(container.healthChecks?.readiness)], ["启动检查", booleanValue(container.healthChecks?.startup)], ["检查参数", "未配置"]]} />;
+    if (containerTab === "env") {
+      const envs = keyValueText(container.env);
+      return <DefinitionGrid items={envs.length ? envs.map((value, index) => [`环境变量 ${index + 1}`, value]) : [["环境变量", "未配置"]]} />;
+    }
+    if (containerTab === "storage") {
+      const volumes = Array.isArray(container.volumes) ? container.volumes : [];
+      return <DefinitionGrid items={volumes.length ? volumes.map((volume, index) => [`挂载卷 ${index + 1}`, `${planValue(volume.name)} · ${planValue(volume.type)} · ${planValue(volume.mountPath)}`]) : [["挂载卷", "未配置"]]} />;
+    }
+    if (containerTab === "security") return <DefinitionGrid items={[["特权模式", booleanValue(container.securityContext?.privileged)], ["只读根文件系统", booleanValue(container.securityContext?.readOnlyRootFilesystem)], ["运行用户", planValue(container.securityContext?.runAsUser)], ["权限提升", booleanValue(container.securityContext?.allowPrivilegeEscalation)]]} />;
+    return <DefinitionGrid items={[["容器镜像", planValue(container.image || item.image)], ["镜像拉取策略", planValue(container.imagePullPolicy)], ["CPU 请求/限制", `${planValue(container.resources?.requests?.cpu)} / ${planValue(container.resources?.limits?.cpu)}`], ["内存请求/限制", `${planValue(container.resources?.requests?.memory)} / ${planValue(container.resources?.limits?.memory)}`]]} />;
   };
 
   return (
@@ -1205,13 +1292,13 @@ function BatchWorkloadDefinitionPage({ item, onBack, onEditYaml, onEditSection }
             <p className="mt-1 text-xs text-[var(--color-text-secondary)]">{item.name}</p>
           </div>
         </div>
-        <button type="button" onClick={onEditYaml} className="inline-flex h-12 items-center gap-2 rounded-2xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">
+        <button type="button" disabled title="当前版本暂不支持编辑已创建计划" className="inline-flex h-12 cursor-not-allowed items-center gap-2 rounded-2xl bg-[#94a3b8] px-6 text-sm font-semibold text-white opacity-70">
           <Pencil className="h-4 w-4" />
-          编辑YAML
+          编辑 YAML（暂未支持）
         </button>
       </div>
 
-      <DefinitionSection title="基本信息" onEdit={onEditSection}>
+      <DefinitionSection title="基本信息">
         <div className="grid grid-cols-4 gap-x-8 gap-y-5">
           <InfoField label="批量工作负载名称" value={item.name} />
           <InfoField label="命名空间" value={item.namespace} />
@@ -1227,7 +1314,7 @@ function BatchWorkloadDefinitionPage({ item, onBack, onEditYaml, onEditSection }
       </div>
 
       {activeTab === "containers" && (
-        <DefinitionSection title="容器配置" onEdit={onEditSection}>
+        <DefinitionSection title="容器配置">
           <div className="mb-4 flex flex-wrap items-center gap-2">
             {containerTabs.map((tab) => (
               <button
@@ -1251,12 +1338,14 @@ function BatchWorkloadDefinitionPage({ item, onBack, onEditYaml, onEditSection }
       )}
 
       {activeTab === "labels" && (
-        <DefinitionSection title="标签与注解" onEdit={onEditSection}>
+        <DefinitionSection title="标签与注解">
           <div className="grid grid-cols-2 gap-4">
-            {["工作负载标签", "容器组标签", "工作负载注释", "容器组注释"].map((label) => (
-              <div key={label} className="rounded-2xl border border-[#f0f1f3] bg-[#f8f9fb] p-4">
-                <p className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">{label}</p>
-                <span className="inline-flex rounded-lg border border-[#e2e8f0] bg-white px-2.5 py-1 text-xs text-[#374151]">app={item.name}</span>
+            {[["工作负载标签", workloadLabels], ["容器组标签", podLabels], ["工作负载注释", workloadAnnotations], ["容器组注释", podAnnotations]].map(([label, values]) => (
+              <div key={String(label)} className="rounded-2xl border border-[#f0f1f3] bg-[#f8f9fb] p-4">
+                <p className="mb-2 text-xs font-medium text-[var(--color-text-secondary)]">{String(label)}</p>
+                <div className="flex flex-wrap gap-2">
+                  {keyValueText(values).length ? keyValueText(values).map((value) => <span key={value} className="inline-flex rounded-lg border border-[#e2e8f0] bg-white px-2.5 py-1 text-xs text-[#374151]">{value}</span>) : <span className="text-sm text-[var(--color-text-tertiary)]">未配置</span>}
+                </div>
               </div>
             ))}
           </div>
@@ -1264,12 +1353,12 @@ function BatchWorkloadDefinitionPage({ item, onBack, onEditYaml, onEditSection }
       )}
 
       {activeTab === "access" && (
-        <DefinitionSection title="访问配置" onEdit={onEditSection}>
+        <DefinitionSection title="访问配置">
           <div className="grid grid-cols-2 gap-4">
-            <InfoField label="网络类型" value="PortMapping" />
-            <InfoField label="服务端口" value="80 -> 30080" />
-            <InfoField label="协议" value="TCP" />
-            <InfoField label="负载均衡" value="NodePort" />
+            <InfoField label="网络类型" value={planValue(planNetwork?.type || legacyPlanTarget.networkType)} />
+            <InfoField label="端口配置" value={planNetwork?.ports?.length ? JSON.stringify(planNetwork.ports) : Array.isArray(legacyPlanTarget.ports) && legacyPlanTarget.ports.length ? JSON.stringify(legacyPlanTarget.ports) : "未配置"} />
+            <InfoField label="协议" value="未配置" />
+            <InfoField label="负载均衡" value="未配置" />
           </div>
         </DefinitionSection>
       )}
@@ -1324,17 +1413,45 @@ function DefinitionGrid({ items }: { items: [string, ReactNode][] }) {
   );
 }
 
+type DeployContainerForm = {
+  id: string;
+  name: string;
+  image: string;
+  imagePullPolicy: "Always" | "IfNotPresent" | "Never";
+  cpuRequest: string;
+  cpuLimit: string;
+  memoryRequest: string;
+  memoryLimit: string;
+  envs: BatchKeyValue[];
+  command: string;
+  args: string;
+};
+
+const createDeployContainer = (index: number, image = ""): DeployContainerForm => ({
+  id: `container-${Date.now()}-${index}`,
+  name: `container-${index + 1}`,
+  image,
+  imagePullPolicy: "IfNotPresent",
+  cpuRequest: "100m",
+  cpuLimit: "500m",
+  memoryRequest: "128Mi",
+  memoryLimit: "256Mi",
+  envs: [],
+  command: "",
+  args: "",
+});
+
 function DeployDialog({ item, onOpenChange, onCreatePlan }: {
   item: BatchWorkload | null;
   onOpenChange: (open: boolean) => void;
-  onCreatePlan: (payload: { targetGroups: string[]; replicas: number; containers: Array<{ name: string; image: string }> }) => Promise<void>;
+  onCreatePlan: (plan: BatchWorkloadPlan) => Promise<void>;
 }) {
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
   const [groupPickerOpen, setGroupPickerOpen] = useState(false);
   const [replicas, setReplicas] = useState("2");
   const [replicaEditable, setReplicaEditable] = useState(false);
   const [activeContainerIndex, setActiveContainerIndex] = useState(0);
-  const [containers, setContainers] = useState([{ id: "container-1", name: "container-1", image: "" }]);
+  const [containers, setContainers] = useState<DeployContainerForm[]>([createDeployContainer(0)]);
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
@@ -1347,8 +1464,8 @@ function DeployDialog({ item, onOpenChange, onCreatePlan }: {
     setReplicaEditable(false);
     setActiveContainerIndex(0);
     setContainers([
-      { id: "container-1", name: "container-1", image: item.image },
-      { id: "container-2", name: "container-2", image: "envoyproxy/envoy:v1.30-latest" },
+      createDeployContainer(0, item.image),
+      createDeployContainer(1, "envoyproxy/envoy:v1.30-latest"),
     ]);
     setSubmitted(false);
     setSubmitting(false);
@@ -1362,10 +1479,11 @@ function DeployDialog({ item, onOpenChange, onCreatePlan }: {
   const selectedNodeGroups = availableNodeGroups.filter((group) => selectedGroups.includes(group.name));
   const activeContainer = containers[activeContainerIndex] || containers[0];
   const showErrors = submitted;
+  const updateActiveContainer = (patch: Partial<DeployContainerForm>) => setContainers((current) => current.map((container, index) => index === activeContainerIndex ? { ...container, ...patch } : container));
   const toggleGroup = (name: string) => setSelectedGroups((current) => current.includes(name) ? current.filter((group) => group !== name) : [...current, name]);
   const addContainer = () => {
     const nextIndex = containers.length + 1;
-    setContainers((current) => [...current, { id: `container-${Date.now()}`, name: `container-${nextIndex}`, image: "" }]);
+    setContainers((current) => [...current, createDeployContainer(nextIndex - 1)]);
     setActiveContainerIndex(containers.length);
   };
   const removeContainer = (index: number) => {
@@ -1376,14 +1494,30 @@ function DeployDialog({ item, onOpenChange, onCreatePlan }: {
   const handleSubmit = async () => {
     setSubmitted(true);
     const count = Number(replicas);
-    if (selectedGroups.length === 0 || !Number.isInteger(count) || count <= 0 || !activeContainer?.image) return;
+    if (selectedGroups.length === 0 || !Number.isInteger(count) || count <= 0 || containers.some((container) => !container.name.trim() || !container.image.trim())) return;
     setSubmitting(true);
     setSubmitError("");
     try {
       await onCreatePlan({
+        namespace: item.namespace,
+        name: `${item.name}-deployment-plan`,
         targetGroups: selectedGroups,
         replicas: count,
-        containers: containers.map((container) => ({ name: container.name, image: container.image })),
+        workloadType: "Deployment",
+        podTemplate: {
+          containers: containers.map((container) => ({
+            name: container.name.trim(),
+            image: container.image.trim(),
+            imagePullPolicy: container.imagePullPolicy,
+            command: compactStringList(container.command),
+            args: compactStringList(container.args),
+            env: container.envs.filter((env) => env.key.trim()).map((env) => ({ name: env.key.trim(), value: env.value })),
+            resources: {
+              requests: { cpu: container.cpuRequest.trim(), memory: container.memoryRequest.trim() },
+              limits: { cpu: container.cpuLimit.trim(), memory: container.memoryLimit.trim() },
+            },
+          })),
+        },
       });
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "创建部署计划失败");
@@ -1506,17 +1640,13 @@ ${selectedGroups.length ? selectedGroups.map((group) => `    - ${group}`).join("
               <DeployDiffModule title="容器镜像" defaultOpen error={showErrors && !activeContainer?.image ? "值不能为空" : undefined} onViewYaml={() => setYamlPreview({ title: "容器镜像 YAML", yaml: buildDeployPatchYaml("容器镜像") })}>
                 <div className="space-y-5">
                   <div className="grid grid-cols-2 gap-4">
-                    <DeploySelectField label="操作行为" value="替换" options={["替换", "添加", "删除"]} />
-                    <DeploySelectField label="目标" value="镜像" options={["镜像", "镜像仓", "版本"]} />
+                    <div><DeployFieldLabel label="容器名称" /><Input value={activeContainer?.name || ""} onChange={(event) => updateActiveContainer({ name: event.target.value })} className="h-12 rounded-xl border-2" /></div>
+                    <div><DeployFieldLabel label="拉取策略" /><select value={activeContainer?.imagePullPolicy || "IfNotPresent"} onChange={(event) => updateActiveContainer({ imagePullPolicy: event.target.value as DeployContainerForm["imagePullPolicy"] })} className="blueedge-native-select h-12 w-full rounded-xl border-2"><option value="IfNotPresent">IfNotPresent</option><option value="Always">Always</option><option value="Never">Never</option></select></div>
                   </div>
                   <div>
-                    <DeployFieldLabel label="期望值" />
-                    <div className="grid grid-cols-[1fr_48px] gap-3">
-                      <DeployTextField value={activeContainer?.image || ""} placeholder="请输入期望值" error={showErrors && !activeContainer?.image} />
-                      <button type="button" className="action-button h-12 w-12 rounded-xl"><Trash2 className="h-4 w-4" /></button>
-                    </div>
+                    <DeployFieldLabel label="期望镜像" />
+                    <Input value={activeContainer?.image || ""} onChange={(event) => updateActiveContainer({ image: event.target.value })} placeholder="请输入镜像，例如 nginx:1.25" className={cn("h-12 rounded-xl border-2", showErrors && !activeContainer?.image && "border-[#ef4444]")} />
                   </div>
-                  <DeployAddButton>新增镜像规则</DeployAddButton>
                 </div>
               </DeployDiffModule>
 
@@ -1528,18 +1658,16 @@ ${selectedGroups.length ? selectedGroups.map((group) => `    - ${group}`).join("
                   </div>
                   <div>
                     <h4 className="mb-3 text-sm font-semibold text-[#111827]">CPU 配额</h4>
-                    <div className="grid grid-cols-3 gap-4">
-                      <DeployTextField label="请求值" value="100" />
-                      <DeployTextField label="限制值" value="500" />
-                      <DeploySelectField label="单位" value="m" options={["m", "Core"]} />
+                    <div className="grid grid-cols-2 gap-4">
+                      <div><DeployFieldLabel label="请求值" /><Input value={activeContainer?.cpuRequest || ""} onChange={(event) => updateActiveContainer({ cpuRequest: event.target.value })} placeholder="100m" className="h-12 rounded-xl border-2" /></div>
+                      <div><DeployFieldLabel label="限制值" /><Input value={activeContainer?.cpuLimit || ""} onChange={(event) => updateActiveContainer({ cpuLimit: event.target.value })} placeholder="500m" className="h-12 rounded-xl border-2" /></div>
                     </div>
                   </div>
                   <div>
                     <h4 className="mb-3 text-sm font-semibold text-[#111827]">内存配额</h4>
-                    <div className="grid grid-cols-3 gap-4">
-                      <DeployTextField label="请求值" value="128" />
-                      <DeployTextField label="限制值" value="256" />
-                      <DeploySelectField label="单位" value="Mi" options={["Mi", "Gi"]} />
+                    <div className="grid grid-cols-2 gap-4">
+                      <div><DeployFieldLabel label="请求值" /><Input value={activeContainer?.memoryRequest || ""} onChange={(event) => updateActiveContainer({ memoryRequest: event.target.value })} placeholder="128Mi" className="h-12 rounded-xl border-2" /></div>
+                      <div><DeployFieldLabel label="限制值" /><Input value={activeContainer?.memoryLimit || ""} onChange={(event) => updateActiveContainer({ memoryLimit: event.target.value })} placeholder="256Mi" className="h-12 rounded-xl border-2" /></div>
                     </div>
                   </div>
                   <div className="rounded-xl border border-[#fde68a] bg-[#fffbeb] px-4 py-3">
@@ -1548,7 +1676,7 @@ ${selectedGroups.length ? selectedGroups.map((group) => `    - ${group}`).join("
                         <p className="text-sm font-semibold text-[#92400e]">GPU 配额</p>
                         <p className="mt-2 text-sm leading-7 text-[#92400e]">集群未启用 GPU 卡，如需使用 GPU 算力，请前往集群启用 GPU。</p>
                       </div>
-                      <button type="button" className="shrink-0 text-sm font-semibold text-[#2563eb]">启用 GPU</button>
+                      <button type="button" disabled className="shrink-0 cursor-not-allowed text-sm font-semibold text-[#92400e] opacity-70" title="当前版本暂未支持 GPU 计划字段">暂未支持</button>
                     </div>
                   </div>
                 </div>
@@ -1556,13 +1684,8 @@ ${selectedGroups.length ? selectedGroups.map((group) => `    - ${group}`).join("
 
               <DeployDiffModule title="环境变量" onViewYaml={() => setYamlPreview({ title: "环境变量 YAML", yaml: buildDeployPatchYaml("环境变量") })}>
                 <div className="space-y-5">
-                  <div className="grid grid-cols-2 gap-4">
-                    <DeploySelectField label="类型" value="键值对" options={["键值对", "资源引用", "配置项键值导入", "密钥键值导入", "变量引用"]} />
-                    <DeploySelectField label="目标" value="替换" options={["替换", "添加", "删除"]} />
-                    <DeployTextField label="变量名" value="ENV" placeholder="请选择或输入变量名" />
-                    <DeployTextField label="值" value="production" placeholder="请输入值" />
-                  </div>
-                  <DeployAddButton>新增环境变量</DeployAddButton>
+                  {(activeContainer?.envs || []).map((env) => <div key={env.id} className="grid grid-cols-[1fr_1fr_48px] gap-3"><Input value={env.key} onChange={(event) => updateActiveContainer({ envs: activeContainer.envs.map((item) => item.id === env.id ? { ...item, key: event.target.value } : item) })} placeholder="变量名" className="h-12 rounded-xl border-2" /><Input value={env.value} onChange={(event) => updateActiveContainer({ envs: activeContainer.envs.map((item) => item.id === env.id ? { ...item, value: event.target.value } : item) })} placeholder="值" className="h-12 rounded-xl border-2" /><button type="button" onClick={() => updateActiveContainer({ envs: activeContainer.envs.filter((item) => item.id !== env.id) })} className="action-button h-12 w-12 rounded-xl"><Trash2 className="h-4 w-4" /></button></div>)}
+                  <button type="button" onClick={() => updateActiveContainer({ envs: [...(activeContainer?.envs || []), { id: `env-${Date.now()}`, key: "", value: "" }] })} className="inline-flex h-10 items-center gap-2 rounded-xl border px-4 text-sm font-semibold"><Plus className="h-4 w-4" />新增环境变量</button>
                 </div>
               </DeployDiffModule>
 
@@ -1570,20 +1693,12 @@ ${selectedGroups.length ? selectedGroups.map((group) => `    - ${group}`).join("
                 <div className="space-y-6">
                   <div>
                     <h4 className="mb-3 text-sm font-semibold text-[#111827]">运行命令</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <DeploySelectField label="操作行为" value="添加" options={["添加", "删除"]} />
-                      <DeployTextField label="修改对象" value="/bin/sh" placeholder="请选择或输入命令对象" />
-                    </div>
+                    <Input value={activeContainer?.command || ""} onChange={(event) => updateActiveContainer({ command: event.target.value })} placeholder="例如 /bin/sh -c" className="h-12 rounded-xl border-2" />
                   </div>
                   <div>
                     <h4 className="mb-3 text-sm font-semibold text-[#111827]">运行参数</h4>
-                    <div className="grid grid-cols-[1fr_1fr_48px] gap-4">
-                      <DeploySelectField label="操作行为" value="添加" options={["添加", "删除"]} />
-                      <DeployTextField label="期望值" value="-c echo start" placeholder="请输入运行参数" />
-                      <div className="flex items-end"><button type="button" className="action-button h-12 w-12 rounded-xl"><Trash2 className="h-4 w-4" /></button></div>
-                    </div>
+                    <Input value={activeContainer?.args || ""} onChange={(event) => updateActiveContainer({ args: event.target.value })} placeholder="例如 echo start" className="h-12 rounded-xl border-2" />
                   </div>
-                  <DeployAddButton>新增命令或参数</DeployAddButton>
                 </div>
               </DeployDiffModule>
             </section>
@@ -1675,43 +1790,13 @@ function DeployDiffModule({ title, children, error, defaultOpen = false, onViewY
         )}
       </div>
       {error && <p className="-mt-1 px-4 pb-2 text-xs text-[#ef4444]">{error}</p>}
-      {open && <div className="px-5 pb-8 pt-4">{children}<div className="mt-8 flex justify-end"><button type="button" className="h-12 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white">确认</button></div></div>}
+      {open && <div className="px-5 pb-8 pt-4">{children}</div>}
     </div>
   );
 }
 
 function DeployFieldLabel({ label }: { label: string }) {
   return <Label className="mb-2 block text-sm font-medium text-[#4b5563]">{label}</Label>;
-}
-
-function DeployTextField({ label, value, placeholder, error = false }: { label?: string; value: string; placeholder?: string; error?: boolean }) {
-  return (
-    <div>
-      {label && <DeployFieldLabel label={label} />}
-      <Input defaultValue={value} placeholder={placeholder} className={cn("h-12 rounded-xl border-2 border-[#e2e8f0] px-4 text-sm shadow-sm focus-visible:ring-0", error && "border-[#ef4444]")} />
-      {error && <p className="mt-1 text-xs text-[#ef4444]">值不能为空</p>}
-    </div>
-  );
-}
-
-function DeploySelectField({ label, value, options }: { label: string; value: string; options: string[] }) {
-  return (
-    <div>
-      <DeployFieldLabel label={label} />
-      <select defaultValue={value} className="blueedge-native-select h-12 w-full rounded-xl border-2 border-[#e2e8f0] bg-white px-4 text-sm font-semibold text-[#111827] shadow-sm">
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
-      </select>
-    </div>
-  );
-}
-
-function DeployAddButton({ children }: { children: ReactNode }) {
-  return (
-    <button type="button" className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#dfe5ee] bg-white px-4 text-sm font-semibold text-[#111827] hover:bg-[#f8fafc]">
-      <Plus className="h-4 w-4" />
-      {children}
-    </button>
-  );
 }
 
 function CreateField({ label, required, children, compact = false }: { label: string; required?: boolean; children: ReactNode; compact?: boolean }) {

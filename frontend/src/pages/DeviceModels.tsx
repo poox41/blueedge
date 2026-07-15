@@ -11,12 +11,13 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Search, Plus, RefreshCw, Trash2, Copy, ChevronLeft, ChevronRight, X } from "lucide-react";
-import { createDeviceModelResource, deleteDeviceModelResource } from "@/api/services/resources";
+import { createDeviceModelResource, deleteDeviceModelResource, listNamespaces } from "@/api/services/resources";
 import { getDeviceModelSummary, listDeviceModelSummaries } from "@/api/services/product";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { DeviceModelSummary } from "@/api/adapters/device-model-summary.adapter";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { useNamespace } from "@/contexts/NamespaceContext";
 
 interface DM { namespace: string; name: string; properties: number; createdAt: string; description?: string; protocol?: string; raw: KubeResource | any; devices?: DeviceModelSummary["devices"]; }
 type DeviceModelProperty = {
@@ -128,7 +129,10 @@ function buildDeviceModelResource(form: { name: string; namespace: string; prope
 }
 
 export function DeviceModels() {
+  const { selectedNamespace } = useNamespace();
   const namespaces = useNamespaceOptions();
+  const [refreshedNamespaces, setRefreshedNamespaces] = useState<ReturnType<typeof useNamespaceOptions> | null>(null);
+  const [refreshingNamespaces, setRefreshingNamespaces] = useState(false);
   const [data, setData] = useState<DM[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -169,11 +173,29 @@ export function DeviceModels() {
     void loadData();
   }, [loadData]);
 
+  const refreshNamespaces = async () => {
+    setRefreshingNamespaces(true);
+    try {
+      const items = (await listNamespaces()).filter((item) => item.value !== "all");
+      if (items.length > 0) {
+        setRefreshedNamespaces(items);
+        if (!items.some((item) => item.value === form.namespace)) {
+          setForm((current) => ({ ...current, namespace: items[0].value }));
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "命名空间刷新失败");
+    } finally {
+      setRefreshingNamespaces(false);
+    }
+  };
+
   const filtered = useMemo(() => {
     let r = data;
+    if (selectedNamespace !== "all") r = r.filter(d => d.namespace === selectedNamespace);
     if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
     return r;
-  }, [data, search]);
+  }, [data, search, selectedNamespace]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
@@ -212,12 +234,12 @@ export function DeviceModels() {
     try {
       await createDeviceModelResource(resource);
       await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "创建设备模型失败");
-    } finally {
       setCreateOpen(false);
       setCreateStep(1);
       setForm({ name: "", namespace: "default", properties: 0, protocol: "MQTT", description: "", propertiesText: "[]", labels: [{ id: "label-1", key: "", value: "" }] });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "创建设备模型失败");
+    } finally {
       setIsLoading(false);
     }
   };
@@ -276,6 +298,7 @@ export function DeviceModels() {
               <div className="shrink-0 border-b border-[#eef1f5] px-7 py-5">
                 <CreateStepper current={createStep} steps={["基础信息", "设备配置"]} />
               </div>
+              {error && <div className="mx-7 mt-4 rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#dc2626]">{error}</div>}
               <div className="min-h-0 flex-1 overflow-y-auto px-7 py-7">
                 {createStep === 1 ? (
                   <div className="space-y-6">
@@ -289,10 +312,10 @@ export function DeviceModels() {
                     </PrototypeField>
                     <PrototypeField label="命名空间" required>
                       <div className="grid grid-cols-[1fr_48px] gap-3">
-                        <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value })} className="blueedge-native-select !h-10 !rounded-xl !text-sm">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
-                        <Button type="button" variant="outline" className="h-10 rounded-xl px-0"><RefreshCw className="h-4 w-4" /></Button>
+                        <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value })} className="blueedge-native-select !h-10 !rounded-xl !text-sm">{(refreshedNamespaces || namespaces.filter(n => n.value !== "all")).map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
+                        <Button type="button" variant="outline" className="h-10 rounded-xl px-0" onClick={() => void refreshNamespaces()} disabled={refreshingNamespaces} title="刷新命名空间"><RefreshCw className={cn("h-4 w-4", refreshingNamespaces && "animate-spin")} /></Button>
                       </div>
-                      <button type="button" className="mt-2 text-sm font-semibold text-[var(--color-brand)]">+ 创建命名空间</button>
+                      <button type="button" disabled className="mt-2 cursor-not-allowed text-sm font-semibold text-[var(--color-text-tertiary)]" title="当前版本暂未开放">+ 创建命名空间（暂未开放）</button>
                     </PrototypeField>
                     <PrototypeField label="描述">
                       <Textarea placeholder="请输入模型描述（内容无限制，长度限制为 63 个字符）" value={form.description} maxLength={63} onChange={e => setForm({ ...form, description: e.target.value })} className="min-h-[82px] rounded-xl text-sm" />

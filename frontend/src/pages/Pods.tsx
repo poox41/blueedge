@@ -17,13 +17,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Copy, Eye, Terminal, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { PageHeader } from "@/components/common/PageHeader";
 import { formatMemory, listPodMetrics, type PodMetric } from "@/api/services/metrics";
 import { getPodSummary, getResourceLogs, type ClusterEvent } from "@/api/services/product";
 import { deletePodResource, listPods } from "@/api/services/resources";
 import { cn } from "@/lib/utils";
 import type { KubeResource } from "@/types/kubeedge";
+import { useNamespace } from "@/contexts/NamespaceContext";
 
 interface ContainerSummary {
   name: string;
@@ -174,7 +174,7 @@ export function Pods() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [namespace, setNamespace] = useState("all");
+  const { selectedNamespace: namespace } = useNamespace();
   const [page, setPage] = useState(1);
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<PodRow | null>(null);
@@ -293,7 +293,6 @@ export function Pods() {
 
       <div className="flex items-center justify-end gap-4">
         <div className="flex items-center gap-3">
-          <NamespaceSelector value={namespace} onChange={(value) => { setNamespace(value); setPage(1); }} />
           <span className="text-sm text-[var(--color-text-tertiary)]">共 {filtered.length} 条</span>
         </div>
       </div>

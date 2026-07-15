@@ -5,6 +5,9 @@ export interface DeviceTwinSummaryItem {
   reportedValue: string;
   status: "synced" | "outOfSync" | "unknown" | string;
   lastUpdatedAt: string;
+  collectIntervalSeconds?: number;
+  reportIntervalSeconds?: number;
+  accessConfigured?: boolean;
   metadata: Record<string, unknown>;
 }
 
@@ -39,6 +42,12 @@ export interface DeviceSummary {
     name: string;
   };
   raw?: any;
+  extension?: {
+    storage: "configMap";
+    configMapName: string;
+    accessConfigYaml: string;
+    twinAccessConfigs: Record<string, string>;
+  } | null;
 }
 
 export interface DeviceSummaryListResponse {

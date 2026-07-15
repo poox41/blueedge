@@ -5,8 +5,54 @@ import {
   listDeviceModelSummaries,
   listDeviceSummaries,
 } from "../services/device.service.js";
+import {
+  createDeviceConfig,
+  deleteDeviceConfig,
+  updateDeviceConfig,
+} from "../services/device-config.service.js";
+import { DeviceConfigError } from "../utils/device-config.js";
+
+function sendDeviceError(res: express.Response, error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : fallback;
+  const status = error instanceof DeviceConfigError
+    ? error.status
+    : message.includes("failed: 404")
+      ? 404
+      : message.includes("failed: 409")
+        ? 409
+        : 500;
+  res.status(status).json({ message });
+}
 
 export function registerDeviceRoutes(app: express.Express) {
+  app.post("/blueedge/devices", async (req, res) => {
+    try {
+      const input = req.body;
+      await createDeviceConfig(input);
+      res.status(201).json(await getDeviceSummary(input.namespace, input.name));
+    } catch (error) {
+      sendDeviceError(res, error, "device create API is unavailable");
+    }
+  });
+
+  app.put("/blueedge/devices/:namespace/:name", async (req, res) => {
+    try {
+      await updateDeviceConfig(req.params.namespace, req.params.name, req.body);
+      res.json(await getDeviceSummary(req.params.namespace, req.params.name));
+    } catch (error) {
+      sendDeviceError(res, error, "device update API is unavailable");
+    }
+  });
+
+  app.delete("/blueedge/devices/:namespace/:name", async (req, res) => {
+    try {
+      await deleteDeviceConfig(req.params.namespace, req.params.name);
+      res.status(204).send();
+    } catch (error) {
+      sendDeviceError(res, error, "device delete API is unavailable");
+    }
+  });
+
   app.get("/blueedge/devicemodels/summary", async (req, res) => {
     try {
       const namespace = typeof req.query.namespace === "string" && req.query.namespace !== "all" ? req.query.namespace : undefined;

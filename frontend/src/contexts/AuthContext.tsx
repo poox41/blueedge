@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback } from "react";
+import { createContext, useContext, useState, useCallback, useEffect } from "react";
 import { clearBlueEdgeToken, getBlueEdgeToken, loginRequest, setBlueEdgeToken } from "@/api/request";
 
 interface AuthContextType {
@@ -30,6 +30,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(() => {
     clearBlueEdgeToken();
     setIsAuthenticated(false);
+  }, []);
+
+  useEffect(() => {
+    const handleUnauthorized = () => setIsAuthenticated(false);
+    window.addEventListener("blueedge:unauthorized", handleUnauthorized);
+    return () => window.removeEventListener("blueedge:unauthorized", handleUnauthorized);
   }, []);
 
   return (

@@ -10,7 +10,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { AlertTriangle, Trash2, ChevronLeft, ChevronRight, Copy, Ban, CheckCircle2, MoreHorizontal, Pause, Pencil, Plus, RefreshCw, Search } from "lucide-react";
+import { AlertTriangle, Trash2, ChevronLeft, ChevronRight, Copy, Ban, CheckCircle2, MoreHorizontal, Pause, Pencil, Plus, RefreshCw, Search, X } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { formatMemory, listNodeMetrics } from "@/api/services/metrics";
 import { deleteNodeResource, getNode, listNodes, listPods, updateNodeResource } from "@/api/services/resources";
@@ -25,7 +25,6 @@ interface Node {
   name: string; role: string; status: string; statusColor: string; labels: number;
   cpu: string; memory: string; ip: string; taints: number; pods: number; createdAt: string;
   raw: KubeResource; unschedulable: boolean;
-  localOnly?: boolean;
   alias?: string;
   labelPreview?: string;
   extraLabels?: number;
@@ -33,6 +32,9 @@ interface Node {
   cpuCapacity?: string;
   memoryUsage?: string;
   memoryCapacity?: string;
+  metricsAvailable?: boolean;
+  cpuUsagePercent?: number;
+  memoryUsagePercent?: number;
   version?: string;
   os?: string; kernel?: string; kubelet?: string; containerRuntime?: string;
   architecture?: string; capacity?: { cpu: string; memory: string; storage: string };
@@ -41,9 +43,7 @@ interface Node {
 
 interface AccessConfig extends AccessConfigUiModel {
   nodeLabel: string;
-  driver: "systemd" | "cgroups";
   address: string;
-  labels: Record<string, string>;
 }
 
 type AccessConfigForm = {
@@ -62,16 +62,22 @@ type AccessConfigForm = {
   labelRules: Array<{ key: string; value: string }>;
 };
 
+type AccessLabelDraft = {
+  id: string;
+  key: string;
+  value: string;
+};
+
 const defaultAccessForm: AccessConfigForm = {
   name: "",
   edgeUnitRef: "",
   nodeName: "",
   architecture: "amd64",
   os: "linux",
-  kubeEdgeVersion: "v1.21.0",
+  kubeEdgeVersion: "",
   driver: "systemd",
   criAddress: "",
-  address: "127.0.0.1:10000",
+  address: "",
   protocol: "websocket",
   registry: "registry.cn-beijing.aliyuncs.com/kubeedge",
   description: "",
@@ -113,6 +119,27 @@ function formatCapacityMemory(value: unknown): string {
   return formatMemory(amount);
 }
 
+function cpuCapacityMillicores(value: unknown): number | null {
+  if (typeof value !== "string" || !value) return null;
+  const amount = Number.parseFloat(value.endsWith("m") ? value.slice(0, -1) : value);
+  if (!Number.isFinite(amount)) return null;
+  return value.endsWith("m") ? amount : amount * 1000;
+}
+
+function memoryCapacityBytes(value: unknown): number | null {
+  if (typeof value !== "string" || !value) return null;
+  const match = value.match(/^(\d+(?:\.\d+)?)(Ki|Mi|Gi|Ti)?$/);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  const multipliers: Record<string, number> = { Ki: 1024, Mi: 1024 ** 2, Gi: 1024 ** 3, Ti: 1024 ** 4 };
+  return amount * (multipliers[match[2] || ""] || 1);
+}
+
+function usagePercent(used: number | null, capacity: number | null): number | undefined {
+  if (used === null || capacity === null || capacity <= 0) return undefined;
+  return Math.max(0, Math.min(100, Math.round((used / capacity) * 100)));
+}
+
 function toPageNode(
   node: EdgeNodeView,
   metricsByName: Map<string, { cpuMillicores: number; memoryBytes: number }>,
@@ -129,6 +156,8 @@ function toPageNode(
   const memoryCapacity = formatCapacityMemory(allocatable.memory || capacity.memory);
   const cpuUsage = metrics ? `${Math.min(100, Math.round((metrics.cpuMillicores / Math.max(Number.parseInt(String(allocatable.cpu || capacity.cpu || "1000"), 10) || 1000, 1)) * 100))}%` : "-";
   const memoryUsage = metrics ? formatMemory(metrics.memoryBytes) : "-";
+  const cpuUsagePercent = metrics ? usagePercent(metrics.cpuMillicores, cpuCapacityMillicores(allocatable.cpu || capacity.cpu)) : undefined;
+  const memoryUsagePercent = metrics ? usagePercent(metrics.memoryBytes, memoryCapacityBytes(allocatable.memory || capacity.memory)) : undefined;
   return {
     name: node.name,
     role: node.role === "unknown" ? "cloud" : node.role,
@@ -150,6 +179,9 @@ function toPageNode(
     cpuCapacity,
     memoryUsage: metrics ? `${memoryUsage}` : "-",
     memoryCapacity,
+    metricsAvailable: Boolean(metrics),
+    cpuUsagePercent,
+    memoryUsagePercent,
     version: node.kubeletVersion,
     os: node.osImage,
     kernel: nodeInfo.kernelVersion || "-",
@@ -197,10 +229,7 @@ ${(n.conditions || []).map(c => `  - type: ${c.type}\n    status: "${c.status}"`
 function toAccessConfigRow(item: AccessConfigUiModel): AccessConfig {
   return {
     ...item,
-    driver: "systemd",
     address: item.cloudCoreAddress,
-    labels: { "blueedge.io/edge-unit": item.edgeUnitRef },
-    nodeLabel: `blueedge.io/edge-unit: ${item.edgeUnitRef}`,
   };
 }
 
@@ -225,8 +254,8 @@ export function Nodes() {
   const [accessCreateOpen, setAccessCreateOpen] = useState(false);
   const [accessCancelConfirmOpen, setAccessCancelConfirmOpen] = useState(false);
   const [accessLabelTarget, setAccessLabelTarget] = useState<AccessConfig | null>(null);
-  const [accessLabelKey, setAccessLabelKey] = useState("");
-  const [accessLabelValue, setAccessLabelValue] = useState("");
+  const [accessLabelDrafts, setAccessLabelDrafts] = useState<AccessLabelDraft[]>([]);
+  const [accessLabelSearch, setAccessLabelSearch] = useState("");
   const [accessForm, setAccessForm] = useState<AccessConfigForm>(defaultAccessForm);
   const pageSize = 10;
 
@@ -238,10 +267,9 @@ export function Nodes() {
         listEdgeUnits().catch(() => ({ items: [] })),
       ]);
       setAccessConfigs(configsResult.items.map(toAccessConfigUiModel).map(toAccessConfigRow));
-      setEdgeUnitOptions(edgeUnitsResult.items.map(toHomeEdgeUnit).map((item) => ({ name: item.name, version: item.version === "未配置" ? "v1.21.0" : item.version })));
+      setEdgeUnitOptions(edgeUnitsResult.items.map(toHomeEdgeUnit).map((item) => ({ name: item.name, version: item.version === "未配置" ? "" : item.version })));
     } catch (err) {
       setAccessError(err instanceof Error ? err.message : "接入配置加载失败");
-      setAccessConfigs([]);
     }
   }, []);
 
@@ -309,19 +337,36 @@ export function Nodes() {
     setAliasTarget(n);
     setAliasValue(n.alias || n.name);
   };
-  const saveAlias = () => {
+  const saveAlias = async () => {
     if (!aliasTarget) return;
     const nextAlias = aliasValue.trim() || aliasTarget.name;
-    setData((prev) => prev.map((item) => item.name === aliasTarget.name ? { ...item, alias: nextAlias } : item));
-    setSelected((prev) => prev?.name === aliasTarget.name ? { ...prev, alias: nextAlias } : prev);
-    setAliasTarget(null);
-    setAliasValue("");
+    setIsLoading(true);
+    setError("");
+    try {
+      const detail = await getNode(aliasTarget.name);
+      const resource = detail.raw;
+      resource.metadata = {
+        ...(resource.metadata || {}),
+        annotations: {
+          ...(resource.metadata?.annotations || {}),
+          "blueedge.io/alias": nextAlias,
+        },
+      };
+      await updateNodeResource(resource);
+      await loadNodes();
+      setSelected((current) => current?.name === aliasTarget.name ? { ...current, alias: nextAlias, raw: resource } : current);
+      setAliasTarget(null);
+      setAliasValue("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "节点别名保存失败");
+    } finally {
+      setIsLoading(false);
+    }
   };
   const openAccessLabelDialog = (item: AccessConfig) => {
-    const [key = "", value = ""] = Object.entries(item.labels)[0] || [];
     setAccessLabelTarget(item);
-    setAccessLabelKey(key);
-    setAccessLabelValue(value);
+    setAccessLabelDrafts(Object.entries(item.labels).map(([key, value], index) => ({ id: `existing-${index}`, key, value })));
+    setAccessLabelSearch("");
   };
   const saveAccessLabels = async () => {
     if (!accessLabelTarget) return;
@@ -334,13 +379,16 @@ export function Nodes() {
         kubeEdgeVersion: accessLabelTarget.kubeEdgeVersion,
         cloudCoreAddress: accessLabelTarget.cloudCoreAddress,
         protocol: accessLabelTarget.protocol,
+        ...(accessLabelTarget.driver ? { driver: accessLabelTarget.driver } : {}),
+        criAddress: accessLabelTarget.criAddress,
         registry: accessLabelTarget.registry,
-        description: accessLabelValue.trim() || accessLabelTarget.description,
+        description: accessLabelTarget.description,
+        labels: Object.fromEntries(accessLabelDrafts.filter((label) => label.key.trim()).map((label) => [label.key.trim(), label.value.trim()])),
       });
       await loadAccessConfigs();
       setAccessLabelTarget(null);
-      setAccessLabelKey("");
-      setAccessLabelValue("");
+      setAccessLabelDrafts([]);
+      setAccessLabelSearch("");
     } catch (err) {
       setAccessError(err instanceof Error ? err.message : "接入配置更新失败");
     }
@@ -368,8 +416,11 @@ export function Nodes() {
       kubeEdgeVersion: accessForm.kubeEdgeVersion,
       cloudCoreAddress: accessForm.address,
       protocol: accessForm.protocol === "QUIC" ? "quic" : accessForm.protocol,
+      driver: accessForm.driver,
+      criAddress: accessForm.criAddress,
       registry: accessForm.registry,
       description: accessForm.description,
+      labels: Object.fromEntries(accessForm.labelRules.filter((rule) => rule.key.trim()).map((rule) => [rule.key.trim(), rule.value.trim()])),
     };
     try {
       await createAccessConfigResource(payload);
@@ -405,6 +456,13 @@ export function Nodes() {
         extraLabels: Math.max(Object.keys(item.labels || {}).length - 1, 0),
         cpuUsage: item.metrics.available && item.metrics.cpuUsage !== null ? `${item.metrics.cpuUsage}m` : "-",
         memoryUsage: item.metrics.available && item.metrics.memoryUsage !== null ? formatMemory(item.metrics.memoryUsage) : "-",
+        metricsAvailable: item.metrics.available,
+        cpuUsagePercent: item.metrics.available
+          ? usagePercent(item.metrics.cpuUsage, cpuCapacityMillicores(raw.status?.allocatable?.cpu || raw.status?.capacity?.cpu))
+          : undefined,
+        memoryUsagePercent: item.metrics.available
+          ? usagePercent(item.metrics.memoryUsage, memoryCapacityBytes(raw.status?.allocatable?.memory || raw.status?.capacity?.memory))
+          : undefined,
         version: item.kubeletVersion || item.kubeEdgeVersion || n.version,
         os: item.os || n.os,
         kernel: item.kernelVersion || "-",
@@ -432,16 +490,6 @@ export function Nodes() {
 
   const confirmDelete = async () => {
     if (!deleteItem) return;
-    if (deleteItem.localOnly) {
-      setData((prev) => prev.filter((item) => item.name !== deleteItem.name));
-      setDeleteOpen(false);
-      setDeleteItem(null);
-      if (selected?.name === deleteItem.name) {
-        setDetailOpen(false);
-        setSelected(null);
-      }
-      return;
-    }
     setIsLoading(true);
     setError("");
     try {
@@ -461,22 +509,6 @@ export function Nodes() {
   };
 
   const toggleScheduling = async (node: Node) => {
-    if (node.localOnly) {
-      const nextNode = {
-        ...node,
-        unschedulable: !node.unschedulable,
-        raw: {
-          ...node.raw,
-          spec: {
-            ...(node.raw.spec || {}),
-            unschedulable: !node.unschedulable,
-          },
-        },
-      };
-      setData((prev) => prev.map((item) => item.name === node.name ? nextNode : item));
-      setSelected(nextNode);
-      return;
-    }
     setIsLoading(true);
     setError("");
     try {
@@ -543,7 +575,7 @@ export function Nodes() {
               className="h-10 rounded-xl border-[var(--color-input-border)] bg-white pl-11 text-sm"
             />
           </div>
-          <Button variant="outline" size="sm" onClick={loadNodes} className="blueedge-muted-button h-10 w-10 rounded-xl border-[var(--color-border-strong)] p-0" title="刷新">
+          <Button variant="outline" size="sm" onClick={() => void (activeTab === "nodes" ? loadNodes() : loadAccessConfigs())} className="blueedge-muted-button h-10 w-10 rounded-xl border-[var(--color-border-strong)] p-0" title="刷新">
             <span className="sr-only">刷新</span>
             <RefreshCw className="h-4 w-4" />
           </Button>
@@ -641,7 +673,7 @@ export function Nodes() {
                 <TableRow key={item.name} className="h-[69px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
                   <TableCell className="px-4 py-3 text-sm font-semibold text-[var(--color-brand)]">{item.name}</TableCell>
                   <TableCell className="px-4 py-3"><span className="inline-block max-w-[360px] truncate rounded-md bg-[var(--color-bg-soft)] px-2 py-1 text-sm text-[var(--color-text-primary)]">{item.nodeLabel}</span></TableCell>
-                  <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{item.driver}</TableCell>
+                  <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{item.driver || "未配置"}</TableCell>
                   <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{item.address}</TableCell>
                   <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{item.protocol}</TableCell>
                   <TableCell className="px-4 py-3 text-sm text-[var(--color-text-tertiary)]">{item.createdAt}</TableCell>
@@ -705,7 +737,7 @@ export function Nodes() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAliasTarget(null)}>取消</Button>
-            <Button onClick={saveAlias}>保存</Button>
+            <Button onClick={() => void saveAlias()} disabled={isLoading}>{isLoading ? "保存中..." : "保存"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -745,7 +777,7 @@ export function Nodes() {
                 </select>
               </AccessField>
               <AccessField label="KubeEdge 版本" required>
-                <Input value={accessForm.kubeEdgeVersion} onChange={(event) => setAccessForm({ ...accessForm, kubeEdgeVersion: event.target.value })} placeholder="v1.21.0" className="h-11 rounded-xl" />
+                <Input value={accessForm.kubeEdgeVersion} onChange={(event) => setAccessForm({ ...accessForm, kubeEdgeVersion: event.target.value })} placeholder="请输入实际 KubeEdge 版本" className="h-11 rounded-xl" />
               </AccessField>
             </div>
             <AccessField label="驱动方式" required>
@@ -823,7 +855,7 @@ export function Nodes() {
           </div>
           <DialogFooter className="border-t border-[var(--color-border)] px-7 py-5">
             <Button variant="outline" className="h-10 rounded-xl px-5" onClick={requestCloseAccessCreate}>取消</Button>
-            <Button className="h-10 rounded-xl px-6" onClick={() => void createAccessConfig()} disabled={!accessForm.name.trim() || !accessForm.edgeUnitRef || !accessForm.nodeName.trim() || !accessForm.address.trim()}>确定</Button>
+            <Button className="h-10 rounded-xl px-6" onClick={() => void createAccessConfig()} disabled={!accessForm.name.trim() || !accessForm.edgeUnitRef || !accessForm.nodeName.trim() || !accessForm.kubeEdgeVersion.trim() || !accessForm.address.trim()}>确定</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -849,25 +881,64 @@ export function Nodes() {
       <Dialog open={!!accessLabelTarget} onOpenChange={(open) => {
         if (!open) {
           setAccessLabelTarget(null);
-          setAccessLabelKey("");
-          setAccessLabelValue("");
+          setAccessLabelDrafts([]);
+          setAccessLabelSearch("");
         }
       }}>
-        <DialogContent className="max-w-[460px] rounded-2xl">
-          <DialogHeader>
-            <DialogTitle className="text-base">修改标签</DialogTitle>
+        <DialogContent className="max-w-[680px] gap-0 overflow-hidden rounded-[24px] p-0">
+          <DialogHeader className="border-b border-[var(--color-border)] px-8 py-6">
+            <DialogTitle className="text-lg font-semibold">修改标签 — {accessLabelTarget?.name}</DialogTitle>
           </DialogHeader>
-          <div className="space-y-3 py-2">
-            <div className="text-sm text-[var(--color-text-secondary)]">配置：<span className="font-semibold text-[var(--color-text-primary)]">{accessLabelTarget?.name}</span></div>
-            <div className="grid grid-cols-[1fr_24px_1fr] items-center gap-3">
-              <Input value={accessLabelKey} onChange={(event) => setAccessLabelKey(event.target.value)} placeholder="键（key）" className="h-10 rounded-xl" />
-              <span className="text-center text-[var(--color-text-tertiary)]">=</span>
-              <Input value={accessLabelValue} onChange={(event) => setAccessLabelValue(event.target.value)} placeholder="值（value）" className="h-10 rounded-xl" />
-            </div>
+          <div className="space-y-6 px-8 py-7">
+            <section>
+              <div className="mb-4 flex items-center justify-between gap-4">
+                <h3 className="text-base font-semibold text-[var(--color-text-primary)]">已有标签</h3>
+                <div className="relative w-[220px]">
+                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+                  <Input value={accessLabelSearch} onChange={(event) => setAccessLabelSearch(event.target.value)} placeholder="搜索标签" className="h-10 rounded-xl pl-9" />
+                </div>
+              </div>
+              <div className="flex min-h-12 flex-wrap gap-2">
+                {accessLabelDrafts
+                  .filter((label) => !label.id.startsWith("new-"))
+                  .filter((label) => !accessLabelSearch.trim() || `${label.key}:${label.value}`.toLowerCase().includes(accessLabelSearch.trim().toLowerCase()))
+                  .map((label) => (
+                    <span key={label.id} className="inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--color-bg-soft)] px-3 text-sm text-[var(--color-text-primary)]">
+                      <span>{label.key}: {label.value}</span>
+                      <button type="button" onClick={() => setAccessLabelDrafts((current) => current.filter((item) => item.id !== label.id))} className="text-[var(--color-text-tertiary)] hover:text-[var(--color-danger)]" title="删除标签">
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </span>
+                  ))}
+                {!accessLabelDrafts.some((label) => !label.id.startsWith("new-")) && <span className="text-sm text-[var(--color-text-tertiary)]">暂无标签</span>}
+              </div>
+            </section>
+
+            <div className="border-t border-[var(--color-border)]" />
+
+            <section>
+              <h3 className="mb-4 text-base font-semibold text-[var(--color-text-primary)]">新增标签</h3>
+              <div className="space-y-3">
+                {accessLabelDrafts.filter((label) => label.id.startsWith("new-")).map((label) => (
+                  <div key={label.id} className="grid grid-cols-[1fr_1fr_40px] items-center gap-3">
+                    <Input value={label.key} onChange={(event) => setAccessLabelDrafts((current) => current.map((item) => item.id === label.id ? { ...item, key: event.target.value } : item))} placeholder="键（Key）" className="h-11 rounded-xl" />
+                    <Input value={label.value} onChange={(event) => setAccessLabelDrafts((current) => current.map((item) => item.id === label.id ? { ...item, value: event.target.value } : item))} placeholder="值（Value）" className="h-11 rounded-xl" />
+                    <button type="button" onClick={() => setAccessLabelDrafts((current) => current.filter((item) => item.id !== label.id))} className="flex h-10 w-10 items-center justify-center rounded-xl text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]" title="删除新增标签">
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button type="button" onClick={() => setAccessLabelDrafts((current) => [...current, { id: `new-${Date.now()}-${current.length}`, key: "", value: "" }])} className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-[var(--color-brand)]">
+                <Plus className="h-4 w-4" />
+                添加标签
+              </button>
+            </section>
+            {accessError && <div className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">{accessError}</div>}
           </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setAccessLabelTarget(null)}>取消</Button>
-            <Button onClick={() => void saveAccessLabels()}>保存</Button>
+          <DialogFooter className="border-t border-[var(--color-border)] px-8 py-5">
+            <Button variant="outline" className="h-10 rounded-xl px-6" onClick={() => setAccessLabelTarget(null)}>取消</Button>
+            <Button className="h-10 rounded-xl px-6" onClick={() => void saveAccessLabels()}>确定</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -918,8 +989,12 @@ export function Nodes() {
                 <Info label="存储容量" value={selected.capacity?.storage || "-"} />
                 <Info label="CPU 使用" value={selected.cpu} />
                 <Info label="内存使用" value={selected.memory} />
-                <div className="bg-[var(--color-bg-soft)] rounded-md p-3"><p className="text-xs text-[var(--color-text-tertiary)] mb-1">CPU 使用率</p><div className="h-2 bg-[var(--color-border-strong)] rounded-full"><div className="h-full bg-[var(--color-brand)] rounded-full" style={{ width: "30%" }} /></div></div>
-                <div className="bg-[var(--color-bg-soft)] rounded-md p-3"><p className="text-xs text-[var(--color-text-tertiary)] mb-1">内存使用率</p><div className="h-2 bg-[var(--color-border-strong)] rounded-full"><div className="h-full bg-[var(--color-success)] rounded-full" style={{ width: "25%" }} /></div></div>
+                {selected.metricsAvailable && selected.cpuUsagePercent !== undefined ? (
+                  <div className="bg-[var(--color-bg-soft)] rounded-md p-3"><p className="text-xs text-[var(--color-text-tertiary)] mb-1">CPU 使用率 {selected.cpuUsagePercent}%</p><div className="h-2 bg-[var(--color-border-strong)] rounded-full"><div className="h-full bg-[var(--color-brand)] rounded-full" style={{ width: `${selected.cpuUsagePercent}%` }} /></div></div>
+                ) : <div className="rounded-md bg-[var(--color-bg-soft)] p-3 text-xs text-[var(--color-text-tertiary)]">CPU 指标暂不可用</div>}
+                {selected.metricsAvailable && selected.memoryUsagePercent !== undefined ? (
+                  <div className="bg-[var(--color-bg-soft)] rounded-md p-3"><p className="text-xs text-[var(--color-text-tertiary)] mb-1">内存使用率 {selected.memoryUsagePercent}%</p><div className="h-2 bg-[var(--color-border-strong)] rounded-full"><div className="h-full bg-[var(--color-success)] rounded-full" style={{ width: `${selected.memoryUsagePercent}%` }} /></div></div>
+                ) : <div className="rounded-md bg-[var(--color-bg-soft)] p-3 text-xs text-[var(--color-text-tertiary)]">内存指标暂不可用</div>}
               </TabsContent>
               <TabsContent value="conditions" className="mt-3 space-y-2">
                 {(selected.conditions || []).map((c, i) => (

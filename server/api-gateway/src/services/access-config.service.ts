@@ -8,6 +8,8 @@ import {
   remove,
   update,
 } from "../repositories/blueedge-configmap.repository.js";
+import { getK8sJson } from "../clients/k8s-client.js";
+import { config } from "../config.js";
 import type { EdgeUnitWarning } from "../types/warnings.js";
 import {
   dataOf,
@@ -19,6 +21,7 @@ import {
 import {
   isHostPort,
   isValidKubernetesName,
+  parseJsonField,
   readStringField,
 } from "../utils/validation.js";
 import {
@@ -29,6 +32,7 @@ import {
 const accessConfigNameLabel = "blueedge.io/access-config";
 const accessConfigArchitectures = new Set(["amd64", "arm64", "arm"]);
 const accessConfigProtocols = new Set(["https", "websocket", "quic", "QUIC"]);
+const accessConfigDrivers = new Set(["systemd", "cgroups"]);
 const accessConfigStatuses = new Set(["pending", "registered", "ready", "abnormal", "expired", "unknown"]);
 
 function accessConfigResourceName(name: string): string {
@@ -50,6 +54,11 @@ function buildAccessConfigData(body: any, nodeGroupRef: string, existingData?: R
   const kubeEdgeVersion = readStringField(body, "kubeEdgeVersion") || existingData?.kubeEdgeVersion || "";
   const cloudCoreAddress = readStringField(body, "cloudCoreAddress") || existingData?.cloudCoreAddress || "";
   const protocol = normalizeAccessConfigProtocol(readStringField(body, "protocol") ?? existingData?.protocol);
+  const driver = readStringField(body, "driver") ?? existingData?.driver ?? "";
+  const criAddress = readStringField(body, "criAddress") ?? existingData?.criAddress ?? "";
+  const labels = body?.labels && typeof body.labels === "object" && !Array.isArray(body.labels)
+    ? Object.fromEntries(Object.entries(body.labels).map(([key, value]) => [key.trim(), String(value).trim()]).filter(([key]) => key))
+    : parseJsonField<Record<string, string>>(existingData?.labelsJson, {});
   const status = existingData?.status && accessConfigStatuses.has(existingData.status) ? existingData.status : "pending";
   const createdAt = existingData?.createdAt || new Date().toISOString();
 
@@ -68,6 +77,12 @@ function buildAccessConfigData(body: any, nodeGroupRef: string, existingData?: R
   if (!protocol) {
     throw new Error("protocol must be one of https, websocket, quic");
   }
+  if (driver && !accessConfigDrivers.has(driver)) {
+    throw new Error("driver must be one of systemd, cgroups");
+  }
+  if (criAddress && !/^\/[A-Za-z0-9._/-]+$/.test(criAddress)) {
+    throw new Error("criAddress must be an absolute Unix socket path");
+  }
   if (!cloudCoreAddress || !isHostPort(cloudCoreAddress)) {
     throw new Error("cloudCoreAddress must be a valid host:port");
   }
@@ -82,8 +97,11 @@ function buildAccessConfigData(body: any, nodeGroupRef: string, existingData?: R
     kubeEdgeVersion,
     cloudCoreAddress,
     protocol,
+    driver,
+    criAddress,
     registry: readStringField(body, "registry") ?? existingData?.registry ?? "",
     description: readStringField(body, "description") ?? existingData?.description ?? "",
+    labelsJson: JSON.stringify(labels),
     status,
     createdAt,
   };
@@ -144,7 +162,10 @@ function buildAccessConfigView(configMap: any, nodes: any[]) {
     kubeEdgeVersion: data.kubeEdgeVersion,
     cloudCoreAddress: data.cloudCoreAddress || "",
     protocol: data.protocol || "https",
+    driver: accessConfigDrivers.has(data.driver) ? data.driver : "",
+    criAddress: data.criAddress || "",
     registry: data.registry || "",
+    labels: parseJsonField<Record<string, string>>(data.labelsJson, {}),
     status,
     registered,
     ready,
@@ -170,6 +191,78 @@ async function collectAccessConfigSources(warnings: EdgeUnitWarning[]) {
 
 function validationError(error: unknown, fallback: string) {
   return { status: 400, body: { message: error instanceof Error ? error.message : fallback } };
+}
+
+function decodeJoinToken(secret: any): string {
+  const encoded = secret?.data?.[config.kubeEdgeTokenSecretKey];
+  if (typeof encoded !== "string" || !encoded) {
+    throw new Error(`Secret ${config.kubeEdgeTokenSecretNamespace}/${config.kubeEdgeTokenSecretName} does not contain ${config.kubeEdgeTokenSecretKey}`);
+  }
+  const token = Buffer.from(encoded, "base64").toString("utf8").trim();
+  if (!token) throw new Error("KubeEdge join token is empty");
+  return token;
+}
+
+function tokenExpiresAt(token: string): string | null {
+  const parts = token.split(".");
+  if (parts.length !== 4) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(parts[2], "base64url").toString("utf8"));
+    return typeof claims.exp === "number" ? new Date(claims.exp * 1000).toISOString() : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getKubeEdgeJoinToken() {
+  const namespace = encodeURIComponent(config.kubeEdgeTokenSecretNamespace);
+  const name = encodeURIComponent(config.kubeEdgeTokenSecretName);
+  const secret = await getK8sJson(`/api/v1/namespaces/${namespace}/secrets/${name}`);
+  const token = decodeJoinToken(secret);
+  const expiresAt = tokenExpiresAt(token);
+  if (!expiresAt) throw new Error("KubeEdge join token has an unsupported format or no expiration time");
+  if (Date.parse(expiresAt) - Date.now() <= config.kubeEdgeTokenMinValiditySeconds * 1000) {
+    throw new Error(`KubeEdge join token expires too soon at ${expiresAt}`);
+  }
+  return { token, expiresAt };
+}
+
+function normalizeVersion(value: string): string {
+  return value.startsWith("v") ? value : `v${value}`;
+}
+
+function buildPrepareCommand(version: string, architecture: string): string {
+  const normalizedVersion = normalizeVersion(version);
+  const archive = `keadm-${normalizedVersion}-linux-${architecture}.tar.gz`;
+  const url = `https://github.com/kubeedge/kubeedge/releases/download/${normalizedVersion}/${archive}`;
+  return [
+    "set -euo pipefail",
+    'workdir="$(mktemp -d)"',
+    `curl -fL ${url} -o \"$workdir/${archive}\"`,
+    `tar -xzf \"$workdir/${archive}\" -C \"$workdir\"`,
+    'keadm_bin="$(find "$workdir" -type f -name keadm -print -quit)"',
+    'test -n "$keadm_bin"',
+    'install -m 0755 "$keadm_bin" /usr/local/bin/keadm',
+    'rm -rf "$workdir"',
+    "keadm version",
+  ].join("\n");
+}
+
+function buildJoinCommand(item: ReturnType<typeof buildAccessConfigView>, token: string): string {
+  const runtimeEndpoint = item.criAddress
+    ? item.criAddress.includes("://") ? item.criAddress : `unix://${item.criAddress}`
+    : "";
+  return [
+    "keadm join",
+    `  --cloudcore-ipport=${item.cloudCoreAddress}`,
+    `  --token=${token}`,
+    `  --kubeedge-version=${normalizeVersion(item.kubeEdgeVersion)}`,
+    `  --edgenode-name=${item.nodeName}`,
+    ...(item.protocol === "websocket" || item.protocol === "quic" ? [`  --hub-protocol=${item.protocol}`] : []),
+    ...(runtimeEndpoint ? [`  --remote-runtime-endpoint=${runtimeEndpoint}`] : []),
+    ...(item.driver ? [`  --cgroupdriver=${item.driver === "cgroups" ? "cgroupfs" : "systemd"}`] : []),
+    ...(item.registry ? [`  --image-repository=${item.registry}`] : []),
+  ].join(" \\\n");
 }
 
 export async function listAccessConfigs() {
@@ -291,22 +384,40 @@ export async function getInstallCommand(name: string) {
     return { status: 404, body: { message: `AccessConfig ${name} not found`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
   const item = buildAccessConfigView(configMap, nodes);
+  const commandTemplate = buildJoinCommand(item, "<short-lived-token>");
+  const prepareCommand = buildPrepareCommand(item.kubeEdgeVersion, item.architecture);
+  try {
+    const { token, expiresAt } = await getKubeEdgeJoinToken();
+    return {
+      status: 200,
+      body: {
+        name: item.name,
+        ready: true,
+        prepareCommand,
+        command: buildJoinCommand(item, token),
+        commandTemplate,
+        missingRequirements: [],
+        expiresAt,
+        ...(warnings.length > 0 ? { warnings } : {}),
+      },
+    };
+  } catch (error) {
+    warnings.push({
+      source: "access-config.join-token",
+      message: error instanceof Error ? error.message : "KubeEdge join token is unavailable",
+    });
+  }
   return {
     status: 200,
     body: {
       name: item.name,
       ready: false,
+      prepareCommand,
       command: "",
-      commandTemplate: [
-        "keadm join",
-        `  --cloudcore-ipport=${item.cloudCoreAddress}`,
-        "  --token=<short-lived-token>",
-        `  --kubeedge-version=${item.kubeEdgeVersion}`,
-        `  --edgenode-name=${item.nodeName}`,
-      ].join(" \\\n"),
-      missingRequirements: ["join token provider is not configured"],
+      commandTemplate,
+      missingRequirements: ["KubeEdge join token is unavailable or expires too soon"],
       expiresAt: null,
-      ...(warnings.length > 0 ? { warnings } : {}),
+      warnings,
     },
   };
 }

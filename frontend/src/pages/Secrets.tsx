@@ -20,12 +20,12 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ChevronLeft, ChevronRight, Copy, Eye, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
-import { NamespaceSelector } from "@/components/common/NamespaceSelector";
 import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
 import { createSecretResource, deleteSecretResource, getSecret, listSecrets, updateSecretResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import { cn } from "@/lib/utils";
 import type { KubeResource } from "@/types/kubeedge";
+import { useNamespace } from "@/contexts/NamespaceContext";
 
 interface SecretRow {
   namespace: string;
@@ -224,7 +224,7 @@ export function Secrets() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
-  const [namespace, setNamespace] = useState("all");
+  const { selectedNamespace: namespace } = useNamespace();
   const [page, setPage] = useState(1);
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<SecretRow | null>(null);
@@ -380,7 +380,7 @@ export function Secrets() {
       </div>
       <div className="flex items-center justify-between gap-4">
         <div className="toolbar-search relative"><Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--color-text-tertiary)]" /><Input placeholder="请输入名称、类型或 Key 搜索" value={search} onChange={(e) => { setSearch(e.target.value); setPage(1); }} className="h-9 bg-white pl-9 text-sm" /></div>
-        <div className="flex items-center gap-3"><NamespaceSelector value={namespace} onChange={(value) => { setNamespace(value); setPage(1); }} /><span className="text-sm text-[var(--color-text-tertiary)]">共 {filtered.length} 条</span></div>
+        <div className="flex items-center gap-3"><span className="text-sm text-[var(--color-text-tertiary)]">共 {filtered.length} 条</span></div>
       </div>
       {error && <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
       <div className="table-card">

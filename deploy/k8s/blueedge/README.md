@@ -74,6 +74,17 @@ K8S_SKIP_TLS_VERIFY=true
 
 The `blueedge-dashboard` ServiceAccount is mounted into pods automatically. The api-gateway reads that token from the standard service account token file when `K8S_TOKEN` is not set.
 
+The AccessConfig install-command endpoint reads the real KubeEdge join token from the Secret maintained by CloudCore. Defaults:
+
+```text
+KUBEEDGE_TOKEN_SECRET_NAMESPACE=kubeedge
+KUBEEDGE_TOKEN_SECRET_NAME=tokensecret
+KUBEEDGE_TOKEN_SECRET_KEY=tokendata
+KUBEEDGE_TOKEN_MIN_VALIDITY_SECONDS=300
+```
+
+The gateway ServiceAccount must be allowed to `get` that Secret. The current development manifest binds `blueedge-dashboard` to `cluster-admin`; production deployments should replace it with least-privilege RBAC. Install-command responses contain short-lived credentials and must not be logged or cached.
+
 For an external API server, edit `02-configmap.yaml`:
 
 ```yaml

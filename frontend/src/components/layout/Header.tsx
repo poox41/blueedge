@@ -1,6 +1,5 @@
-import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Bell, ChevronDown, ChevronLeft, LogOut, RefreshCw, Server, Settings, User } from "lucide-react";
+import { ChevronDown, ChevronLeft, LogOut, RefreshCw, Server, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -10,7 +9,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useAuth } from "@/contexts/AuthContext";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 import { cn } from "@/lib/utils";
+import { NamespaceBreadcrumbMenu } from "./NamespaceBreadcrumbMenu";
 
 const routeTitles: Record<string, string> = {
   "/dashboard": "概览",
@@ -39,19 +40,15 @@ const routeTitles: Record<string, string> = {
   "/crds": "自定义资源定义",
 };
 
-const managedEdgeUnits = [
-  { name: "edge-131", cluster: "ali-139-131", status: "运行中" },
-  { name: "edge-riscv-prod", cluster: "arc01", status: "运行中" },
-  { name: "edge-staging", cluster: "dev-cluster", status: "异常" },
-  { name: "edge-guangzhou", cluster: "ali-gz-01", status: "运行中" },
-  { name: "edge-beijing", cluster: "arc02", status: "创建中" },
-];
-
 export function Header() {
   const { logout } = useAuth();
+  const { edgeUnits, selectedEdgeUnit, loading, error, refreshEdgeUnits, selectEdgeUnit } = useEdgeUnits();
   const location = useLocation();
-  const title = routeTitles[location.pathname] || "概览";
-  const [selectedUnit, setSelectedUnit] = useState(managedEdgeUnits[0]);
+  const configDetailMatch = location.pathname.match(/^\/configmaps\/(?:config|secret)\/[^/]+\/([^/]+)$/);
+  const ruleEndpointDetailMatch = location.pathname.match(/^\/ruleendpoints\/[^/]+\/([^/]+)$/);
+  const detailResourceName = configDetailMatch ? decodeURIComponent(configDetailMatch[1]) : ruleEndpointDetailMatch ? decodeURIComponent(ruleEndpointDetailMatch[1]) : "";
+  const title = configDetailMatch ? "配置项与密钥" : ruleEndpointDetailMatch ? "消息端点" : routeTitles[location.pathname] || "概览";
+  const showNamespace = !new Set(["/nodes", "/nodes/access", "/nodegroups", "/batchtasks"]).has(location.pathname);
 
   return (
     <header className="sticky top-0 z-30 flex h-[72px] shrink-0 items-center justify-between border-b border-[var(--color-border)] bg-white px-6">
@@ -65,7 +62,7 @@ export function Header() {
           <DropdownMenuTrigger asChild>
             <button className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-semibold text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]">
               <Server className="h-3.5 w-3.5 text-[var(--color-brand)]" />
-              {selectedUnit.name}
+              {loading ? "加载中..." : selectedEdgeUnit?.name || "暂无边缘单元"}
               <ChevronDown className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
             </button>
           </DropdownMenuTrigger>
@@ -73,12 +70,12 @@ export function Header() {
             <DropdownMenuLabel className="px-3 py-2 text-xs font-semibold text-[var(--color-text-tertiary)]">
               切换边缘单元
             </DropdownMenuLabel>
-            {managedEdgeUnits.map((unit) => {
-              const active = selectedUnit.name === unit.name;
+            {edgeUnits.map((unit) => {
+              const active = selectedEdgeUnit?.name === unit.name;
               return (
                 <DropdownMenuItem
                   key={unit.name}
-                  onClick={() => setSelectedUnit(unit)}
+                  onClick={() => selectEdgeUnit(unit.name)}
                   className={cn(
                     "flex cursor-pointer items-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium text-[var(--color-text-primary)]",
                     active && "bg-[var(--color-brand-light)] text-[var(--color-brand)]",
@@ -89,19 +86,21 @@ export function Header() {
                 </DropdownMenuItem>
               );
             })}
+            {!loading && edgeUnits.length === 0 && (
+              <div className="px-3 py-3 text-xs text-[var(--color-text-tertiary)]">{error || "暂无可用边缘单元"}</div>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
         <span className="text-[var(--color-text-tertiary)]">/</span>
+        {showNamespace && <><NamespaceBreadcrumbMenu /><span className="text-[var(--color-text-tertiary)]">/</span></>}
         <span className="font-semibold text-[var(--color-text-primary)]">{title}</span>
+        {detailResourceName && <><span className="text-[var(--color-text-tertiary)]">/</span><span className="max-w-[240px] truncate font-semibold text-[var(--color-text-primary)]">{detailResourceName}</span></>}
       </div>
 
       <div className="flex items-center gap-2">
-        <button className="blueedge-icon-button" aria-label="刷新">
-          <RefreshCw className="h-4 w-4" />
-        </button>
-        <button className="blueedge-icon-button relative" aria-label="通知">
-          <Bell className="h-4 w-4" />
-          <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[var(--color-danger)] ring-2 ring-white" />
+        {error && <span className="max-w-[260px] truncate text-xs text-[var(--color-danger)]" title={error}>{error}</span>}
+        <button type="button" className="blueedge-icon-button" aria-label="刷新边缘单元" onClick={() => void refreshEdgeUnits()} disabled={loading}>
+          <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
         </button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -114,10 +113,6 @@ export function Header() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="min-w-[176px] rounded-xl border-[var(--color-border)]">
-            <DropdownMenuItem className="cursor-pointer text-sm">
-              <Settings className="mr-2 h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
-              个人设置
-            </DropdownMenuItem>
             <DropdownMenuItem className="cursor-pointer text-sm text-[var(--color-danger)] focus:text-[var(--color-danger)]" onClick={logout}>
               <LogOut className="mr-1.5 h-3.5 w-3.5" />
               退出登录

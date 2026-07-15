@@ -216,6 +216,24 @@ discover_edgeapp() {
   rm -f "$output"
 }
 
+discover_deployment() {
+  local result status output selection
+  result="$(request GET "/bff/deployment")"
+  status="$(printf '%s' "$result" | sed -n '1p')"
+  output="$(printf '%s' "$result" | sed -n '2p')"
+  if [ "$status" = "200" ]; then
+    selection="$(node -e '
+      const fs = require("fs");
+      const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const items = Array.isArray(payload) ? payload : Array.isArray(payload.items) ? payload.items : Array.isArray(payload.data?.items) ? payload.data.items : Array.isArray(payload.data) ? payload.data : [];
+      const item = items[0];
+      if (item) process.stdout.write(`${item.metadata?.namespace || item.namespace || "default"}/${item.metadata?.name || item.name || ""}`);
+    ' "$output")"
+    printf '%s' "$selection"
+  fi
+  rm -f "$output"
+}
+
 login_output="$(mktemp)"
 login_status="$(curl -sS -o "$login_output" -w '%{http_code}' -X POST \
   -H 'Content-Type: application/json' \
@@ -260,10 +278,22 @@ if [ -n "$edgeapp_ref" ] && [ "$edgeapp_ref" != "/" ]; then
 else
   skip "edgeapp summary structure no test resource"
 fi
+deployment_ref="${DEPLOYMENT_NAMESPACE:-}/${DEPLOYMENT_NAME:-}"
+if [ "$deployment_ref" = "/" ]; then
+  deployment_ref="$(discover_deployment)"
+fi
+if [ -n "$deployment_ref" ] && [ "$deployment_ref" != "/" ]; then
+  check_optional_json_fields "deployment revisions structure" "/blueedge/deployments/$deployment_ref/revisions" "items" "currentRevision" "source"
+  check_optional_json_fields "deployment audit structure" "/blueedge/deployments/$deployment_ref/audit" "items" "source" "completeAuditLog" "warning"
+else
+  skip "deployment revisions structure no test resource"
+  skip "deployment audit structure no test resource"
+fi
 check_status "pv summary list" GET "/blueedge/storage/persistentvolumes/summary"
 check_status "pvc summary list" GET "/blueedge/storage/persistentvolumeclaims/summary"
 check_status "devicemodel summary list" GET "/blueedge/devicemodels/summary"
 check_status "device summary list" GET "/blueedge/devices/summary"
+check_contains "connected cluster list" GET "/blueedge/clusters" '"current":true'
 check_optional_detail "observability node" GET "/blueedge/observability/resources/node/_/k8s-worker01"
 check_optional_detail "observability pod logs" GET "/blueedge/observability/resources/pod/default/cloudflared-tunnel-967c446b-dmjpb/logs?tailLines=5"
 check_status "bff nodegroup proxy" GET "/bff/nodegroup"

@@ -2,13 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
-  Bell,
   Box,
   Calendar,
   CheckCircle2,
   ChevronLeft,
   ChevronRight,
-  Download,
   ExternalLink,
   HelpCircle,
   Pencil,
@@ -39,7 +37,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toHomeEdgeUnit, type EdgeUnitUiModel, type EdgeUnitWarning } from "@/api/adapters/edge-unit.adapter";
-import { createEdgeUnit, deleteEdgeUnit, listEdgeUnits, updateEdgeUnit, type EdgeUnitCreatePayload, type EdgeUnitUpdatePayload } from "@/api/services/product";
+import { createEdgeUnit, deleteEdgeUnit, listConnectedClusters, listEdgeUnits, updateEdgeUnit, type EdgeUnitCreatePayload, type EdgeUnitUpdatePayload } from "@/api/services/product";
 import { listNodeGroups } from "@/api/services/resources";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
@@ -69,7 +67,6 @@ type CreateForm = {
   uninstallPolicy: "保留相关命名空间" | "删除相关命名空间";
 };
 
-const clusters = ["ali-139-131", "arc01", "dev-cluster", "ali-gz-01", "arc02"];
 const versions = ["v1.21.0", "v1.20.0", "v1.19.0"];
 
 const defaultCreateForm: CreateForm = {
@@ -296,12 +293,14 @@ function SegmentButton({ selected, children, onClick }: { selected: boolean; chi
 function CreateEdgeUnitDialog({
   open,
   onOpenChange,
+  clusterOptions,
   nodeGroupOptions,
   isSubmitting,
   onCreate,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  clusterOptions: string[];
   nodeGroupOptions: string[];
   isSubmitting: boolean;
   onCreate: (form: CreateForm) => Promise<void>;
@@ -394,9 +393,9 @@ function CreateEdgeUnitDialog({
               </FormField>
               <div className="grid grid-cols-2 gap-4">
                 <FormField label="工作集群" required error={errors.cluster}>
-                  <select className="blueedge-native-select" value={form.cluster} onChange={(event) => updateForm("cluster", event.target.value)}>
-                    <option value="">请选择集群</option>
-                    {clusters.map((cluster) => <option key={cluster} value={cluster}>{cluster}</option>)}
+                  <select className="blueedge-native-select" value={form.cluster} onChange={(event) => updateForm("cluster", event.target.value)} disabled={clusterOptions.length === 0}>
+                    <option value="">{clusterOptions.length === 0 ? "未发现已连接集群" : "请选择集群"}</option>
+                    {clusterOptions.map((cluster) => <option key={cluster} value={cluster}>{cluster}</option>)}
                   </select>
                 </FormField>
                 <FormField label="绑定 NodeGroup" required error={errors.nodeGroupRef}>
@@ -886,11 +885,8 @@ function UnitCard({
         <div className="flex flex-wrap items-center gap-3">
           <Capability label="Insight" enabled={unit.insight} />
           <Capability label="Monitor" enabled={unit.monitor} />
-          <button className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-brand)] hover:underline">
-            <Download className="h-3.5 w-3.5" />
-            边缘监控组件
-          </button>
-          <button className="text-xs font-semibold text-[var(--color-brand)] hover:underline">立即安装 →</button>
+          <span className="text-xs font-semibold text-[var(--color-text-tertiary)]" title="当前版本暂未开放">边缘监控组件下载（暂未开放）</span>
+          <span className="text-xs font-semibold text-[var(--color-text-tertiary)]" title="当前版本暂未开放">立即安装（暂未开放）</span>
         </div>
         <Button className="h-9 rounded-xl px-5 text-xs" onClick={() => navigate("/dashboard")}>
           进入工作台
@@ -913,22 +909,29 @@ export default function Home() {
   const [editingUnit, setEditingUnit] = useState<EdgeUnit | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EdgeUnit | null>(null);
   const [nodeGroupOptions, setNodeGroupOptions] = useState<string[]>([]);
+  const [clusterOptions, setClusterOptions] = useState<string[]>([]);
   const { logout } = useAuth();
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setError("");
     try {
-      const [result, nodeGroups] = await Promise.all([
+      const [result, nodeGroups, clusters] = await Promise.all([
         listEdgeUnits(),
         listNodeGroups().catch(() => []),
+        listConnectedClusters().catch((err) => {
+          setError(messageOfError(err, "真实集群加载失败"));
+          return { items: [] };
+        }),
       ]);
       setEdgeUnits(result.items.map(toHomeEdgeUnit));
       setWarnings(result.warnings || []);
       setNodeGroupOptions(Array.from(new Set(nodeGroups.map(nodeGroupNameOf).filter(Boolean))));
+      setClusterOptions(clusters.items.map((cluster) => cluster.name));
     } catch (err) {
       setError(messageOfError(err, "边缘单元加载失败"));
       setEdgeUnits([]);
       setWarnings([]);
+      setClusterOptions([]);
     } finally {
       setIsLoading(false);
     }
@@ -1012,10 +1015,6 @@ export default function Home() {
           <button className="blueedge-icon-button" aria-label="刷新" onClick={() => void loadData()}>
             <RefreshCw className="h-4 w-4" />
           </button>
-          <button className="blueedge-icon-button relative" aria-label="通知">
-            <Bell className="h-4 w-4" />
-            <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[var(--color-danger)] ring-2 ring-white" />
-          </button>
           <button className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-text-primary)] text-white" aria-label="退出登录" onClick={logout}>
             <User className="h-4 w-4" />
           </button>
@@ -1087,6 +1086,7 @@ export default function Home() {
       <CreateEdgeUnitDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
+        clusterOptions={clusterOptions}
         nodeGroupOptions={nodeGroupOptions}
         isSubmitting={isMutating}
         onCreate={handleCreate}

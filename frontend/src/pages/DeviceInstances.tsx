@@ -10,21 +10,24 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Check, ChevronLeft, ChevronRight, Copy, Download, Maximize2, Plus, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Copy, Download, Maximize2, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
-import { createDeviceResource, deleteDeviceResource } from "@/api/services/resources";
-import { getDeviceSummary, getResourceObservability, listDeviceModelSummaries, listDeviceSummaries } from "@/api/services/product";
+import { listNodes } from "@/api/services/resources";
+import { createDeviceConfig, deleteDeviceConfig, getDeviceSummary, getResourceObservability, listDeviceModelSummaries, listDeviceSummaries } from "@/api/services/product";
 import { deviceStatusColor, deviceStatusText, twinStatusText } from "@/api/adapters/device-summary.adapter";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { ObservabilityEvent } from "@/api/adapters/observability.adapter";
 import type { DeviceSummary } from "@/api/adapters/device-summary.adapter";
+import type { DeviceModelSummary } from "@/api/adapters/device-model-summary.adapter";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { useNamespace } from "@/contexts/NamespaceContext";
+import { validateAccessConfigYaml, validateDeviceTwin, type DeviceTwinFormValue } from "@/lib/device-config";
 
 interface DI { namespace: string; name: string; model: string; node: string; edgeUnitRef?: string; nodeGroupRef?: string; status: string; statusColor: string; twins: number; createdAt: string; lastReport: string; protocol?: string; raw: KubeResource | any; }
 interface LabelRule { id: string; key: string; value: string; }
-interface DeviceTwin { name: string; expected: string; sampleInterval: string; reportInterval: string; yaml: string; }
-interface TwinForm { name: string; expected: string; sampleInterval: string; reportInterval: string; yaml: string; }
+type DeviceTwin = DeviceTwinFormValue;
+interface TwinForm { propertyName: string; desiredValue: string; collectIntervalSeconds: string; reportIntervalSeconds: string; accessConfigYaml: string; }
 
 function toDeviceRow(item: DeviceSummary): DI {
   const status = deviceStatusText(item.status);
@@ -41,7 +44,7 @@ function toDeviceRow(item: DeviceSummary): DI {
     createdAt: item.createdAt,
     lastReport: item.twins.items.find((t) => t.lastUpdatedAt)?.lastUpdatedAt || "-",
     protocol: item.protocol || "-",
-    raw: item.raw || item,
+    raw: { ...(item.raw || {}), extension: item.extension, twins: item.twins },
   };
 }
 
@@ -72,51 +75,6 @@ function getTwins(raw: KubeResource | any): Array<{ name: string; desired: strin
   }));
 }
 
-function yaml(n: DI) {
-  return `apiVersion: devices.kubeedge.io/v1beta1
-kind: Device
-metadata:
-  name: ${n.name}
-  namespace: ${n.namespace}
-spec:
-  deviceModelRef:
-    name: ${n.model}
-  nodeSelector:
-    nodeSelectorTerms:
-      - matchExpressions:
-          - key: ""
-            operator: In
-            values:
-              - ${n.node}
-  protocol:
-    mqtt:
-      client-id: ${n.name}`;
-}
-
-function buildDeviceResource(form: { name: string; namespace: string; model: string; node: string; protocol: string; description?: string }, labels: LabelRule[] = [], twins: DeviceTwin[] = []): KubeResource {
-  const customLabels = Object.fromEntries(labels.filter((item) => item.key.trim()).map((item) => [item.key.trim(), item.value.trim()]));
-  return {
-    apiVersion: "devices.kubeedge.io/v1beta1",
-    kind: "Device",
-    metadata: {
-      name: form.name,
-      namespace: form.namespace,
-      labels: { model: form.model, ...customLabels },
-      annotations: form.description?.trim() ? { description: form.description.trim() } : undefined,
-    },
-    spec: {
-      deviceModelRef: {
-        name: form.model,
-      },
-      nodeName: form.node,
-      protocol: {
-          protocolName: form.protocol || "MQTT",
-      },
-      properties: twins.map((item) => ({ name: item.name, expected: item.expected, collectCycle: item.sampleInterval, reportCycle: item.reportInterval })),
-    },
-  };
-}
-
 const defaultAccessYaml = `# 访问配置示例
 protocol: MQTT
 broker: tcp://mqtt.example.com:1883
@@ -137,9 +95,11 @@ report:
   qos: 0`;
 
 export function DeviceInstances() {
+  const { selectedNamespace } = useNamespace();
   const namespaces = useNamespaceOptions();
   const [data, setData] = useState<DI[]>([]);
-  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [modelOptions, setModelOptions] = useState<DeviceModelSummary[]>([]);
+  const [nodeOptions, setNodeOptions] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
@@ -152,32 +112,42 @@ export function DeviceInstances() {
   const [createStep, setCreateStep] = useState<1 | 2 | 3 | 4>(1);
   const [cancelCreateOpen, setCancelCreateOpen] = useState(false);
   const [addTwinOpen, setAddTwinOpen] = useState(false);
+  const [editingTwinName, setEditingTwinName] = useState<string | null>(null);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<DI | null>(null);
-  const [form, setForm] = useState({ name: "", namespace: "default", model: "temp-sensor-v1", node: "edge-riscv-01", protocol: "", description: "" });
+  const [form, setForm] = useState({ name: "", namespace: "default", model: "", node: "", protocol: "", description: "" });
   const [labels, setLabels] = useState<LabelRule[]>([{ id: "label-1", key: "", value: "" }]);
   const [twins, setTwins] = useState<DeviceTwin[]>([]);
-  const [twinForm, setTwinForm] = useState<TwinForm>({ name: "", expected: "", sampleInterval: "10", reportInterval: "60", yaml: defaultTwinYaml });
-  const [accessYaml, setAccessYaml] = useState(defaultAccessYaml);
+  const [accessConfigYaml, setAccessConfigYaml] = useState(defaultAccessYaml);
+  const [twinForm, setTwinForm] = useState<TwinForm>({ propertyName: "", desiredValue: "", collectIntervalSeconds: "10", reportIntervalSeconds: "60", accessConfigYaml: defaultTwinYaml });
   const pageSize = 10;
+
+  const selectedModel = useMemo(
+    () => modelOptions.find((item) => item.namespace === form.namespace && item.name === form.model) || null,
+    [form.model, form.namespace, modelOptions],
+  );
+  const availableModels = useMemo(() => modelOptions.filter((item) => item.namespace === form.namespace), [form.namespace, modelOptions]);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setError("");
     setWarnings([]);
     try {
-      const [rows, models] = await Promise.all([
+      const [rows, models, nodes] = await Promise.all([
         listDeviceSummaries(),
         listDeviceModelSummaries().catch(() => ({ items: [], warnings: [] })),
+        listNodes().catch(() => []),
       ]);
       setData(rows.items.map(toDeviceRow));
       setWarnings([...(rows.warnings || []), ...(models.warnings || [])].map((item) => item.message));
-      setModelOptions(Array.from(new Set(models.items.map((item) => item.name))));
+      setModelOptions(models.items);
+      setNodeOptions(Array.from(new Set(nodes.map((item) => item.name))));
       setPage(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载终端设备数据失败");
       setData([]);
       setModelOptions([]);
+      setNodeOptions([]);
     } finally {
       setIsLoading(false);
     }
@@ -189,9 +159,10 @@ export function DeviceInstances() {
 
   const filtered = useMemo(() => {
     let r = data;
+    if (selectedNamespace !== "all") r = r.filter(d => d.namespace === selectedNamespace);
     if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
     return r;
-  }, [data, search]);
+  }, [data, search, selectedNamespace]);
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
@@ -218,7 +189,7 @@ export function DeviceInstances() {
     setIsLoading(true);
     setError("");
     try {
-      await deleteDeviceResource(delItem.namespace, delItem.name);
+      await deleteDeviceConfig(delItem.namespace, delItem.name);
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除终端设备失败");
@@ -231,20 +202,30 @@ export function DeviceInstances() {
   const handleCreate = async () => {
     setIsLoading(true);
     setError("");
-    const resource = buildDeviceResource(form, labels, twins);
     try {
-      await createDeviceResource(resource);
+      validateAccessConfigYaml(accessConfigYaml, form.protocol);
+      await createDeviceConfig({
+        name: form.name.trim(),
+        namespace: form.namespace,
+        deviceModelRef: form.model,
+        nodeName: form.node || undefined,
+        protocol: form.protocol.trim(),
+        description: form.description.trim() || undefined,
+        labels: Object.fromEntries(labels.filter((item) => item.key.trim()).map((item) => [item.key.trim(), item.value.trim()])),
+        accessConfigYaml,
+        properties: twins,
+      });
       await loadData();
+      setCreateOpen(false);
+      setCreateStep(1);
+      setForm({ name: "", namespace: "default", model: "", node: "", protocol: "", description: "" });
+      setLabels([{ id: "label-1", key: "", value: "" }]);
+      setTwins([]);
+      setAccessConfigYaml(defaultAccessYaml);
+      setTwinForm({ propertyName: "", desiredValue: "", collectIntervalSeconds: "10", reportIntervalSeconds: "60", accessConfigYaml: defaultTwinYaml });
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建终端设备失败");
     } finally {
-      setCreateOpen(false);
-      setCreateStep(1);
-      setForm({ name: "", namespace: "default", model: "temp-sensor-v1", node: "edge-riscv-01", protocol: "", description: "" });
-      setLabels([{ id: "label-1", key: "", value: "" }]);
-      setTwins([]);
-      setTwinForm({ name: "", expected: "", sampleInterval: "10", reportInterval: "60", yaml: defaultTwinYaml });
-      setAccessYaml(defaultAccessYaml);
       setIsLoading(false);
     }
   };
@@ -253,29 +234,66 @@ export function DeviceInstances() {
     setCancelCreateOpen(false);
     setCreateOpen(false);
     setCreateStep(1);
-    setForm({ name: "", namespace: "default", model: "temp-sensor-v1", node: "edge-riscv-01", protocol: "", description: "" });
+    setForm({ name: "", namespace: "default", model: "", node: "", protocol: "", description: "" });
     setLabels([{ id: "label-1", key: "", value: "" }]);
     setTwins([]);
-    setTwinForm({ name: "", expected: "", sampleInterval: "10", reportInterval: "60", yaml: defaultTwinYaml });
-    setAccessYaml(defaultAccessYaml);
+    setAccessConfigYaml(defaultAccessYaml);
+    setTwinForm({ propertyName: "", desiredValue: "", collectIntervalSeconds: "10", reportIntervalSeconds: "60", accessConfigYaml: defaultTwinYaml });
+    setEditingTwinName(null);
   };
   const addLabelRule = () => setLabels((prev) => [...prev, { id: `label-${Date.now()}`, key: "", value: "" }]);
   const updateLabelRule = (id: string, patch: Partial<LabelRule>) => setLabels((prev) => prev.map((item) => item.id === id ? { ...item, ...patch } : item));
   const removeLabelRule = (id: string) => setLabels((prev) => prev.length > 1 ? prev.filter((item) => item.id !== id) : [{ id: "label-1", key: "", value: "" }]);
+  const openAddTwin = () => {
+    setEditingTwinName(null);
+    setTwinForm({ propertyName: "", desiredValue: "", collectIntervalSeconds: "10", reportIntervalSeconds: "60", accessConfigYaml: defaultTwinYaml });
+    setAddTwinOpen(true);
+  };
+  const openEditTwin = (twin: DeviceTwin) => {
+    setEditingTwinName(twin.propertyName);
+    setTwinForm({
+      propertyName: twin.propertyName,
+      desiredValue: twin.desiredValue,
+      collectIntervalSeconds: String(twin.collectIntervalSeconds),
+      reportIntervalSeconds: String(twin.reportIntervalSeconds),
+      accessConfigYaml: twin.accessConfigYaml,
+    });
+    setAddTwinOpen(true);
+  };
   const confirmAddTwin = () => {
-    if (!twinForm.name.trim()) return;
-    setTwins((prev) => [
-      ...prev,
-      {
-        name: twinForm.name.trim(),
-        expected: twinForm.expected.trim() || "-",
-        sampleInterval: twinForm.sampleInterval.trim() || "10",
-        reportInterval: twinForm.reportInterval.trim() || "60",
-        yaml: twinForm.yaml,
-      },
-    ]);
-    setTwinForm({ name: "", expected: "", sampleInterval: "10", reportInterval: "60", yaml: defaultTwinYaml });
-    setAddTwinOpen(false);
+    setError("");
+    try {
+      const next: DeviceTwin = {
+        propertyName: twinForm.propertyName.trim(),
+        desiredValue: twinForm.desiredValue.trim(),
+        collectIntervalSeconds: Number(twinForm.collectIntervalSeconds),
+        reportIntervalSeconds: Number(twinForm.reportIntervalSeconds),
+        accessConfigYaml: twinForm.accessConfigYaml,
+      };
+      validateDeviceTwin(next, selectedModel?.properties || [], twins.filter((item) => item.propertyName !== editingTwinName).map((item) => item.propertyName));
+      setTwins((prev) => editingTwinName
+        ? prev.map((item) => item.propertyName === editingTwinName ? next : item)
+        : [...prev, next]);
+      setTwinForm({ propertyName: "", desiredValue: "", collectIntervalSeconds: "10", reportIntervalSeconds: "60", accessConfigYaml: defaultTwinYaml });
+      setEditingTwinName(null);
+      setAddTwinOpen(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "孪生属性配置不合法");
+    }
+  };
+
+  const goNext = () => {
+    setError("");
+    try {
+      if (createStep === 1) {
+        if (!form.name.trim() || !form.namespace || !form.model || !form.protocol.trim()) throw new Error("请完整填写设备名称、命名空间、设备模型和访问协议");
+      }
+      if (createStep === 2 && twins.length === 0) throw new Error("至少需要配置一个孪生属性");
+      if (createStep === 3) validateAccessConfigYaml(accessConfigYaml, form.protocol);
+      setCreateStep((createStep + 1) as 1 | 2 | 3 | 4);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "当前步骤校验失败");
+    }
   };
   return (
     <div className="blueedge-page space-y-6">
@@ -293,7 +311,7 @@ export function DeviceInstances() {
             <Button variant="outline" size="icon" className="h-12 w-12 rounded-xl border-[var(--color-border-strong)] bg-white" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("h-5 w-5", isLoading && "animate-spin")} /></Button>
             <Dialog open={createOpen} onOpenChange={(open) => open ? setCreateOpen(true) : requestCancelCreate()}>
               <DialogTrigger asChild><Button className="h-12 rounded-xl bg-[var(--color-text-primary)] px-6 text-sm font-semibold text-white hover:bg-[var(--color-text-primary)]/90"><Plus className="mr-2 h-5 w-5" />创建设备</Button></DialogTrigger>
-              <DialogContent className={cn("!flex !max-w-none max-h-[92vh] flex-col gap-0 overflow-hidden rounded-[24px] p-0", createStep <= 2 ? "!w-[min(860px,calc(100vw-48px))]" : "!w-[min(1040px,calc(100vw-48px))]")} showCloseButton={false}>
+              <DialogContent className={cn("!flex !max-w-none max-h-[92vh] flex-col gap-0 overflow-hidden rounded-[24px] p-0", createStep === 1 ? "!w-[min(860px,calc(100vw-48px))]" : createStep === 2 ? "!w-[min(1120px,calc(100vw-48px))]" : "!w-[min(1180px,calc(100vw-48px))]")} showCloseButton={false}>
                 {createStep > 1 && (
                   <button type="button" onClick={() => setCreateStep((createStep - 1) as 1 | 2 | 3 | 4)} className="absolute left-7 top-5 flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--color-border-strong)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]" aria-label="返回上一步">
                     <ChevronLeft className="h-5 w-5" />
@@ -304,6 +322,7 @@ export function DeviceInstances() {
                 <div className="shrink-0 border-b border-[#eef1f5] px-7 py-5">
                   <CreateStepper current={createStep} steps={["基础信息", "设备配置", "访问配置", "信息确认"]} />
                 </div>
+                {error && <div className="mx-8 mt-4 rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#dc2626]">{error}</div>}
                 <div className="min-h-0 flex-1 overflow-y-auto px-8 py-7">
                   {createStep === 1 && (
                     <div className="space-y-6">
@@ -312,14 +331,13 @@ export function DeviceInstances() {
                         <p className="mt-1.5 text-xs leading-5 text-[var(--color-text-tertiary)]">最长 253 字符，只能是小写字母、数字、中划线(-)、点(.)的组合，不能有连续符号</p>
                       </PrototypeField>
                       <PrototypeField label="命名空间" required>
-                        <div className="grid grid-cols-[1fr_48px] gap-3">
-                          <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value })} className="blueedge-native-select !h-10 !rounded-xl !text-sm">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
-                          <Button type="button" variant="outline" className="h-10 rounded-xl px-0"><RefreshCw className="h-4 w-4" /></Button>
-                        </div>
-                        <button type="button" className="mt-2 text-sm font-semibold text-[var(--color-brand)]">+ 创建命名空间</button>
+                        <select value={form.namespace} onChange={e => { setForm({ ...form, namespace: e.target.value, model: "", protocol: "" }); setTwins([]); }} className="blueedge-native-select !h-10 !rounded-xl !text-sm">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
                       </PrototypeField>
                       <PrototypeField label="设备模型" required>
-                        <select value={form.model} onChange={e => setForm({ ...form, model: e.target.value })} className="blueedge-native-select !h-10 !rounded-xl !text-sm">{modelOptions.length === 0 && <option value={form.model}>{form.model}</option>}{modelOptions.map(model => <option key={model} value={model}>{model}</option>)}</select>
+                        <select value={form.model} onChange={e => { const model = availableModels.find((item) => item.name === e.target.value); setForm({ ...form, model: e.target.value, protocol: model?.protocol || form.protocol }); setTwins([]); }} className="blueedge-native-select !h-10 !rounded-xl !text-sm"><option value="">请选择真实设备模型</option>{availableModels.map(model => <option key={`${model.namespace}/${model.name}`} value={model.name}>{model.name}</option>)}</select>
+                      </PrototypeField>
+                      <PrototypeField label="边缘节点">
+                        <select value={form.node} onChange={e => setForm({ ...form, node: e.target.value })} className="blueedge-native-select !h-10 !rounded-xl !text-sm"><option value="">不指定节点</option>{nodeOptions.map(node => <option key={node} value={node}>{node}</option>)}</select>
                       </PrototypeField>
                       <PrototypeField label="访问协议" required>
                         <Input placeholder="MQTT / Modbus TCP / OPC UA" value={form.protocol} onChange={e => setForm({ ...form, protocol: e.target.value })} className="h-10 rounded-xl text-sm" />
@@ -333,7 +351,7 @@ export function DeviceInstances() {
                     <div className="space-y-7">
                       <div className="flex items-center justify-between">
                         <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">孪生属性</h3>
-                        <Button type="button" onClick={() => setAddTwinOpen(true)} className="h-9 rounded-xl bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90"><Plus className="mr-1.5 h-4 w-4" />新增孪生</Button>
+                        <Button type="button" onClick={openAddTwin} disabled={!selectedModel} className="h-9 rounded-xl bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90"><Plus className="mr-1.5 h-4 w-4" />新增孪生</Button>
                       </div>
                       {twins.length === 0 ? (
                         <div className="flex min-h-[120px] flex-col items-center justify-center rounded-2xl border border-dashed border-[#d8e1ec] bg-[#fbfcfe] text-center">
@@ -341,16 +359,10 @@ export function DeviceInstances() {
                           <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">点击“新增孪生”按钮添加</p>
                         </div>
                       ) : (
-                        <div className="space-y-2">
-                          {twins.map((item) => (
-                            <div key={item.name} className="flex items-center justify-between rounded-xl border border-[var(--color-border)] bg-white px-4 py-3">
-                              <div>
-                                <p className="text-sm font-semibold text-[var(--color-text-primary)]">{item.name}</p>
-                                <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">期望值 {item.expected} / 采样 {item.sampleInterval}s / 上报 {item.reportInterval}s</p>
-                              </div>
-                              <button type="button" className="action-button is-danger" onClick={() => setTwins((prev) => prev.filter((current) => current.name !== item.name))} aria-label={`删除 ${item.name}`}><Trash2 className="h-3.5 w-3.5" /></button>
-                            </div>
-                          ))}
+                        <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-white">
+                          <Table><TableHeader><TableRow className="bg-[#f8fafc] hover:bg-[#f8fafc]"><TableHead>属性名称</TableHead><TableHead>期望值</TableHead><TableHead>采样间隔</TableHead><TableHead>上报间隔</TableHead><TableHead>访问 YAML</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+                            <TableBody>{twins.map((item) => <TableRow key={item.propertyName}><TableCell className="font-semibold">{item.propertyName}</TableCell><TableCell>{item.desiredValue || "-"}</TableCell><TableCell>{item.collectIntervalSeconds}s</TableCell><TableCell>{item.reportIntervalSeconds}s</TableCell><TableCell>{item.accessConfigYaml.trim() ? "已配置" : "-"}</TableCell><TableCell><div className="flex justify-end gap-2"><button type="button" className="action-button" onClick={() => openEditTwin(item)} aria-label={`编辑 ${item.propertyName}`}><Pencil className="h-3.5 w-3.5" /></button><button type="button" className="action-button is-danger" onClick={() => setTwins((prev) => prev.filter((current) => current.propertyName !== item.propertyName))} aria-label={`删除 ${item.propertyName}`}><Trash2 className="h-3.5 w-3.5" /></button></div></TableCell></TableRow>)}</TableBody>
+                          </Table>
                         </div>
                       )}
                       <div className="space-y-3">
@@ -370,8 +382,8 @@ export function DeviceInstances() {
                     <div className="space-y-5">
                       <PrototypeField label="参数配置 YAML" required>
                         <div className="grid grid-cols-2 gap-5">
-                          <YamlPanel title="YAML 配置" actions value={accessYaml} onChange={setAccessYaml} />
-                          <YamlPanel title="YAML 示例" readonly value={defaultAccessYaml} />
+                          <YamlPanel title="YAML 配置" value={accessConfigYaml} onChange={setAccessConfigYaml} actions downloadName={`${form.name || "device"}-access-config.yaml`} />
+                          <YamlPanel title="YAML 示例" readonly readonlyActions value={defaultAccessYaml} downloadName="device-access-config-example.yaml" />
                         </div>
                       </PrototypeField>
                     </div>
@@ -383,17 +395,19 @@ export function DeviceInstances() {
                           <ConfirmItem label="设备名称" value={form.name || "-"} />
                           <ConfirmItem label="命名空间" value={form.namespace} />
                           <ConfirmItem label="设备模型" value={form.model} />
+                          <ConfirmItem label="边缘节点" value={form.node || "-"} />
                           <ConfirmItem label="访问协议" value={form.protocol || "-"} />
                           <ConfirmItem label="描述" value={form.description || "-"} />
                         </div>
                       </ConfirmSection>
                       <ConfirmSection title="设备配置">
                         <div className="mb-3 flex items-center justify-between text-sm font-semibold text-[var(--color-text-primary)]"><span>孪生属性列表</span><span className="text-[var(--color-text-tertiary)]">{twins.length} 个</span></div>
-                        {twins.length === 0 ? <div className="flex min-h-[72px] items-center justify-center rounded-xl border border-dashed border-[#d8e1ec] bg-white text-sm text-[var(--color-text-tertiary)]">暂无孪生属性</div> : <div className="space-y-2">{twins.map((item) => <div key={item.name} className="rounded-xl bg-white px-4 py-3 text-sm font-medium">{item.name}</div>)}</div>}
+                        {twins.length === 0 ? <div className="flex min-h-[72px] items-center justify-center rounded-xl border border-dashed border-[#d8e1ec] bg-white text-sm text-[var(--color-text-tertiary)]">暂无孪生属性</div> : <div className="overflow-hidden rounded-xl border border-[var(--color-border)] bg-white"><Table><TableHeader><TableRow><TableHead>属性名称</TableHead><TableHead>期望值</TableHead><TableHead>采样间隔</TableHead><TableHead>上报间隔</TableHead><TableHead>属性访问方式</TableHead></TableRow></TableHeader><TableBody>{twins.map((item) => <TableRow key={item.propertyName}><TableCell>{item.propertyName}</TableCell><TableCell>{item.desiredValue || "-"}</TableCell><TableCell>{item.collectIntervalSeconds}s</TableCell><TableCell>{item.reportIntervalSeconds}s</TableCell><TableCell>{item.accessConfigYaml.trim() ? "已配置" : "-"}</TableCell></TableRow>)}</TableBody></Table></div>}
                         <p className="mt-4 text-sm text-[var(--color-text-tertiary)]">标签：{labels.some((item) => item.key.trim()) ? labels.filter((item) => item.key.trim()).map((item) => `${item.key}:${item.value || "-"}`).join("，") : "-"}</p>
                       </ConfirmSection>
                       <ConfirmSection title="访问配置">
-                        <YamlPanel title="YAML 预览" readonly readonlyActions value={accessYaml} compact />
+                        <p className="mb-3 text-sm text-[var(--color-text-secondary)]">结构化配置写入 Device CRD，原始 YAML 写入关联扩展 ConfigMap。</p>
+                        <YamlPanel title="YAML 预览" readonly readonlyActions compact value={accessConfigYaml} downloadName={`${form.name || "device"}-access-config.yaml`} />
                       </ConfirmSection>
                     </div>
                   )}
@@ -401,31 +415,35 @@ export function DeviceInstances() {
                 <DialogFooter className="shrink-0 border-t border-[#eef1f5] bg-white px-7 py-5">
                   {createStep > 1 && <Button variant="outline" onClick={() => setCreateStep((createStep - 1) as 1 | 2 | 3 | 4)} className="mr-auto h-9 rounded-[10px] px-4 text-sm"><ChevronLeft className="mr-1 h-4 w-4" />上一步</Button>}
                   <Button variant="outline" onClick={requestCancelCreate} className="h-9 rounded-[10px] px-4 text-sm">取消</Button>
-                  <Button onClick={() => createStep === 4 ? handleCreate() : setCreateStep((createStep + 1) as 1 | 2 | 3 | 4)} disabled={!form.name || !form.namespace || !form.model || !form.protocol} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">{createStep === 4 ? "创建" : "下一步"} <ChevronRight className="ml-1 h-4 w-4" /></Button>
+                  <Button onClick={() => createStep === 4 ? handleCreate() : goNext()} disabled={isLoading} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">{createStep === 4 ? (isLoading ? "创建中..." : "创建") : "下一步"} <ChevronRight className="ml-1 h-4 w-4" /></Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>
             <Dialog open={addTwinOpen} onOpenChange={setAddTwinOpen}>
-              <DialogContent className="!flex !w-[min(1080px,calc(100vw-48px))] !max-w-none max-h-[88vh] flex-col gap-0 overflow-hidden rounded-[24px] p-0" showCloseButton={false}>
+              <DialogContent className="!flex !w-[min(1200px,calc(100vw-48px))] !max-w-none max-h-[92vh] flex-col gap-0 overflow-hidden rounded-[24px] p-0" showCloseButton={false}>
                 <button type="button" onClick={() => setAddTwinOpen(false)} className="absolute right-7 top-5 flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--color-border-strong)] text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"><X className="h-5 w-5" /></button>
-                <DialogHeader className="shrink-0 border-b border-[#eef1f5] px-7 py-6"><DialogTitle className="text-base font-bold">新增孪生属性</DialogTitle></DialogHeader>
+                <DialogHeader className="shrink-0 border-b border-[#eef1f5] px-7 py-6"><DialogTitle className="text-base font-bold">{editingTwinName ? "编辑孪生属性" : "新增孪生属性"}</DialogTitle></DialogHeader>
                 <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-7 py-7">
-                  <PrototypeField label="属性名" required><Input placeholder="temperature" value={twinForm.name} onChange={(event) => setTwinForm({ ...twinForm, name: event.target.value })} className="h-10 rounded-xl text-sm" /></PrototypeField>
-                  <PrototypeField label="期望值"><Input placeholder="请输入期望值" value={twinForm.expected} onChange={(event) => setTwinForm({ ...twinForm, expected: event.target.value })} className="h-10 rounded-xl text-sm" /></PrototypeField>
+                  <PrototypeField label="属性名" required>
+                    <Input list="device-model-property-options" placeholder="请输入属性名" value={twinForm.propertyName} onChange={(event) => setTwinForm({ ...twinForm, propertyName: event.target.value })} className="h-10 rounded-xl text-sm" />
+                    <datalist id="device-model-property-options">{(selectedModel?.properties || []).filter((property) => property.name === editingTwinName || !twins.some((item) => item.propertyName === property.name)).map((property) => <option key={property.name} value={property.name}>{property.type}</option>)}</datalist>
+                    <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">可直接输入或从设备模型属性建议中选择；名称必须存在于当前设备模型。</p>
+                  </PrototypeField>
+                  <PrototypeField label="期望值"><Input placeholder="请输入期望值" value={twinForm.desiredValue} onChange={(event) => setTwinForm({ ...twinForm, desiredValue: event.target.value })} className="h-10 rounded-xl text-sm" /></PrototypeField>
                   <div className="grid grid-cols-2 gap-5">
-                    <PrototypeField label="采样间隔（秒）"><Input value={twinForm.sampleInterval} onChange={(event) => setTwinForm({ ...twinForm, sampleInterval: event.target.value })} className="h-10 rounded-xl text-sm" /></PrototypeField>
-                    <PrototypeField label="上报间隔（秒）"><Input value={twinForm.reportInterval} onChange={(event) => setTwinForm({ ...twinForm, reportInterval: event.target.value })} className="h-10 rounded-xl text-sm" /></PrototypeField>
+                    <PrototypeField label="采样间隔（秒）"><Input type="number" min="1" value={twinForm.collectIntervalSeconds} onChange={(event) => setTwinForm({ ...twinForm, collectIntervalSeconds: event.target.value })} className="h-10 rounded-xl text-sm" /></PrototypeField>
+                    <PrototypeField label="上报间隔（秒）"><Input type="number" min="1" value={twinForm.reportIntervalSeconds} onChange={(event) => setTwinForm({ ...twinForm, reportIntervalSeconds: event.target.value })} className="h-10 rounded-xl text-sm" /></PrototypeField>
                   </div>
-                  <PrototypeField label="属性访问方式（YAML）">
+                  <PrototypeField label="属性访问方式（YAML）" required>
                     <div className="grid grid-cols-2 gap-5">
-                      <YamlPanel title="YAML 配置" actions value={twinForm.yaml} onChange={(value) => setTwinForm({ ...twinForm, yaml: value })} />
-                      <YamlPanel title="YAML 示例" readonly value={defaultTwinYaml} />
+                      <YamlPanel title="YAML 配置" value={twinForm.accessConfigYaml} onChange={(value) => setTwinForm({ ...twinForm, accessConfigYaml: value })} actions compact downloadName={`${twinForm.propertyName || "property"}-visitor.yaml`} />
+                      <YamlPanel title="YAML 示例" readonly readonlyActions compact value={defaultTwinYaml} downloadName="twin-visitor-example.yaml" />
                     </div>
                   </PrototypeField>
                 </div>
                 <DialogFooter className="shrink-0 border-t border-[#eef1f5] bg-white px-7 py-5">
                   <Button variant="outline" onClick={() => setAddTwinOpen(false)} className="h-9 rounded-[10px] px-4 text-sm">取消</Button>
-                  <Button onClick={confirmAddTwin} disabled={!twinForm.name.trim()} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">确定</Button>
+                  <Button onClick={confirmAddTwin} disabled={!twinForm.propertyName.trim()} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">确定</Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>
@@ -510,7 +528,11 @@ export function DeviceInstances() {
                 </div>
               ))}
             </TabsContent>
-            <TabsContent value="yaml" className="mt-3"><div className="relative"><pre className="blueedge-code-block p-4 overflow-x-auto">{yaml(selected)}</pre><Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(yaml(selected))}><Copy className="w-3.5 h-3.5" /></Button></div></TabsContent>
+            <TabsContent value="yaml" className="mt-3 space-y-4">
+              {selected.raw?.extension?.accessConfigYaml ? <YamlPanel title="访问配置 YAML" readonly readonlyActions compact value={selected.raw.extension.accessConfigYaml} downloadName={`${selected.name}-access-config.yaml`} /> : <div className="text-sm text-[var(--color-text-tertiary)] py-6 text-center">该设备没有 BlueEdge 扩展 YAML</div>}
+              {Object.entries(selected.raw?.extension?.twinAccessConfigs || {}).map(([propertyName, config]) => <YamlPanel key={propertyName} title={`${propertyName} 访问 YAML`} readonly readonlyActions compact value={String(config)} downloadName={`${selected.name}-${propertyName}-visitor.yaml`} />)}
+              <div className="relative"><pre className="blueedge-code-block max-h-[360px] overflow-auto p-4">{JSON.stringify(selected.raw, null, 2)}</pre><Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(JSON.stringify(selected.raw, null, 2))}><Copy className="w-3.5 h-3.5" /></Button></div>
+            </TabsContent>
           </Tabs>)}
         </SheetContent>
       </Sheet>
@@ -572,17 +594,17 @@ function CreateStepper({ current, steps }: { current: number; steps: string[] })
   );
 }
 
-function YamlPanel({ title, value, onChange, readonly, actions, readonlyActions, compact }: { title: string; value: string; onChange?: (value: string) => void; readonly?: boolean; actions?: boolean; readonlyActions?: boolean; compact?: boolean; }) {
-  const lines = value.split("\n");
+function YamlPanel({ title, value, onChange, readonly, actions, readonlyActions, compact, downloadName }: { title: string; value: string; onChange?: (value: string) => void; readonly?: boolean; actions?: boolean; readonlyActions?: boolean; compact?: boolean; downloadName?: string; }) {
   const showActions = actions || readonlyActions;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreenDraft, setFullscreenDraft] = useState(value);
   const downloadYaml = () => {
     const blob = new Blob([value], { type: "text/yaml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `${title.replace(/\s+/g, "-").toLowerCase() || "config"}.yaml`;
+    link.download = downloadName || `${title.replace(/\s+/g, "-").toLowerCase() || "config"}.yaml`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -592,7 +614,14 @@ function YamlPanel({ title, value, onChange, readonly, actions, readonlyActions,
     reader.onload = () => onChange(String(reader.result ?? ""));
     reader.readAsText(file);
   };
-  const renderPanel = (isFullscreen = false) => (
+  const openFullscreen = () => {
+    setFullscreenDraft(value);
+    setFullscreen(true);
+  };
+  const renderPanel = (isFullscreen = false) => {
+    const panelValue = isFullscreen ? fullscreenDraft : value;
+    const lines = panelValue.split("\n");
+    return (
     <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-white">
       <div className="flex h-10 items-center justify-between gap-4 bg-[#f8fafc] px-4 text-sm font-semibold text-[var(--color-text-secondary)]">
         <span className="shrink-0 whitespace-nowrap">{title}</span>
@@ -605,7 +634,7 @@ function YamlPanel({ title, value, onChange, readonly, actions, readonlyActions,
               </>
             )}
             <button type="button" onClick={downloadYaml} className="inline-flex items-center gap-1 transition-colors hover:text-[var(--color-brand)]"><Download className="h-3.5 w-3.5" />下载</button>
-            <button type="button" onClick={() => setFullscreen(true)} className="inline-flex items-center gap-1 transition-colors hover:text-[var(--color-brand)]"><Maximize2 className="h-3.5 w-3.5" />全屏</button>
+            <button type="button" onClick={openFullscreen} className="inline-flex items-center gap-1 transition-colors hover:text-[var(--color-brand)]"><Maximize2 className="h-3.5 w-3.5" />全屏</button>
           </div>
         ) : null}
       </div>
@@ -614,13 +643,14 @@ function YamlPanel({ title, value, onChange, readonly, actions, readonlyActions,
           {lines.map((_, index) => <div key={index} className="px-3">{index + 1}</div>)}
         </div>
         {readonly || !onChange ? (
-          <pre className="overflow-auto whitespace-pre py-3 pl-4 pr-5"><code><HighlightedYaml value={value} /></code></pre>
+          <pre className="overflow-auto whitespace-pre py-3 pl-4 pr-5"><code><HighlightedYaml value={panelValue} /></code></pre>
         ) : (
-          <Textarea value={value} onChange={(event) => onChange(event.target.value)} spellCheck={false} className="h-full resize-none overflow-auto rounded-none border-0 bg-transparent py-3 pl-4 pr-5 font-mono text-[13px] leading-6 text-[#d4d4d4] caret-white shadow-none outline-none selection:bg-white/20 focus-visible:ring-0" />
+          <Textarea value={panelValue} onChange={(event) => isFullscreen ? setFullscreenDraft(event.target.value) : onChange(event.target.value)} spellCheck={false} className="h-full resize-none overflow-auto rounded-none border-0 bg-transparent py-3 pl-4 pr-5 font-mono text-[13px] leading-6 text-[#d4d4d4] caret-white shadow-none outline-none selection:bg-white/20 focus-visible:ring-0" />
         )}
       </div>
     </div>
   );
+  };
   return (
     <>
       {renderPanel()}
@@ -634,6 +664,7 @@ function YamlPanel({ title, value, onChange, readonly, actions, readonlyActions,
             <div className="min-h-0 flex-1 p-5">
               {renderPanel(true)}
             </div>
+            {!readonly && onChange && <div className="flex shrink-0 justify-end gap-3 border-t border-[var(--color-border)] px-6 py-4"><Button variant="outline" onClick={() => setFullscreen(false)}>取消</Button><Button onClick={() => { onChange(fullscreenDraft); setFullscreen(false); }} className="bg-[var(--color-text-primary)] text-white">保存</Button></div>}
           </div>
         </div>
       )}

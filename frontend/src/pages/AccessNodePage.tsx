@@ -13,10 +13,11 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toAccessConfigUiModel, type AccessConfigInstallCommandResponse, type AccessConfigUiModel } from "@/api/adapters/access-config.adapter";
-import { getAccessConfigInstallCommand, listAccessConfigs } from "@/api/services/product";
+import { getAccessConfigInstallCommand, listAccessConfigs, updateAccessConfig } from "@/api/services/product";
 import { cn } from "@/lib/utils";
 
 export function AccessNodePage() {
@@ -28,6 +29,7 @@ export function AccessNodePage() {
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);
+  const [nodeName, setNodeName] = useState("");
 
   const selectedConfig = useMemo(
     () => configs.find((config) => config.name === selectedConfigId),
@@ -41,7 +43,11 @@ export function AccessNodePage() {
       const result = await listAccessConfigs();
       const nextConfigs = result.items.map(toAccessConfigUiModel);
       setConfigs(nextConfigs);
-      setSelectedConfigId((current) => current || nextConfigs[0]?.name || "");
+      setSelectedConfigId((current) => {
+        const nextSelectedConfig = nextConfigs.find((config) => config.name === current) || nextConfigs[0];
+        setNodeName(nextSelectedConfig?.nodeName || "");
+        return nextSelectedConfig?.name || "";
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "接入配置加载失败");
       setConfigs([]);
@@ -59,6 +65,24 @@ export function AccessNodePage() {
     setRefreshing(true);
     setError("");
     try {
+      const nextNodeName = nodeName.trim();
+      if (nextNodeName && nextNodeName !== selectedConfig.nodeName) {
+        await updateAccessConfig(selectedConfig.name, {
+          edgeUnitRef: selectedConfig.edgeUnitRef,
+          nodeName: nextNodeName,
+          architecture: selectedConfig.architecture,
+          os: selectedConfig.os,
+          kubeEdgeVersion: selectedConfig.kubeEdgeVersion,
+          cloudCoreAddress: selectedConfig.cloudCoreAddress,
+          protocol: selectedConfig.protocol,
+          ...(selectedConfig.driver ? { driver: selectedConfig.driver } : {}),
+          criAddress: selectedConfig.criAddress,
+          registry: selectedConfig.registry,
+          description: selectedConfig.description,
+          labels: selectedConfig.labels,
+        });
+        setConfigs((current) => current.map((config) => config.name === selectedConfig.name ? { ...config, nodeName: nextNodeName } : config));
+      }
       const result = await getAccessConfigInstallCommand(selectedConfig.name);
       setInstallCommand(result);
       setStepsOpen(true);
@@ -98,14 +122,17 @@ export function AccessNodePage() {
             <p className="text-sm leading-6 text-[#92400e]">以下操作均以 root 管理员执行，避免因权限不足导致安装失败</p>
           </div>
 
-          <div className="table-card max-w-[760px] p-6">
+          <div className="table-card max-w-[920px] p-6">
             <div className="space-y-5">
               <div>
                 <Label className="mb-1.5 block text-sm font-semibold text-[var(--color-text-primary)]">
                   接入配置 <span className="text-[var(--color-danger)]">*</span>
                 </Label>
                 <div className="flex items-center gap-3">
-                  <Select value={selectedConfigId} onValueChange={setSelectedConfigId}>
+                  <Select value={selectedConfigId} onValueChange={(value) => {
+                    setSelectedConfigId(value);
+                    setNodeName(configs.find((config) => config.name === value)?.nodeName || "");
+                  }}>
                     <SelectTrigger className="h-11 flex-1 rounded-xl">
                       <SelectValue placeholder="请选择接入配置" />
                     </SelectTrigger>
@@ -128,13 +155,19 @@ export function AccessNodePage() {
 
               {selectedConfig && (
                 <div className="grid gap-3 rounded-xl bg-[var(--color-bg-soft)] p-4 md:grid-cols-3">
-                  <DetailItem label="边缘单元" value={selectedConfig.edgeUnitRef} />
+                  <DetailItem label="驱动方式" value={selectedConfig.driver || "未配置"} />
                   <DetailItem label="通信协议" value={selectedConfig.protocol} />
                   <DetailItem label="访问地址" value={selectedConfig.cloudCoreAddress} />
                 </div>
               )}
 
-              {selectedConfig && <DetailItem label="节点名称" value={selectedConfig.nodeName} />}
+              {selectedConfig && (
+                <div>
+                  <Label className="mb-2 block text-sm font-semibold text-[var(--color-text-primary)]">节点名称</Label>
+                  <Input value={nodeName} onChange={(event) => setNodeName(event.target.value)} placeholder="请输入节点名称" className="h-11 rounded-xl" />
+                  <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">不修改时使用接入配置中的节点名称：{selectedConfig.nodeName}</p>
+                </div>
+              )}
               {error && <div className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">{error}</div>}
 
               <Button disabled={!selectedConfig || refreshing} onClick={() => void openSteps()} className="h-10 rounded-xl bg-[var(--color-text-primary)] px-5 text-sm font-bold text-white hover:bg-[var(--color-text-primary)]/90">
@@ -178,7 +211,7 @@ function AccessStepsDialog({
   };
 
   const joinCommand = installCommand.command || installCommand.commandTemplate;
-  const initCommandOnline = "安装包与 join token provider 尚未配置完整，请按平台环境配置后重新生成接入命令。";
+  const initCommandOnline = installCommand.prepareCommand || "在线安装命令暂不可用。";
   const initCommandOffline = "离线安装包下载能力尚未配置，当前后端会返回 501。";
 
   return (
@@ -196,8 +229,8 @@ function AccessStepsDialog({
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#d97706]" />
             <p className="text-xs leading-5 text-[#92400e]">
               {installCommand.ready
-                ? "当前命令可执行，请妥善保管短期凭证。"
-                : `ready=false：当前仅提供命令模板，尚未接入 join token。${installCommand.missingRequirements.length ? `缺失：${installCommand.missingRequirements.join("、")}` : ""}`}
+                ? `当前命令可执行，请妥善保管短期凭证。${installCommand.expiresAt ? `凭证有效期至 ${new Date(installCommand.expiresAt).toLocaleString("zh-CN")}` : ""}`
+                : `当前无法获取有效的 KubeEdge 接入凭证。${installCommand.missingRequirements.length ? `原因：${installCommand.missingRequirements.join("、")}` : ""}`}
             </p>
           </div>
 

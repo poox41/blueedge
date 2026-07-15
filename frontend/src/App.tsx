@@ -1,5 +1,7 @@
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { EdgeUnitProvider } from "@/contexts/EdgeUnitContext";
+import { NamespaceProvider } from "@/contexts/NamespaceProvider";
 import { MainLayout } from "@/components/layout/MainLayout";
 import { LoginPage } from "@/pages/LoginPage";
 import Home from "@/pages/Home";
@@ -73,9 +75,11 @@ function AppRoutes() {
         <Route path="/devicemodels" element={<DeviceModels />} />
         <Route path="/deviceinstances" element={<DeviceInstances />} />
         <Route path="/ruleendpoints" element={<RuleEndpoints />} />
+        <Route path="/ruleendpoints/:namespace/:name" element={<RuleEndpoints />} />
         <Route path="/rules" element={<Rules />} />
         <Route path="/services" element={<Services />} />
         <Route path="/configmaps" element={<ConfigMaps />} />
+        <Route path="/configmaps/:resourceType/:namespace/:name" element={<ConfigMaps />} />
         <Route path="/secrets" element={<Secrets />} />
         <Route path="/serviceaccounts" element={<ServiceAccounts />} />
         <Route path="/roles" element={<Roles />} />
@@ -92,7 +96,11 @@ function App() {
   return (
     <HashRouter>
       <AuthProvider>
-        <AppRoutes />
+        <EdgeUnitProvider>
+          <NamespaceProvider>
+            <AppRoutes />
+          </NamespaceProvider>
+        </EdgeUnitProvider>
       </AuthProvider>
     </HashRouter>
   );

@@ -1,3 +1,5 @@
+import type { BatchWorkloadPlan } from "@/api/services/product";
+
 export type BatchTaskApiStatus =
   | "initializing"
   | "pending"
@@ -34,7 +36,8 @@ export interface BatchTaskApiItem {
   steps?: Array<{ name: string; status: string; message?: string }>;
   targetResults?: Array<{ target: string; status: string; message?: string }>;
   errors?: Array<{ target?: string; message: string } | string>;
-  targets?: any[];
+  targets?: Array<{ namespace?: string; image?: string; [key: string]: unknown }>;
+  plan?: BatchWorkloadPlan | null;
   rawRef?: {
     kind: string;
     namespace?: string;
@@ -97,13 +100,15 @@ export function toBatchTaskRow(item: BatchTaskApiItem) {
 }
 
 export function toBatchWorkloadRow(item: BatchTaskApiItem) {
-  const target = Array.isArray(item.targets) ? item.targets[0] : null;
+  const legacyTarget = Array.isArray(item.targets) ? item.targets[0] : null;
+  const namespace = item.plan?.namespace || legacyTarget?.namespace || "default";
+  const image = item.image || item.plan?.podTemplate.containers[0]?.image || legacyTarget?.image || "";
   const targetGroups = Array.isArray(item.targetRefs) ? item.targetRefs : [];
   return {
     id: item.id,
     name: item.name,
-    namespace: target?.namespace || "default",
-    image: item.image || target?.image || "",
+    namespace,
+    image,
     targetGroups,
     status: item.status === "running" || item.status === "succeeded"
       ? "部署计划已生成"
