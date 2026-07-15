@@ -8,6 +8,7 @@ import Home from "@/pages/Home";
 import { Dashboard } from "@/pages/Dashboard";
 import { Nodes } from "@/pages/Nodes";
 import { AccessNodePage } from "@/pages/AccessNodePage";
+import { AccessConfigDetailPage } from "@/pages/AccessConfigDetailPage";
 import { NodeGroups } from "@/pages/NodeGroups";
 import { BatchTasks } from "@/pages/BatchTasks";
 import { Deployments } from "@/pages/Deployments";
@@ -64,8 +65,11 @@ function AppRoutes() {
       >
         <Route path="/nodes" element={<Nodes />} />
         <Route path="/nodes/access" element={<AccessNodePage />} />
+        <Route path="/nodes/access-config/:name" element={<AccessConfigDetailPage />} />
         <Route path="/nodegroups" element={<NodeGroups />} />
+        <Route path="/nodegroups/:name" element={<NodeGroups />} />
         <Route path="/batchtasks" element={<BatchTasks />} />
+        <Route path="/batchtasks/:taskId/:taskName" element={<BatchTasks />} />
         <Route path="/deployments" element={<Deployments />} />
         <Route path="/batchworkloads" element={<BatchWorkloads />} />
         <Route path="/pods" element={<Pods />} />
@@ -73,7 +77,9 @@ function AppRoutes() {
         <Route path="/persistentvolumes" element={<PersistentVolumes />} />
         <Route path="/persistentvolumeclaims" element={<PersistentVolumeClaims />} />
         <Route path="/devicemodels" element={<DeviceModels />} />
+        <Route path="/devicemodels/:namespace/:name" element={<DeviceModels />} />
         <Route path="/deviceinstances" element={<DeviceInstances />} />
+        <Route path="/deviceinstances/:namespace/:name" element={<DeviceInstances />} />
         <Route path="/ruleendpoints" element={<RuleEndpoints />} />
         <Route path="/ruleendpoints/:namespace/:name" element={<RuleEndpoints />} />
         <Route path="/rules" element={<Rules />} />

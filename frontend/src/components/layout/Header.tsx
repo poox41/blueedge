@@ -1,6 +1,6 @@
+import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { ChevronDown, ChevronLeft, LogOut, RefreshCw, Server, User } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { ArrowLeftRight, Bell, ChevronDown, ChevronLeft, LogOut, RefreshCw, Server, Settings, User } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -46,12 +46,30 @@ export function Header() {
   const location = useLocation();
   const configDetailMatch = location.pathname.match(/^\/configmaps\/(?:config|secret)\/[^/]+\/([^/]+)$/);
   const ruleEndpointDetailMatch = location.pathname.match(/^\/ruleendpoints\/[^/]+\/([^/]+)$/);
-  const detailResourceName = configDetailMatch ? decodeURIComponent(configDetailMatch[1]) : ruleEndpointDetailMatch ? decodeURIComponent(ruleEndpointDetailMatch[1]) : "";
-  const title = configDetailMatch ? "配置项与密钥" : ruleEndpointDetailMatch ? "消息端点" : routeTitles[location.pathname] || "概览";
-  const showNamespace = !new Set(["/nodes", "/nodes/access", "/nodegroups", "/batchtasks"]).has(location.pathname);
+  const nodeGroupDetailMatch = location.pathname.match(/^\/nodegroups\/([^/]+)$/);
+  const deviceModelDetailMatch = location.pathname.match(/^\/devicemodels\/[^/]+\/([^/]+)$/);
+  const deviceInstanceDetailMatch = location.pathname.match(/^\/deviceinstances\/[^/]+\/([^/]+)$/);
+  const batchTaskDetailMatch = location.pathname.match(/^\/batchtasks\/[^/]+\/([^/]+)$/);
+  const accessConfigDetailMatch = location.pathname.match(/^\/nodes\/access-config\/([^/]+)$/);
+  const detailResourceName = configDetailMatch
+    ? decodeURIComponent(configDetailMatch[1])
+    : ruleEndpointDetailMatch
+      ? decodeURIComponent(ruleEndpointDetailMatch[1])
+      : nodeGroupDetailMatch
+        ? decodeURIComponent(nodeGroupDetailMatch[1])
+        : deviceModelDetailMatch
+          ? decodeURIComponent(deviceModelDetailMatch[1])
+          : deviceInstanceDetailMatch
+            ? decodeURIComponent(deviceInstanceDetailMatch[1])
+          : batchTaskDetailMatch
+            ? decodeURIComponent(batchTaskDetailMatch[1])
+        : "";
+  const title = accessConfigDetailMatch ? "边缘节点" : configDetailMatch ? "配置项与密钥" : ruleEndpointDetailMatch ? "消息端点" : nodeGroupDetailMatch ? "边缘节点组" : deviceModelDetailMatch ? "设备模型" : deviceInstanceDetailMatch ? "终端设备" : batchTaskDetailMatch ? "批量任务" : routeTitles[location.pathname] || "概览";
+  const showNamespace = !new Set(["/nodes", "/nodes/access", "/nodegroups", "/batchtasks"]).has(location.pathname) && !accessConfigDetailMatch && !nodeGroupDetailMatch && !batchTaskDetailMatch;
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
 
   return (
-    <header className="sticky top-0 z-30 flex h-[72px] shrink-0 items-center justify-between border-b border-[var(--color-border)] bg-white px-6">
+    <header className="flex h-[72px] shrink-0 items-center justify-between border-b border-[var(--color-border)] bg-white px-6">
       <div className="flex items-center gap-2 text-sm">
         <Link to="/" className="flex items-center gap-1 rounded-lg px-2 py-1 text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]">
           <ChevronLeft className="h-3.5 w-3.5" />
@@ -60,7 +78,7 @@ export function Header() {
         <span className="text-[var(--color-text-tertiary)]">/</span>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-semibold text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]">
+            <button className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-medium text-[var(--color-text-primary)] hover:bg-[var(--color-bg-hover)]">
               <Server className="h-3.5 w-3.5 text-[var(--color-brand)]" />
               {loading ? "加载中..." : selectedEdgeUnit?.name || "暂无边缘单元"}
               <ChevronDown className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
@@ -99,26 +117,24 @@ export function Header() {
 
       <div className="flex items-center gap-2">
         {error && <span className="max-w-[260px] truncate text-xs text-[var(--color-danger)]" title={error}>{error}</span>}
-        <button type="button" className="blueedge-icon-button" aria-label="刷新边缘单元" onClick={() => void refreshEdgeUnits()} disabled={loading}>
+        <button type="button" className="flex h-9 w-9 items-center justify-center rounded-[10px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)]" aria-label="刷新边缘单元" onClick={() => void refreshEdgeUnits()} disabled={loading}>
           <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
         </button>
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="h-9 gap-2 rounded-[10px] px-2 text-sm text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]">
-              <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-text-primary)] text-white">
-                <User className="h-4 w-4" />
-              </div>
-              <span>dashboard-user</span>
-              <ChevronDown className="h-3.5 w-3.5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-[176px] rounded-xl border-[var(--color-border)]">
-            <DropdownMenuItem className="cursor-pointer text-sm text-[var(--color-danger)] focus:text-[var(--color-danger)]" onClick={logout}>
-              <LogOut className="mr-1.5 h-3.5 w-3.5" />
-              退出登录
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        <button type="button" className="relative flex h-9 w-9 items-center justify-center rounded-[10px] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)]" aria-label="通知">
+          <Bell className="h-4 w-4" />
+          <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-[var(--color-danger)]" />
+        </button>
+        <div className="relative ml-1" onMouseEnter={() => setUserMenuOpen(true)} onMouseLeave={() => setUserMenuOpen(false)}>
+          <button type="button" className="flex h-8 w-8 items-center justify-center rounded-full bg-[#111827] text-white transition-colors hover:bg-[#374151]" aria-label="用户菜单"><User className="h-3.5 w-3.5" /></button>
+          {userMenuOpen && (
+            <div className="absolute right-0 top-full z-50 mt-2 min-w-[160px] rounded-xl border border-[var(--color-border)] bg-white py-1.5 shadow-[var(--shadow-md)]">
+              <button type="button" className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-[#111827] transition-colors hover:bg-[var(--color-bg-hover)]"><Settings className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />个人设置</button>
+              <button type="button" className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-[#111827] transition-colors hover:bg-[var(--color-bg-hover)]"><ArrowLeftRight className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />切换账号</button>
+              <div className="mx-3 my-1 border-t border-[var(--color-border)]" />
+              <button type="button" onClick={logout} className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-[var(--color-danger)] transition-colors hover:bg-[var(--color-bg-hover)]"><LogOut className="h-3.5 w-3.5" />退出登录</button>
+            </div>
+          )}
+        </div>
       </div>
     </header>
   );

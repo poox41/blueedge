@@ -92,7 +92,6 @@ function normalizePlan(body: any): BatchWorkloadPlan {
   if (!namespace || !name) throw new Error("namespace and name are required");
   if (!/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/.test(name) || name.length > 63) throw new Error("名称必须是合法的 Kubernetes DNS 名称且不超过 63 个字符");
   if (!Number.isInteger(replicas) || replicas < 1) throw new Error("replicas must be a positive integer");
-  if (targetGroups.length === 0) throw new Error("至少选择一个真实 NodeGroup");
   if (containers.length === 0) throw new Error("至少配置一个容器");
   return {
     namespace,
@@ -404,7 +403,7 @@ export async function createBatchWorkload(body: any) {
   const id = batchWorkloadId(plan.namespace, plan.name);
   if (await findControl(id)) return { status: 409, body: { message: `批量工作负载 ${plan.namespace}/${plan.name} 已存在` } };
   let groups: any[];
-  try { groups = await validateTargets(plan); } catch (error) { return { status: 400, body: { message: error instanceof Error ? error.message : "目标校验失败" } }; }
+  try { groups = plan.targetGroups.length > 0 ? await validateTargets(plan) : []; } catch (error) { return { status: 400, body: { message: error instanceof Error ? error.message : "目标校验失败" } }; }
   await ensureNamespace();
   const deployments = await createDeployments(plan, id, groups).catch((error) => { throw error; });
   try {

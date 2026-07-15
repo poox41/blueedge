@@ -106,11 +106,11 @@ export interface WorkbenchEdgeUnitModel {
 }
 
 const defaultPorts = {
-  websocket: "-",
-  quic: "-",
-  https: "-",
-  cloudStream: "-",
-  tunnel: "-",
+  websocket: "30000",
+  quic: "30001",
+  https: "30002",
+  cloudStream: "30003",
+  tunnel: "30004",
 };
 
 function accessLabel(value: EdgeUnitAccessType): EdgeUnitUiModel["access"] {

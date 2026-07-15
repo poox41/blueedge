@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useParams } from "react-router-dom";
 import { useNamespace } from "@/contexts/NamespaceContext";
 import yaml from "js-yaml";
-import { ArrowLeft, Copy, Database, Download, Edit3, ExternalLink, FileCode2, Info, Maximize2, MessageSquareText, Minimize2, MoreHorizontal, Pencil, Plus, RefreshCw, Search, ShieldCheck, Tags, Trash2, Upload, X } from "lucide-react";
+import { ArrowLeft, Braces, Copy, Database, Download, Edit3, ExternalLink, Eye, EyeOff, FileCode2, Info, Maximize2, MessageSquareText, Minimize2, MoreHorizontal, Pencil, Plus, RefreshCw, Search, ShieldCheck, Tags, Trash2, Upload, X } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -63,6 +64,7 @@ type ConfigForm = {
   alias: string;
   namespace: string;
   description: string;
+  secretType: string;
   dataPairs: KvPair[];
   labels: KvPair[];
   annotations: KvPair[];
@@ -75,6 +77,7 @@ const emptyForm = (): ConfigForm => ({
   alias: "",
   namespace: "default",
   description: "",
+  secretType: "Opaque",
   dataPairs: [],
   labels: [],
   annotations: [],
@@ -120,6 +123,31 @@ const maskSecretData = (resource: KubeResource): Record<string, string> => {
     ...Object.keys(asRecord(resource.stringData)),
   ]);
   return Object.fromEntries(Array.from(keys).map((key) => [key, "******"]));
+};
+
+const getSecretValues = (resource: KubeResource | undefined): Record<string, string> => ({
+  ...stringifyRecord(asRecord(resource?.data)),
+  ...stringifyRecord(asRecord(resource?.stringData)),
+});
+
+const maskSecretValue = (value: string): string => value
+  .split("\n")
+  .map((line) => line.trim() ? "••••••••••••••••••••••••" : "")
+  .join("\n");
+
+const isBase64Value = (value: string): boolean => {
+  const compact = value.replace(/\s/g, "");
+  return Boolean(compact) && compact.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(compact);
+};
+
+const decodeBase64Value = (value: string): string => {
+  try {
+    const binary = window.atob(value.replace(/\s/g, ""));
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return "无法解码当前 Base64 内容";
+  }
 };
 
 const toConfigItem = (resource: KubeResource, type: ConfigType): ConfigItem => {
@@ -199,7 +227,7 @@ const buildConfigResource = (form: ConfigForm, type: ConfigType): KubeResource =
       ...(Object.keys(annotations).length ? { annotations } : {}),
     },
     ...(type === "密钥"
-      ? { type: "Opaque", stringData: data }
+      ? { type: form.secretType || "Opaque", stringData: data }
       : { data }),
   };
 };
@@ -224,6 +252,7 @@ const buildUpdatedConfigResource = (item: ConfigItem, form: ConfigForm): KubeRes
     },
   };
   if (item.type === "密钥") {
+    resource.type = form.secretType || String(item.raw?.type || "Opaque");
     resource.stringData = pairsToRecord(form.dataPairs);
     delete resource.data;
   } else {
@@ -311,7 +340,8 @@ export function ConfigMaps() {
   const { resourceType, namespace: detailNamespace, name: detailName } = useParams<{ resourceType?: string; namespace?: string; name?: string }>();
   const [items, setItems] = useState<ConfigItem[]>([]);
   const [activeTab, setActiveTab] = useState<"config" | "secret">("config");
-  const [search, setSearch] = useState("");
+  const [configSearch, setConfigSearch] = useState("");
+  const [secretSearch, setSecretSearch] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -322,6 +352,8 @@ export function ConfigMaps() {
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [yamlTarget, setYamlTarget] = useState<ConfigItem | null>(null);
   const [updateTarget, setUpdateTarget] = useState<ConfigItem | null>(null);
+  const [pendingYamlUpdate, setPendingYamlUpdate] = useState<{ target: ConfigItem; source: string } | null>(null);
+  const [pendingFormUpdate, setPendingFormUpdate] = useState<{ target: ConfigItem; form: ConfigForm } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ConfigItem | null>(null);
   const [detailItem, setDetailItem] = useState<ConfigItem | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -331,6 +363,12 @@ export function ConfigMaps() {
   const isDetailRoute = Boolean(detailType && detailNamespace && detailName);
 
   const currentType: ConfigType = activeTab === "config" ? "配置项" : "密钥";
+  const search = activeTab === "config" ? configSearch : secretSearch;
+  const setSearch = activeTab === "config" ? setConfigSearch : setSecretSearch;
+  const switchTab = (tab: "config" | "secret") => {
+    setActiveTab(tab);
+    setMenuOpenId(null);
+  };
   const filtered = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     return items
@@ -461,28 +499,29 @@ export function ConfigMaps() {
     }
   };
 
-  const handleUpdate = async (_id: string, form: ConfigForm) => {
-    if (!updateTarget) return;
+  const handleUpdate = async (target: ConfigItem, form: ConfigForm): Promise<boolean> => {
     setIsLoading(true);
     setError("");
     try {
-      const resource = buildUpdatedConfigResource(updateTarget, form);
-      if (updateTarget.type === "密钥") {
-        await updateSecretResource(updateTarget.namespace, resource);
+      const resource = buildUpdatedConfigResource(target, form);
+      if (target.type === "密钥") {
+        await updateSecretResource(target.namespace, resource);
       } else {
-        await updateConfigMapResource(updateTarget.namespace, resource);
+        await updateConfigMapResource(target.namespace, resource);
       }
       setUpdateTarget(null);
       if (isDetailRoute) await loadDetail();
       else await loadData();
+      return true;
     } catch (err) {
-      setError(err instanceof Error ? err.message : `更新${updateTarget.type}失败`);
+      setError(err instanceof Error ? err.message : `更新${target.type}失败`);
+      return false;
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleYamlUpdate = async (target: ConfigItem, source: string) => {
+  const handleYamlUpdate = async (target: ConfigItem, source: string): Promise<boolean> => {
     setIsLoading(true);
     setError("");
     try {
@@ -509,11 +548,33 @@ export function ConfigMaps() {
       setYamlTarget(null);
       if (isDetailRoute) await loadDetail();
       else await loadData();
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : "YAML 更新失败");
+      return false;
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const confirmFormUpdate = async () => {
+    if (!pendingFormUpdate) return;
+    if (await handleUpdate(pendingFormUpdate.target, pendingFormUpdate.form)) setPendingFormUpdate(null);
+  };
+
+  const confirmYamlUpdate = async () => {
+    if (!pendingYamlUpdate) return;
+    if (await handleYamlUpdate(pendingYamlUpdate.target, pendingYamlUpdate.source)) setPendingYamlUpdate(null);
+  };
+
+  const dismissPendingFormUpdate = () => {
+    if (pendingFormUpdate) setUpdateTarget(pendingFormUpdate.target);
+    setPendingFormUpdate(null);
+  };
+
+  const dismissPendingYamlUpdate = () => {
+    if (pendingYamlUpdate) setYamlTarget(pendingYamlUpdate.target);
+    setPendingYamlUpdate(null);
   };
 
   const requestDelete = (item: ConfigItem) => {
@@ -583,8 +644,8 @@ export function ConfigMaps() {
           title={yamlTarget ? `编辑 YAML - ${yamlTarget.name}` : "编辑 YAML"}
           type={yamlTarget?.type || detailType || "配置项"}
           defaultValue={yamlTarget ? buildConfigYaml(yamlTarget) : undefined}
-          onOpenChange={(open) => !open && setYamlTarget(null)}
-          onSubmit={(source) => yamlTarget && handleYamlUpdate(yamlTarget, source)}
+          onOpenChange={(open) => !open && !pendingYamlUpdate && setYamlTarget(null)}
+          onSubmit={(source) => yamlTarget && setPendingYamlUpdate({ target: yamlTarget, source })}
         />
         <CreateConfigItemDialog
           open={!!updateTarget}
@@ -594,37 +655,53 @@ export function ConfigMaps() {
           namespaces={Array.from(new Set([updateTarget?.namespace || detailNamespace || "default", ...namespaceOptions]))}
           refreshingNamespaces={refreshingNamespaces}
           onRefreshNamespaces={handleNamespaceRefresh}
-          onOpenChange={(open) => !open && setUpdateTarget(null)}
-          onSubmit={(form) => updateTarget && handleUpdate(updateTarget.id, form)}
+          onOpenChange={(open) => !open && !pendingFormUpdate && setUpdateTarget(null)}
+          onSubmit={(form) => updateTarget && setPendingFormUpdate({ target: updateTarget, form })}
         />
         <ConfigDeleteDialog target={deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)} onConfirm={confirmDelete} />
+        <ConfigMutationConfirmDialog
+          open={!!pendingYamlUpdate}
+          title="确认提交 YAML 修改"
+          description="YAML 修改会直接影响配置数据被工作负载挂载或读取的内容，请确认字段和数据格式无误后再提交。"
+          confirmText="确认提交"
+          onOpenChange={(open) => !open && dismissPendingYamlUpdate()}
+          onConfirm={confirmYamlUpdate}
+        />
+        <ConfigMutationConfirmDialog
+          open={!!pendingFormUpdate}
+          title={`确认更新${pendingFormUpdate?.target.type || "配置项"}`}
+          description={`更新后，引用该${pendingFormUpdate?.target.type || "配置项"}的工作负载可能读取到新的配置或凭证内容，请确认修改项无误后再提交。`}
+          confirmText="确认更新"
+          onOpenChange={(open) => !open && dismissPendingFormUpdate()}
+          onConfirm={confirmFormUpdate}
+        />
       </>
     );
   }
 
   return (
-    <div className="blueedge-page space-y-5">
+    <div className="page-container space-y-5">
       <div>
         <h1 className="mb-1 text-lg font-semibold text-[#111827]">配置项与密钥</h1>
         <p className="text-xs text-[var(--color-text-secondary)]">管理配置数据和敏感凭证</p>
       </div>
 
-      <div className="flex items-center justify-between gap-4">
+      <div className="page-toolbar">
         <div className="segmented-filter">
-          <button type="button" onClick={() => setActiveTab("config")} className={cn("segmented-filter-item", activeTab === "config" && "is-active")}>配置项</button>
-          <button type="button" onClick={() => setActiveTab("secret")} className={cn("segmented-filter-item", activeTab === "secret" && "is-active")}>密钥</button>
+          <button type="button" onClick={() => switchTab("config")} className={cn("segmented-filter-item", activeTab === "config" && "is-active")}>配置项</button>
+          <button type="button" onClick={() => switchTab("secret")} className={cn("segmented-filter-item", activeTab === "secret" && "is-active")}>密钥</button>
         </div>
         <div className="flex items-center gap-2">
           <div className="toolbar-search relative w-[240px]">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
-            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={activeTab === "config" ? "搜索配置项..." : "搜索密钥..."} className="h-9 bg-white pl-9 text-sm" />
+            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={activeTab === "config" ? "搜索配置项..." : "搜索密钥..."} className="h-9 rounded-[10px] bg-white pl-9 text-sm" />
           </div>
           <button type="button" onClick={() => void handleRefresh()} disabled={refreshing || isLoading} className="action-button h-9 w-9" title="刷新">
             <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
           </button>
-          <Button type="button" variant="outline" onClick={() => setYamlOpen(true)} className="h-9 rounded-xl px-4 text-xs font-semibold">YAML 创建</Button>
-          <Button type="button" onClick={() => setCreateOpen(true)} className="h-9 rounded-xl bg-[#0f172a] px-4 text-xs font-semibold text-white hover:bg-[#172033]">
-            <Plus className="mr-1.5 h-3.5 w-3.5" />
+          <Button type="button" variant="outline" onClick={() => setYamlOpen(true)} className="btn-secondary flex shrink-0 items-center gap-1.5 text-xs">YAML 创建</Button>
+          <Button type="button" onClick={() => setCreateOpen(true)} className="btn-black flex shrink-0 items-center gap-1.5 text-xs">
+            <Plus className="h-3.5 w-3.5" />
             {activeTab === "config" ? "创建配置项" : "创建密钥"}
           </Button>
         </div>
@@ -636,30 +713,30 @@ export function ConfigMaps() {
         </div>
       )}
 
-      <div className="table-card overflow-visible">
-        <Table>
+      <div className="table-card overflow-x-auto">
+        <Table className={cn("table-fixed border-collapse", activeTab === "config" ? "min-w-[700px]" : "min-w-[750px]")}>
           <TableHeader>
-            <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+            <TableRow className="table-header-row bg-white hover:bg-white">
               {activeTab === "config" ? (
                 <>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">配置项名称</TableHead>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">配置项别名</TableHead>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">标签</TableHead>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">命名空间</TableHead>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
+                  <TableHead className="table-header-cell table-header-name w-[200px]">配置项名称</TableHead>
+                  <TableHead className="table-header-cell w-[140px]">配置项别名</TableHead>
+                  <TableHead className="table-header-cell w-[35%]">标签</TableHead>
+                  <TableHead className="table-header-cell w-[110px]">命名空间</TableHead>
+                  <TableHead className="table-header-cell w-[150px]">创建时间</TableHead>
                 </>
               ) : (
                 <>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">密钥名称</TableHead>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">密钥别名</TableHead>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">命名空间</TableHead>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">标签</TableHead>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">类型</TableHead>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">数据数量</TableHead>
-                  <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
+                  <TableHead className="table-header-cell table-header-name w-[200px]">密钥名称</TableHead>
+                  <TableHead className="table-header-cell w-[140px]">密钥别名</TableHead>
+                  <TableHead className="table-header-cell w-[110px]">命名空间</TableHead>
+                  <TableHead className="table-header-cell w-[30%]">标签</TableHead>
+                  <TableHead className="table-header-cell w-[90px]">类型</TableHead>
+                  <TableHead className="table-header-cell w-[80px]">数据数量</TableHead>
+                  <TableHead className="table-header-cell w-[150px]">创建时间</TableHead>
                 </>
               )}
-              <TableHead className="w-[90px] px-4 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
+              <TableHead className="table-header-cell table-header-action w-[80px]">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -684,24 +761,18 @@ export function ConfigMaps() {
                 </TableCell>
               </TableRow>
             ) : filtered.map((row) => (
-              <TableRow key={row.id} className="h-[72px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
-                <TableCell className="px-4 py-3 text-sm font-medium text-[#1e6bff]">
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/configmaps/${row.type === "配置项" ? "config" : "secret"}/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.name)}`)}
-                    className="text-left hover:underline"
-                  >
-                    {row.name}
-                  </button>
+              <TableRow key={row.id} className="table-row group cursor-pointer" onClick={() => navigate(`/configmaps/${row.type === "配置项" ? "config" : "secret"}/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.name)}`)}>
+                <TableCell className="table-name-cell text-sm font-medium text-[#1e6bff]">
+                  {row.name}
                 </TableCell>
-                <TableCell className="px-4 py-3 text-xs text-[#374151]">{row.alias || "-"}</TableCell>
-                {activeTab === "secret" && <TableCell className="px-4 py-3 text-xs text-[#374151]">{row.namespace}</TableCell>}
-                <TableCell className="max-w-[360px] truncate px-4 py-3 text-xs text-[var(--color-text-secondary)]" title={formatLabels(row.labels)}>{formatLabels(row.labels)}</TableCell>
-                {activeTab === "config" && <TableCell className="px-4 py-3 text-xs text-[#374151]">{row.namespace}</TableCell>}
-                {activeTab === "secret" && <TableCell className="px-4 py-3"><span className="rounded-md bg-[var(--color-warning-soft)] px-2 py-0.5 text-xs text-[var(--color-warning)]">Opaque</span></TableCell>}
-                {activeTab === "secret" && <TableCell className="px-4 py-3 text-xs text-[var(--color-text-secondary)]">{row.dataCount} Keys</TableCell>}
-                <TableCell className="px-4 py-3 text-xs text-[var(--color-text-tertiary)]">{row.createTime}</TableCell>
-                <TableCell className="relative px-4 py-3 text-right">
+                <TableCell className="table-cell text-xs text-[#374151]">{row.alias || "-"}</TableCell>
+                {activeTab === "secret" && <TableCell className="table-cell text-xs text-[#374151]">{row.namespace}</TableCell>}
+                <TableCell className="table-cell max-w-[360px] truncate text-xs text-[var(--color-text-secondary)]" title={formatLabels(row.labels)}>{formatLabels(row.labels)}</TableCell>
+                {activeTab === "config" && <TableCell className="table-cell text-xs text-[#374151]">{row.namespace}</TableCell>}
+                {activeTab === "secret" && <TableCell className="table-cell"><span className="rounded-md bg-[var(--color-warning-soft)] px-2 py-0.5 text-xs text-[var(--color-warning)]">Opaque</span></TableCell>}
+                {activeTab === "secret" && <TableCell className="table-cell text-xs text-[var(--color-text-secondary)]">{row.dataCount} Keys</TableCell>}
+                <TableCell className="table-cell text-xs text-[var(--color-text-tertiary)]">{row.createTime}</TableCell>
+                <TableCell className="table-action-cell" onClick={(event) => event.stopPropagation()}>
                   <ConfigRowActions
                     open={menuOpenId === row.id}
                     onOpenChange={(open) => setMenuOpenId(open ? row.id : null)}
@@ -725,8 +796,8 @@ export function ConfigMaps() {
         title={yamlTarget ? `编辑 YAML - ${yamlTarget.name}` : "编辑 YAML"}
         type={yamlTarget?.type || currentType}
         defaultValue={yamlTarget ? buildConfigYaml(yamlTarget) : undefined}
-        onOpenChange={(open) => !open && setYamlTarget(null)}
-        onSubmit={(source) => yamlTarget && handleYamlUpdate(yamlTarget, source)}
+        onOpenChange={(open) => !open && !pendingYamlUpdate && setYamlTarget(null)}
+        onSubmit={(source) => yamlTarget && setPendingYamlUpdate({ target: yamlTarget, source })}
       />
       <CreateConfigItemDialog
         open={!!updateTarget}
@@ -736,10 +807,26 @@ export function ConfigMaps() {
         namespaces={namespaceOptions}
         refreshingNamespaces={refreshingNamespaces}
         onRefreshNamespaces={handleNamespaceRefresh}
-        onOpenChange={(open) => !open && setUpdateTarget(null)}
-        onSubmit={(form) => updateTarget && handleUpdate(updateTarget.id, form)}
+        onOpenChange={(open) => !open && !pendingFormUpdate && setUpdateTarget(null)}
+        onSubmit={(form) => updateTarget && setPendingFormUpdate({ target: updateTarget, form })}
       />
       <ConfigDeleteDialog target={deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)} onConfirm={confirmDelete} />
+      <ConfigMutationConfirmDialog
+        open={!!pendingYamlUpdate}
+        title="确认提交 YAML 修改"
+        description="YAML 修改会直接影响配置数据被工作负载挂载或读取的内容，请确认字段和数据格式无误后再提交。"
+        confirmText="确认提交"
+        onOpenChange={(open) => !open && dismissPendingYamlUpdate()}
+        onConfirm={confirmYamlUpdate}
+      />
+      <ConfigMutationConfirmDialog
+        open={!!pendingFormUpdate}
+        title={`确认更新${pendingFormUpdate?.target.type || currentType}`}
+        description={`更新后，引用该${pendingFormUpdate?.target.type || currentType}的工作负载可能读取到新的配置或凭证内容，请确认修改项无误后再提交。`}
+        confirmText="确认更新"
+        onOpenChange={(open) => !open && dismissPendingFormUpdate()}
+        onConfirm={confirmFormUpdate}
+      />
     </div>
   );
 }
@@ -758,6 +845,37 @@ function ConfigDeleteDialog({ target, onOpenChange, onConfirm }: { target: Confi
         <AlertDialogFooter>
           <AlertDialogCancel className="h-9 rounded-xl">取消</AlertDialogCancel>
           <AlertDialogAction className="h-9 rounded-xl bg-[#ff4d4f] text-white hover:bg-[#dc2626]" onClick={() => void onConfirm()}>删除</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+function ConfigMutationConfirmDialog({
+  open,
+  title,
+  description,
+  confirmText,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  title: string;
+  description: string;
+  confirmText: string;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: () => Promise<void>;
+}) {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent className="max-w-[520px] rounded-[24px]">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel className="h-9 rounded-xl">取消</AlertDialogCancel>
+          <AlertDialogAction className="h-9 rounded-xl bg-[#0f172a] text-white hover:bg-[#172033]" onClick={() => void onConfirm()}>{confirmText}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
@@ -787,9 +905,19 @@ function ConfigItemDetailPage({
 }) {
   const [tab, setTab] = useState<ConfigDetailTab>("data");
   const [selectedKey, setSelectedKey] = useState("");
-  const dataEntries = Object.entries(item?.data || {});
+  const [secretVisible, setSecretVisible] = useState(false);
+  const [decodedMode, setDecodedMode] = useState(false);
+  const secretValues = item?.type === "密钥" ? getSecretValues(item.raw) : {};
+  const detailData = item?.type === "密钥" ? secretValues : item?.data || {};
+  const dataEntries = Object.entries(detailData);
   const labels = item?.labels || {};
   const annotations = item?.raw ? getAnnotations(item.raw) : {};
+
+  useEffect(() => {
+    setSelectedKey("");
+    setSecretVisible(false);
+    setDecodedMode(false);
+  }, [item?.id]);
 
   if (loading) {
     return <div className="blueedge-page flex min-h-[520px] items-center justify-center"><RefreshCw className="h-9 w-9 animate-spin text-[#94a3b8]" /></div>;
@@ -805,7 +933,14 @@ function ConfigItemDetailPage({
   }
 
   const effectiveSelectedKey = selectedKey && dataEntries.some(([key]) => key === selectedKey) ? selectedKey : dataEntries[0]?.[0] || "";
-  const selectedValue = item.data?.[effectiveSelectedKey] || "";
+  const selectedValue = detailData[effectiveSelectedKey] || "";
+  const valueComesFromData = item.type === "密钥" && Object.prototype.hasOwnProperty.call(asRecord(item.raw?.data), effectiveSelectedKey);
+  const canDecode = valueComesFromData && isBase64Value(selectedValue);
+  const displayValue = item.type === "密钥" && !secretVisible
+    ? maskSecretValue(selectedValue)
+    : decodedMode && canDecode
+      ? decodeBase64Value(selectedValue)
+      : selectedValue;
   const tabItems: Array<{ id: ConfigDetailTab; label: string; icon: typeof Database }> = [
     { id: "data", label: item.type === "配置项" ? "配置数据" : "密钥数据", icon: Database },
     { id: "labels", label: "标签", icon: Tags },
@@ -813,16 +948,16 @@ function ConfigItemDetailPage({
   ];
 
   return (
-    <div className="blueedge-page space-y-6">
-      <div className="flex items-start justify-between gap-6">
-        <div className="flex min-w-0 items-center gap-4">
-          <button type="button" onClick={onBack} className="action-button h-11 w-11 shrink-0 rounded-xl" title="返回列表"><ArrowLeft className="h-5 w-5" /></button>
+    <div className="page-container space-y-5">
+      <div className="flex items-center justify-between gap-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <button type="button" onClick={onBack} className="action-button shrink-0" title="返回列表"><ArrowLeft className="h-4 w-4" /></button>
           <div className="min-w-0">
             <div className="flex items-center gap-3">
-              <h1 className="truncate text-xl font-semibold text-[#111827]">{item.name}</h1>
-              <span className="rounded-full bg-[#f3f4f6] px-3 py-1 text-xs font-semibold text-[#64748b]">● {item.type}</span>
+              <h1 className="truncate text-lg font-semibold text-[#111827]">{item.name}</h1>
+              <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-[#f3f4f6] px-2.5 text-xs font-medium text-[#6b7280]"><span className="h-1.5 w-1.5 rounded-full bg-[#6b7280]" />{item.type}</span>
             </div>
-            <p className="mt-1 text-sm text-[#64748b]">{item.namespace} · {item.dataCount} 个数据项</p>
+            <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">{item.namespace} · {item.dataCount} 个数据项</p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
@@ -835,41 +970,56 @@ function ConfigItemDetailPage({
 
       {error && <div className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">{error}</div>}
 
-      <section className="rounded-2xl border border-[#eef2f7] bg-white px-6 py-6 shadow-[0_12px_35px_rgba(15,23,42,0.05)]">
-        <h2 className="mb-6 text-base font-semibold text-[#111827]">基础信息</h2>
-        <div className="grid grid-cols-4 gap-8">
+      <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+        <h2 className="mb-5 text-sm font-semibold text-[#111827]">基础信息</h2>
+        <div className="grid grid-cols-5 gap-x-6 gap-y-8">
           <DetailField label={item.type === "配置项" ? "配置项名称" : "密钥名称"} value={item.name} />
           <DetailField label={item.type === "配置项" ? "配置项别名" : "密钥别名"} value={item.alias || "-"} />
           <DetailField label="描述" value={item.description || "-"} />
+          {item.type === "密钥" && <DetailField label="密钥类型" value={String(item.raw?.type || "Opaque")} />}
           <DetailField label="创建时间" value={formatConfigDate(item.createTime)} />
         </div>
       </section>
 
       <div className="flex items-center gap-2">
         {tabItems.map(({ id, label, icon: Icon }) => (
-          <button key={id} type="button" onClick={() => setTab(id)} className={cn("inline-flex h-10 items-center gap-2 rounded-xl border px-4 text-sm font-semibold", tab === id ? "border-[#0f172a] bg-[#0f172a] text-white" : "border-[#dfe5ee] bg-white text-[#64748b] hover:bg-[#f8fafc]")}>
-            <Icon className="h-4 w-4" />{label}
+          <button key={id} type="button" onClick={() => setTab(id)} className={tab === id ? "btn-tab-active" : "btn-tab"}>
+            <Icon className="h-3.5 w-3.5" />{label}
           </button>
         ))}
       </div>
 
       {tab === "data" ? (
-        <section className="rounded-2xl border border-[#eef2f7] bg-white px-6 py-6 shadow-[0_12px_35px_rgba(15,23,42,0.05)]">
-          <h2 className="mb-6 text-base font-semibold text-[#111827]">数据信息</h2>
+        <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+          <h2 className="mb-5 text-sm font-semibold text-[#111827]">数据信息</h2>
           {dataEntries.length === 0 ? <DetailEmptyState text="暂无配置数据" /> : (
-            <div className="grid min-h-[360px] grid-cols-[240px_1fr] overflow-hidden rounded-2xl border border-[#e2e8f0]">
-              <div className="border-r border-[#e2e8f0] bg-[#fbfcfe]">
-                <div className="border-b border-[#e2e8f0] px-5 py-4 text-sm font-semibold text-[#64748b]">Key List</div>
-                <div className="space-y-1 p-3">{dataEntries.map(([key]) => (
-                  <button key={key} type="button" onClick={() => setSelectedKey(key)} className={cn("block w-full truncate rounded-xl px-4 py-3 text-left text-sm font-semibold", effectiveSelectedKey === key ? "bg-[#eaf2ff] text-[#1e6bff]" : "text-[#334155] hover:bg-[#f1f5f9]")} title={key}>{key}</button>
+            <div className="grid grid-cols-[220px_minmax(0,1fr)] gap-4">
+              <div className="overflow-hidden rounded-xl border border-[#eef1f5] bg-[#fafbfc]">
+                <div className="border-b border-[#eef1f5] px-3 py-2 text-xs font-medium text-[var(--color-text-secondary)]">Key List</div>
+                <div className="space-y-1 p-2">{dataEntries.map(([key]) => (
+                  <button key={key} type="button" onClick={() => { setSelectedKey(key); setDecodedMode(false); }} className={cn("block w-full truncate rounded-lg px-3 py-2 text-left text-xs font-medium", effectiveSelectedKey === key ? "bg-[#eaf2ff] font-semibold text-[#1e6bff]" : "text-[#111827] hover:bg-[#f1f5f9]")} title={key}>{key}</button>
                 ))}</div>
               </div>
-              <div className="min-w-0 bg-[#fbfcfe]">
-                <div className="flex items-center justify-between border-b border-[#e2e8f0] bg-white px-5 py-3">
-                  <div className="flex items-center gap-3"><span className="text-sm font-semibold text-[#334155]">Value</span><span className="rounded-full bg-[#f3f4f6] px-2 py-0.5 text-xs text-[#94a3b8]">YAML</span></div>
-                  <CopyButton value={selectedValue} />
+              <div className="min-w-0 overflow-hidden rounded-xl border border-[#eef1f5] bg-white">
+                <div className="flex h-11 items-center justify-between border-b border-[#eef1f5] px-4">
+                  <div className="flex items-center gap-2"><span className="text-xs font-semibold text-[#111827]">Value</span><span className="rounded-md bg-[#f3f4f6] px-2 py-0.5 text-[10px] uppercase text-[#6b7280]">{canDecode ? "BASE64" : "YAML"}</span></div>
+                  <div className="flex items-center gap-2">
+                    {item.type === "密钥" && (
+                      <button type="button" onClick={() => setSecretVisible((visible) => !visible)} className="btn-secondary text-xs" title={secretVisible ? "隐藏" : "显示"}>
+                        {secretVisible ? <EyeOff className="h-[13px] w-[13px]" /> : <Eye className="h-[13px] w-[13px]" />}
+                        {secretVisible ? "隐藏" : "显示"}
+                      </button>
+                    )}
+                    {canDecode && (
+                      <button type="button" onClick={() => { setDecodedMode((decoded) => !decoded); setSecretVisible(true); }} className="btn-secondary text-xs" title="Base64 解码切换">
+                        <Braces className="h-[13px] w-[13px]" />
+                        {decodedMode ? "Base64" : "Decoded"}
+                      </button>
+                    )}
+                    <CopyButton value={item.type === "密钥" && !secretVisible ? selectedValue : displayValue} />
+                  </div>
                 </div>
-                <pre className="max-h-[520px] min-h-[306px] overflow-auto whitespace-pre-wrap break-words p-5 font-mono text-sm leading-7 text-[#334155]">{selectedValue}</pre>
+                <pre className="max-h-[360px] min-h-[260px] overflow-auto whitespace-pre-wrap break-words bg-[#f8fafc] p-4 font-mono text-xs leading-6 text-[#111827]">{displayValue}</pre>
               </div>
             </div>
           )}
@@ -882,22 +1032,22 @@ function ConfigItemDetailPage({
 }
 
 function DetailActionButton({ icon: Icon, label, danger, onClick }: { icon: typeof Pencil; label: string; danger?: boolean; onClick: () => void }) {
-  return <button type="button" onClick={onClick} className={cn("inline-flex h-10 items-center gap-2 rounded-xl border bg-white px-4 text-sm font-semibold hover:bg-[#f8fafc]", danger ? "border-[#fee2e2] text-[#ff4d4f] hover:bg-[#fff5f5]" : "border-[#dfe5ee] text-[#111827]")}><Icon className="h-4 w-4" />{label}</button>;
+  return <button type="button" onClick={onClick} className={cn(danger ? "btn-danger-outline" : "btn-secondary", "text-xs")}><Icon className="h-[13px] w-[13px]" />{label}</button>;
 }
 
 function DetailField({ label, value }: { label: string; value: string }) {
-  return <div className="min-w-0"><div className="truncate text-base font-semibold text-[#111827]" title={value}>{value}</div><div className="mt-2 text-sm text-[#94a3b8]">{label}</div></div>;
+  return <div className="min-w-0"><div className="truncate text-sm font-semibold text-[#111827]" title={value}>{value}</div><div className="mt-2 text-xs text-[var(--color-text-tertiary)]">{label}</div></div>;
 }
 
 function MetadataDetailTable({ title, entries }: { title: string; entries: Record<string, string> }) {
   const rows = Object.entries(entries);
   return (
-    <section className="rounded-2xl border border-[#eef2f7] bg-white px-6 py-6 shadow-[0_12px_35px_rgba(15,23,42,0.05)]">
-      <h2 className="mb-6 text-base font-semibold text-[#111827]">{title}</h2>
+    <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+      <h2 className="mb-5 text-sm font-semibold text-[#111827]">{title}</h2>
       {rows.length === 0 ? <DetailEmptyState text={`暂无${title}`} /> : (
-        <div className="overflow-hidden rounded-2xl border border-[#e2e8f0]">
-          <div className="grid grid-cols-[1fr_1.6fr_90px] bg-[#f8fafc] px-5 py-4 text-sm font-semibold text-[#64748b]"><span>Key</span><span>Value</span><span className="text-right">操作</span></div>
-          {rows.map(([key, value]) => <div key={key} className="grid grid-cols-[1fr_1.6fr_90px] items-center border-t border-[#e2e8f0] px-5 py-5 text-sm"><span className="break-all font-mono text-[#111827]">{key}</span><span className="break-all text-[#475569]">{value}</span><div className="flex justify-end"><CopyButton value={`${key}=${value}`} compact /></div></div>)}
+        <div className="overflow-hidden rounded-xl border border-[#eef1f5]">
+          <div className="grid grid-cols-[34%_1fr_80px] bg-[#fafbfc] px-4 py-3 text-xs font-medium text-[var(--color-text-secondary)]"><span>Key</span><span>Value</span><span className="text-right">操作</span></div>
+          {rows.map(([key, value]) => <div key={key} className="grid grid-cols-[34%_1fr_80px] items-center border-t border-[#f3f4f6] px-4 py-3 text-xs"><span className="truncate font-mono text-[#111827]">{key}</span><span className="truncate text-[var(--color-text-secondary)]">{value}</span><div className="flex justify-end"><CopyButton value={`${key}=${value}`} compact /></div></div>)}
         </div>
       )}
     </section>
@@ -932,14 +1082,14 @@ function ConfigRowActions({ open, onOpenChange, type, onEditYaml, onUpdate, onEx
   const toggleMenu = () => {
     if (!open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect();
-      const menuWidth = 164;
-      const menuHeight = 206;
+      const menuWidth = 148;
+      const menuHeight = 183;
       const viewportPadding = 12;
-      const gap = 8;
+      const gap = 4;
       const canOpenDown = rect.bottom + gap + menuHeight <= window.innerHeight - viewportPadding;
       setMenuPosition({
         top: canOpenDown ? rect.bottom + gap : Math.max(viewportPadding, rect.top - gap - menuHeight),
-        left: Math.max(16, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 16)),
+        left: Math.max(8, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 8)),
       });
     }
     onOpenChange(!open);
@@ -947,14 +1097,15 @@ function ConfigRowActions({ open, onOpenChange, type, onEditYaml, onUpdate, onEx
 
   return (
     <div className="inline-block text-left">
-      <button ref={buttonRef} type="button" onClick={toggleMenu} className="action-button ml-auto h-9 w-9" title="更多操作">
-        <MoreHorizontal className="h-4 w-4" />
+      <button ref={buttonRef} type="button" onClick={toggleMenu} className="action-button ml-auto" title="更多">
+        <MoreHorizontal className="h-3.5 w-3.5" />
       </button>
-      {open && (
+      {open && createPortal(
         <>
-          <button type="button" className="fixed inset-0 z-30 cursor-default" onClick={() => onOpenChange(false)} aria-label="关闭菜单" />
+          <button type="button" className="fixed inset-0 z-[1999] cursor-default" onClick={() => onOpenChange(false)} aria-label="关闭菜单" />
           <ConfigActionMenu top={menuPosition.top} left={menuPosition.left} type={type} onEditYaml={onEditYaml} onUpdate={onUpdate} onExport={onExport} onDelete={onDelete} />
-        </>
+        </>,
+        document.body,
       )}
     </div>
   );
@@ -962,13 +1113,14 @@ function ConfigRowActions({ open, onOpenChange, type, onEditYaml, onUpdate, onEx
 
 function ConfigActionMenu({ top, left, type, onEditYaml, onUpdate, onExport, onDelete }: { top: number; left: number; type: ConfigType; onEditYaml: () => void; onUpdate: () => void; onExport: () => void; onDelete: () => void }) {
   return (
-    <div className="fixed z-40 w-[164px] overflow-hidden rounded-xl border border-[#e5e7eb] bg-white py-2 text-left shadow-[0_18px_45px_rgba(15,23,42,0.16)]" style={{ top, left }}>
-      <button type="button" onClick={onEditYaml} className="flex w-full items-center gap-3 px-4 py-2.5 text-sm font-medium text-[#374151] hover:bg-[#f8fafc]"><Edit3 className="h-4 w-4 text-[#94a3b8]" />编辑 YAML</button>
-      <button type="button" onClick={onUpdate} className="flex w-full items-center gap-3 px-4 py-2.5 text-sm font-medium text-[#374151] hover:bg-[#f8fafc]"><Pencil className="h-4 w-4 text-[#94a3b8]" />更新</button>
-      <div className="my-1 border-t border-[#eef2f7]" />
-      <button type="button" onClick={onExport} className="flex w-full items-center gap-3 px-4 py-2.5 text-sm font-medium text-[#374151] hover:bg-[#f8fafc]"><Download className="h-4 w-4 text-[#94a3b8]" />导出{type}</button>
-      <div className="my-1 border-t border-[#eef2f7]" />
-      <button type="button" onClick={onDelete} className="flex w-full items-center gap-3 px-4 py-2.5 text-sm font-medium text-[#ff4d4f] hover:bg-[#fff5f5]"><Trash2 className="h-4 w-4" />删除</button>
+    <div className="fixed z-[2000] w-[148px] overflow-hidden rounded-xl border border-[#e5e7eb] bg-white py-1.5 text-left shadow-[0_8px_32px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)]" style={{ top, left }}>
+      <button type="button" onClick={onEditYaml} className="mx-1 flex h-9 w-[calc(100%-8px)] items-center gap-2 rounded-lg px-3 text-xs font-medium text-[#111827] hover:bg-[#f6f8fb]"><Edit3 className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />编辑 YAML</button>
+      <div className="mx-2 my-1 border-t border-[#f0f1f3]" />
+      <button type="button" onClick={onUpdate} className="mx-1 flex h-9 w-[calc(100%-8px)] items-center gap-2 rounded-lg px-3 text-xs font-medium text-[#111827] hover:bg-[#f6f8fb]"><Pencil className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />更新</button>
+      <div className="mx-2 my-1 border-t border-[#f0f1f3]" />
+      <button type="button" onClick={onExport} className="mx-1 flex h-9 w-[calc(100%-8px)] items-center gap-2 rounded-lg px-3 text-xs font-medium text-[#111827] hover:bg-[#f6f8fb]"><Download className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />导出{type}</button>
+      <div className="mx-2 my-1 border-t border-[#f0f1f3]" />
+      <button type="button" onClick={onDelete} className="mx-1 flex h-9 w-[calc(100%-8px)] items-center gap-2 rounded-lg px-3 text-xs font-medium text-[#ef4444] hover:bg-[#fdecec]"><Trash2 className="h-3.5 w-3.5 shrink-0" />删除</button>
     </div>
   );
 }
@@ -999,6 +1151,7 @@ function CreateConfigItemDialog({
     alias: initialItem.alias,
     namespace: initialItem.namespace,
     description: initialItem.description || "",
+    secretType: String(initialItem.raw?.type || "Opaque"),
     dataPairs: initialItem.type === "密钥"
       ? Object.keys(initialItem.data || {}).map((key, index) => ({ id: `data-${index}-${key}`, key, value: "" }))
       : recordToPairs(initialItem.data, "data"),
@@ -1016,7 +1169,7 @@ function CreateConfigItemDialog({
       ? "名称最长 63 个字符，必须由小写字母、数字字符、“-” 或 “.” 组成，并以小写字母或数字开头及结尾"
       : "";
   const dataValid = validatePairs(form.dataPairs);
-  const canSubmit = !nameError && Boolean(form.namespace) && dataValid;
+  const canSubmit = !nameError && Boolean(form.namespace) && dataValid && (isConfig || (Boolean(form.secretType) && form.dataPairs.some((pair) => Boolean(pair.key.trim() && pair.value.trim()))));
 
   const update = (patch: Partial<ConfigForm>) => setForm((current) => ({ ...current, ...patch }));
   const close = () => onOpenChange(false);
@@ -1048,6 +1201,18 @@ function CreateConfigItemDialog({
     onSubmit(form);
   };
 
+  const handleSecretTypeChange = (secretType: string) => {
+    const presets: Record<string, Array<[string, string]>> = {
+      "kubernetes.io/tls": [["tls.crt", ""], ["tls.key", ""]],
+      "kubernetes.io/dockerconfigjson": [[".dockerconfigjson", ""]],
+      "kubernetes.io/basic-auth": [["username", ""], ["password", ""]],
+    };
+    update({
+      secretType,
+      dataPairs: (presets[secretType] || []).map(([key, value], index) => ({ id: `secret-${index}-${key}`, key, value })),
+    });
+  };
+
   useEffect(() => {
     if (!open) return;
     const timer = window.setTimeout(() => {
@@ -1060,40 +1225,41 @@ function CreateConfigItemDialog({
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
-        className="!flex max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_32px_80px_rgba(0,0,0,0.2)] sm:max-w-none"
-        style={{ width: "min(860px, calc(100vw - 48px))", height: "min(720px, calc(100vh - 48px))" }}
+        className="!flex max-w-none flex-col gap-0 overflow-hidden rounded-[20px] p-0 shadow-[0_32px_80px_rgba(0,0,0,0.2)] sm:max-w-none"
+        style={{ width: "min(600px, calc(100vw - 48px))", maxHeight: "min(720px, calc(100vh - 48px))" }}
         showCloseButton={false}
       >
-        <DialogHeader className="h-14 shrink-0 border-b border-[#f0f1f3] px-7 py-0">
+        <DialogHeader className="h-14 shrink-0 border-b border-[#f0f1f3] px-6 py-0">
           <div className="flex h-full items-center justify-between">
-            <DialogTitle className="text-lg font-semibold text-[#111827]">{mode === "update" ? `更新${type}` : isConfig ? "创建配置项" : "创建密钥"}</DialogTitle>
-            <button type="button" onClick={close} className="flex h-10 w-10 items-center justify-center rounded-xl border border-[#e5e7eb] text-[#64748b] hover:bg-[#f8fafc]">
-              <X className="h-5 w-5" />
-            </button>
+            <div className="flex items-center gap-3">
+              {!isConfig && <button type="button" onClick={close} className="action-button h-8 w-8 rounded-[10px]" title="返回"><ArrowLeft className="h-4 w-4" /></button>}
+              <DialogTitle className="text-base font-semibold text-[#111827]">{mode === "update" ? `更新${type}` : isConfig ? "创建配置项" : "创建密钥"}</DialogTitle>
+            </div>
+            <button type="button" onClick={close} className="action-button h-8 w-8 rounded-[10px]"><X className="h-4 w-4" /></button>
           </div>
         </DialogHeader>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-7 py-6">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
           <div className="space-y-5">
             <div>
               <CreateLabel label="名称" required />
-              <Input value={form.name} onChange={(event) => update({ name: event.target.value })} disabled={mode === "update"} placeholder="请输入名称" className={cn("h-11 rounded-[12px] border-2 border-[#e2e8f0] px-4 text-sm shadow-sm focus-visible:ring-0", submitted && nameError && "border-[#ef4444]")} />
-              <p className="mt-2 text-xs leading-5 text-[var(--color-text-tertiary)]">名称最长 63 个字符；必须由小写字母、数字字符、“-” 或 “.” 组成；必须以小写字母或数字字符开头及结尾。</p>
+              <Input value={form.name} onChange={(event) => update({ name: event.target.value })} disabled={mode === "update"} placeholder="请输入名称" className={cn("h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0", submitted && nameError && "border-[#ef4444]")} />
+              <p className="mt-1.5 text-[11px] leading-5 text-[var(--color-text-tertiary)]">名称最长 63 个字符；必须由小写字母、数字字符、“-” 或 “.” 组成；必须以小写字母或数字字符开头及结尾。</p>
               {submitted && nameError && <p className="mt-1 text-xs text-[#ef4444]">{nameError}</p>}
             </div>
 
-            <div className="grid grid-cols-[1fr_1fr] gap-5">
+            <div className="grid grid-cols-2 gap-4">
               <div>
                 <CreateLabel label={isConfig ? "配置项别名" : "密钥别名"} />
-                <Input value={form.alias} onChange={(event) => update({ alias: event.target.value })} className="h-11 rounded-[12px] border-2 border-[#e2e8f0] px-4 text-sm shadow-sm focus-visible:ring-0" />
+                <Input value={form.alias} onChange={(event) => update({ alias: event.target.value })} className="h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0" />
               </div>
               <div>
                 <CreateLabel label="命名空间" required />
                 <div className="flex gap-2">
-                  <select value={form.namespace} onChange={(event) => update({ namespace: event.target.value })} disabled={mode === "update"} className="blueedge-native-select h-11 flex-1 rounded-[12px] border-2 px-4 text-sm">
+                  <select value={form.namespace} onChange={(event) => update({ namespace: event.target.value })} disabled={mode === "update"} className="blueedge-native-select h-9 flex-1 rounded-[10px] border px-3 text-sm">
                     {namespaces.map((namespace) => <option key={namespace} value={namespace}>{namespace}</option>)}
                   </select>
-                  <button type="button" onClick={() => void onRefreshNamespaces()} disabled={refreshingNamespaces} className="action-button h-11 w-11 rounded-[12px]" title="刷新命名空间">
+                  <button type="button" onClick={() => void onRefreshNamespaces()} disabled={refreshingNamespaces} className="action-button h-9 w-9 rounded-[10px]" title="刷新命名空间">
                     <RefreshCw className={cn("h-4 w-4", refreshingNamespaces && "animate-spin")} />
                   </button>
                 </div>
@@ -1102,15 +1268,28 @@ function CreateConfigItemDialog({
 
             <div>
               <CreateLabel label="描述" />
-              <Textarea value={form.description} onChange={(event) => update({ description: event.target.value })} placeholder="请输入描述信息" className="h-[112px] min-h-[112px] rounded-[12px] border-2 border-[#e2e8f0] px-4 py-3 text-sm shadow-sm focus-visible:ring-0" />
+              <Textarea value={form.description} onChange={(event) => update({ description: event.target.value })} placeholder="请输入描述信息" className="h-24 min-h-24 rounded-[10px] border border-[#dfe5ee] px-3 py-2 text-sm shadow-sm focus-visible:ring-0" />
             </div>
 
+            {!isConfig && (
+              <ConfigSection title="密钥配置">
+                <CreateLabel label="密钥类型" required />
+                <select value={form.secretType} onChange={(event) => handleSecretTypeChange(event.target.value)} className="blueedge-native-select h-9 w-full rounded-[10px] border px-3 text-sm">
+                  <option value="Opaque">默认（Opaque）</option>
+                  <option value="kubernetes.io/tls">TLS（kubernetes.io/tls）</option>
+                  <option value="kubernetes.io/dockerconfigjson">镜像仓库信息（kubernetes.io/dockerconfigjson）</option>
+                  <option value="kubernetes.io/basic-auth">用户名和密码</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </ConfigSection>
+            )}
+
             <ConfigSection
-              title={isConfig ? "配置数据" : "密钥数据"}
+              title={isConfig ? "配置数据" : "密钥数据 *"}
               action={(
                 <>
                   <input ref={fileInputRef} type="file" className="hidden" onChange={handleUpload} />
-                  <button type="button" onClick={() => fileInputRef.current?.click()} className="inline-flex h-10 items-center gap-2 rounded-[12px] border border-[#dfe5ee] bg-white px-5 text-sm font-semibold text-[#111827] hover:bg-[#f8fafc]">
+                  <button type="button" onClick={() => fileInputRef.current?.click()} className="btn-secondary text-xs">
                     <Upload className="h-4 w-4" />
                     上传文件
                   </button>
@@ -1118,7 +1297,7 @@ function CreateConfigItemDialog({
               )}
             >
               <KvEditor pairs={form.dataPairs} onChange={(pairs) => update({ dataPairs: pairs })} />
-              {submitted && !dataValid && <p className="mt-2 text-xs text-[#ef4444]">存在未填写完整的数据，且 key 不允许重复</p>}
+              {submitted && !dataValid && <p className="mt-2 text-xs text-[#ef4444]">{isConfig ? "存在未填写完整的数据，且 key 不允许重复" : "密钥数据至少需要一条有效数据，且键和值均不能为空、key 不允许重复"}</p>}
             </ConfigSection>
 
             <ConfigSection title="标签">
@@ -1131,10 +1310,10 @@ function CreateConfigItemDialog({
           </div>
         </div>
 
-        <DialogFooter className="h-16 shrink-0 border-t border-[#f0f1f3] bg-white px-7 py-0">
+        <DialogFooter className="h-[60px] shrink-0 border-t border-[#f0f1f3] bg-white px-6 py-0">
           <div className="flex w-full justify-end gap-3">
-            <button type="button" onClick={close} className="h-10 rounded-xl border border-[#dfe5ee] bg-white px-6 text-sm font-semibold text-[#111827] hover:bg-[#f8fafc]">取消</button>
-            <button type="button" onClick={handleSubmit} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033] disabled:cursor-not-allowed disabled:bg-[#9ca3af]" disabled={!canSubmit}>{mode === "update" ? "更新" : "创建"}</button>
+            <button type="button" onClick={close} className="btn-secondary">取消</button>
+            <button type="button" onClick={handleSubmit} className="btn-black text-sm disabled:cursor-not-allowed disabled:opacity-45" disabled={!canSubmit}>{mode === "update" ? "更新" : "创建"}</button>
           </div>
         </DialogFooter>
       </DialogContent>
@@ -1144,7 +1323,7 @@ function CreateConfigItemDialog({
 
 function CreateLabel({ label, required }: { label: string; required?: boolean }) {
   return (
-    <Label className="mb-2 block text-sm font-semibold text-[#111827]">
+    <Label className="mb-1.5 block text-sm font-medium text-[#111827]">
       {label}
       {required && <span className="ml-1 text-[#ff4d4f]">*</span>}
     </Label>
@@ -1153,9 +1332,9 @@ function CreateLabel({ label, required }: { label: string; required?: boolean })
 
 function ConfigSection({ title, action, children }: { title: string; action?: React.ReactNode; children: React.ReactNode }) {
   return (
-    <section className="rounded-2xl border border-[#e5e7eb] bg-white p-5">
+    <section className="rounded-xl border border-[#e5e7eb] bg-white p-4">
       <div className="mb-4 flex items-center justify-between gap-3">
-        <h3 className="text-base font-semibold text-[#111827]">{title}</h3>
+        <h3 className="text-sm font-semibold text-[#111827]">{title}</h3>
         {action}
       </div>
       {children}
@@ -1172,25 +1351,25 @@ function KvEditor({ pairs, onChange }: { pairs: KvPair[]; onChange: (pairs: KvPa
   return (
     <div className="space-y-3">
       {pairs.length === 0 ? (
-        <div className="rounded-[14px] border border-dashed border-[#d1d5db] bg-[#fafbfc] px-3 py-11 text-center">
+        <div className="rounded-lg border border-dashed border-[#d1d5db] bg-[#fafbfc] px-3 py-8 text-center">
           <span className="text-sm text-[var(--color-text-tertiary)]">暂无数据</span>
         </div>
       ) : pairs.map((pair) => {
         const incomplete = Boolean(pair.key.trim()) !== Boolean(pair.value.trim());
         return (
           <div key={pair.id} className="space-y-1">
-            <div className="grid grid-cols-[1fr_1fr_44px] gap-3">
-              <Input value={pair.key} onChange={(event) => update(pair.id, { key: event.target.value })} placeholder="键" className={cn("h-11 rounded-[12px] border-2 border-[#e2e8f0] bg-[#f8fafc] px-4 text-sm shadow-sm focus-visible:ring-0", incomplete && "border-[#ef4444]")} />
-              <Input value={pair.value} onChange={(event) => update(pair.id, { value: event.target.value })} placeholder="值" className={cn("h-11 rounded-[12px] border-2 border-[#e2e8f0] bg-[#f8fafc] px-4 text-sm shadow-sm focus-visible:ring-0", incomplete && "border-[#ef4444]")} />
-              <button type="button" onClick={() => remove(pair.id)} className="action-button h-11 w-11 rounded-[12px]"><Trash2 className="h-4 w-4" /></button>
+            <div className="grid grid-cols-[1fr_1fr_32px] gap-2">
+              <Input value={pair.key} onChange={(event) => update(pair.id, { key: event.target.value })} placeholder="键" className={cn("h-9 rounded-[10px] border border-[#dfe5ee] bg-[#f8fafc] px-3 text-sm shadow-sm focus-visible:ring-0", incomplete && "border-[#ef4444]")} />
+              <Input value={pair.value} onChange={(event) => update(pair.id, { value: event.target.value })} placeholder="值" className={cn("h-9 rounded-[10px] border border-[#dfe5ee] bg-[#f8fafc] px-3 text-sm shadow-sm focus-visible:ring-0", incomplete && "border-[#ef4444]")} />
+              <button type="button" onClick={() => remove(pair.id)} className="action-button h-8 w-8"><Trash2 className="h-3.5 w-3.5" /></button>
             </div>
             {incomplete && <p className="text-xs text-[#ef4444]">未填写完整</p>}
           </div>
         );
       })}
       {duplicate && <p className="text-xs text-[#ef4444]">同一分组内 key 不允许重复</p>}
-      <button type="button" onClick={add} className="mt-2 inline-flex items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium text-[#4b5563] hover:bg-[#f8fafc]">
-        <Plus className="h-4 w-4" />
+      <button type="button" onClick={add} className="mt-2 inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-[#4b5563] hover:bg-[#f8fafc]">
+        <Plus className="h-3.5 w-3.5" />
         添加
       </button>
     </div>

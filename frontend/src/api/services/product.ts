@@ -58,8 +58,8 @@ export interface BatchWorkloadPlanContainer {
   args?: string[];
   env?: Array<{ name: string; value: string }>;
   resources?: {
-    requests?: { cpu?: string; memory?: string };
-    limits?: { cpu?: string; memory?: string };
+    requests?: Record<string, string>;
+    limits?: Record<string, string>;
   };
   lifecycle?: { postStart?: string; preStop?: string };
   healthChecks?: { startup?: boolean; readiness?: boolean; liveness?: boolean };
@@ -323,8 +323,8 @@ export async function deleteAccessConfig(name: string): Promise<{ warnings?: Acc
   return res.data;
 }
 
-export async function getAccessConfigInstallCommand(name: string): Promise<AccessConfigInstallCommandResponse> {
-  const res = await gatewayRequest<AccessConfigInstallCommandResponse>(`/blueedge/access-configs/${encodeURIComponent(name)}/install-command`);
+export async function getAccessConfigInstallCommand(name: string, nodeName = ""): Promise<AccessConfigInstallCommandResponse> {
+  const res = await gatewayRequest<AccessConfigInstallCommandResponse>(`/blueedge/access-configs/${encodeURIComponent(name)}/install-command?nodeName=${encodeURIComponent(nodeName)}`);
   return res.data;
 }
 

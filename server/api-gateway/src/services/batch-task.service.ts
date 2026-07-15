@@ -61,6 +61,18 @@ function newBatchTaskId(prefix: string): string {
   return `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(3).toString("hex")}`;
 }
 
+function nodeUpgradeRetryName(id: string, now = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const suffix = `-retry-${timestamp}`;
+  const normalized = id
+    .toLowerCase()
+    .replace(/[^a-z0-9.-]+/g, "-")
+    .replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, "") || "node-upgrade";
+  const base = normalized.slice(0, 253 - suffix.length).replace(/[^a-z0-9]+$/g, "") || "node-upgrade";
+  return `${base}${suffix}`;
+}
+
 function batchTaskMatches(configMap: any, id: string): boolean {
   const data = dataOf(configMap);
   const labels = labelsOf(configMap);
@@ -911,6 +923,35 @@ export async function cancelBatchTask(id: string) {
 
 export async function retryBatchTask(id: string) {
   const warnings: EdgeUnitWarning[] = [];
+  const upgradeJob = await getNodeUpgradeJob(id).catch((error) => {
+    warnings.push({ source: "node-upgrade-job", message: error instanceof Error ? error.message : "NodeUpgradeJob unavailable" });
+    return null;
+  });
+  if (upgradeJob) {
+    const metadata = metadataOf(upgradeJob);
+    const retryCount = Number(metadata.annotations?.["blueedge.io/retry-count"] || 0) + 1;
+    const retryName = nodeUpgradeRetryName(id);
+    try {
+      const created = await createNodeUpgradeJob({
+        apiVersion: upgradeJob.apiVersion || "operations.kubeedge.io/v1alpha2",
+        kind: "NodeUpgradeJob",
+        metadata: {
+          name: retryName,
+          ...(metadata.labels ? { labels: metadata.labels } : {}),
+          annotations: {
+            ...(metadata.annotations || {}),
+            "blueedge.io/created-by": "blueedge-api-gateway",
+            "blueedge.io/retry-of": id,
+            "blueedge.io/retry-count": String(retryCount),
+          },
+        },
+        spec: upgradeJob.spec || {},
+      });
+      return { status: 201, body: { item: buildNodeUpgradeJobView(created), ...(warnings.length > 0 ? { warnings } : {}) } };
+    } catch (error) {
+      return { status: 502, body: { message: error instanceof Error ? error.message : "NodeUpgradeJob retry create failed", ...(warnings.length > 0 ? { warnings } : {}) } };
+    }
+  }
   if (await getImagePrePullJob(id).catch(() => null)) {
     return { status: 409, body: { message: "ImagePrePullJob 的失败重试由 spec.imagePrePullTemplate.retryTimes 控制，不能手动重试同一资源" } };
   }

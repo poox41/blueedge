@@ -1,4 +1,5 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -7,10 +8,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { AlertTriangle, Trash2, ChevronLeft, ChevronRight, Copy, Ban, CheckCircle2, MoreHorizontal, Pause, Pencil, Plus, RefreshCw, Search, X } from "lucide-react";
+import { AlertTriangle, Trash2, ChevronLeft, ChevronRight, Copy, Ban, CheckCircle2, MoreHorizontal, Pause, Pencil, Plus, Search, X } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { formatMemory, listNodeMetrics } from "@/api/services/metrics";
 import { deleteNodeResource, getNode, listNodes, listPods, updateNodeResource } from "@/api/services/resources";
@@ -239,7 +239,8 @@ export function Nodes() {
   const [data, setData] = useState<Node[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
-  const [search, setSearch] = useState("");
+  const [nodeSearch, setNodeSearch] = useState("");
+  const [accessSearch, setAccessSearch] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [activeTab, setActiveTab] = useState<"nodes" | "access">("nodes");
   const [detailOpen, setDetailOpen] = useState(false);
@@ -315,18 +316,18 @@ export function Nodes() {
 
   const filtered = useMemo(() => {
     let result = data;
-    if (search.trim()) {
-      const s = search.toLowerCase();
+    if (nodeSearch.trim()) {
+      const s = nodeSearch.toLowerCase();
       result = result.filter(n => n.name.toLowerCase().includes(s) || n.ip.toLowerCase().includes(s) || (n.alias || "").toLowerCase().includes(s));
     }
     return result;
-  }, [data, search]);
+  }, [data, nodeSearch]);
 
   const filteredAccessConfigs = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
+    const keyword = accessSearch.trim().toLowerCase();
     if (!keyword) return accessConfigs;
     return accessConfigs.filter((item) => item.name.toLowerCase().includes(keyword) || item.nodeLabel.toLowerCase().includes(keyword) || item.address.toLowerCase().includes(keyword));
-  }, [accessConfigs, search]);
+  }, [accessConfigs, accessSearch]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (currentPage - 1) * pageSize;
@@ -532,10 +533,10 @@ export function Nodes() {
   };
 
   return (
-    <div className="blueedge-page space-y-4">
-      <div className="space-y-2">
-        <h1 className="text-xl font-semibold tracking-tight text-[var(--color-text-primary)]">边缘节点</h1>
-        <p className="text-sm text-[var(--color-text-secondary)]">是容器集群组成的基本元素，既可以是云主机，也可以是物理机，用于运行容器化应用的载体，边缘应用将以 Pod 的形式在节点上运行。</p>
+    <div className="blueedge-page space-y-6">
+      <div className="space-y-1">
+        <h1 className="text-lg font-semibold tracking-tight text-[#111827]">边缘节点</h1>
+        <p className="text-xs leading-5 text-[var(--color-text-secondary)]">是容器集群组成的基本元素，既可以是云主机，也可以是物理机，用于运行容器化应用的载体，边缘应用将以 Pod 的形式在节点上运行。</p>
       </div>
       {error && (
         <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">
@@ -547,65 +548,57 @@ export function Nodes() {
           {accessError}
         </div>
       )}
-      <div className="flex items-center justify-between gap-4 pt-5">
+      <div className="flex items-center justify-between gap-4">
         <div className="inline-flex rounded-xl border border-[var(--color-border)] bg-white p-1 shadow-sm">
           <button
             type="button"
             onClick={() => setActiveTab("nodes")}
             className={cn("h-9 rounded-[10px] px-4 text-sm font-semibold transition-colors", activeTab === "nodes" ? "bg-[var(--color-text-primary)] text-white" : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]")}
           >
-            边缘节点 ({data.length})
+            边缘节点 <span className="ml-1 opacity-70">({filtered.length})</span>
           </button>
           <button
             type="button"
             onClick={() => setActiveTab("access")}
             className={cn("h-9 rounded-[10px] px-4 text-sm font-semibold transition-colors", activeTab === "access" ? "bg-[var(--color-text-primary)] text-white" : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]")}
           >
-            接入配置 ({accessConfigs.length})
+            接入配置 <span className="ml-1 opacity-70">({filteredAccessConfigs.length})</span>
           </button>
         </div>
         <div className="flex items-center gap-3">
-          <div className="relative w-[320px]">
+          <div className="relative w-[240px] transition-[width] focus-within:w-[300px]">
             <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
             <Input
-              value={search}
+              value={activeTab === "nodes" ? nodeSearch : accessSearch}
               onChange={(event) => {
-                setSearch(event.target.value);
+                if (activeTab === "nodes") setNodeSearch(event.target.value);
+                else setAccessSearch(event.target.value);
                 setCurrentPage(1);
               }}
               placeholder={activeTab === "nodes" ? "输入节点名称搜索" : "输入接入配置名称搜索"}
               className="h-10 rounded-xl border-[var(--color-input-border)] bg-white pl-11 text-sm"
             />
           </div>
-          <Button variant="outline" size="sm" onClick={() => void (activeTab === "nodes" ? loadNodes() : loadAccessConfigs())} className="blueedge-muted-button h-10 w-10 rounded-xl border-[var(--color-border-strong)] p-0" title="刷新">
-            <span className="sr-only">刷新</span>
-            <RefreshCw className="h-4 w-4" />
-          </Button>
           <Button onClick={() => activeTab === "nodes" ? navigate("/nodes/access") : setAccessCreateOpen(true)} className="blueedge-primary-button h-10 rounded-xl px-4 text-sm">
             <Plus className="h-4 w-4" />
             {activeTab === "nodes" ? "接入节点" : "创建接入配置"}
           </Button>
         </div>
       </div>
-      {activeTab === "access" && (
-        <div className="rounded-xl border border-[#fde68a] bg-[#fffbeb] px-4 py-3 text-sm leading-6 text-[#92400e]">
-          接入配置当前仅保存配置元数据并提供命令模板；尚未接入 join token，不能视为节点已经真实安装或接入成功。
-        </div>
-      )}
-      <div className="table-card">
+      <div className="table-card overflow-x-auto">
         {activeTab === "nodes" ? (
-          <Table>
+          <Table className="min-w-[960px] table-fixed">
             <TableHeader>
               <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">名称</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">别名</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">状态</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">调度状态</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">标签</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">CPU</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">内存</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">版本</TableHead>
-                <TableHead className="w-[96px] px-4 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
+                <TableHead className="w-[190px] px-4 text-left text-xs font-medium text-[var(--color-text-tertiary)]">名称</TableHead>
+                <TableHead className="w-[110px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">别名</TableHead>
+                <TableHead className="w-[88px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">状态</TableHead>
+                <TableHead className="w-[96px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">调度状态</TableHead>
+                <TableHead className="w-[170px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">标签</TableHead>
+                <TableHead className="w-[110px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">CPU</TableHead>
+                <TableHead className="w-[120px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">内存</TableHead>
+                <TableHead className="w-[120px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">版本</TableHead>
+                <TableHead className="w-[68px] px-4 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -614,7 +607,7 @@ export function Nodes() {
               ) : paginated.length === 0 ? (
                 <TableRow><TableCell colSpan={9}><div className="blueedge-empty-state"><span className="blueedge-empty-state-icon" aria-hidden="true" /><span className="text-sm">暂无节点数据</span></div></TableCell></TableRow>
               ) : paginated.map(row => (
-                <TableRow key={row.name} className="h-[76px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
+                <TableRow key={row.name} className="h-[69px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
                   <TableCell className="cursor-pointer px-4 py-3 text-sm font-semibold text-[var(--color-brand)] hover:underline" onClick={() => openDetailWithFreshData(row)}>{row.name}</TableCell>
                   <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{row.alias || "-"}</TableCell>
                   <TableCell className="px-4 py-3"><NodeStatePill status={row.status} /></TableCell>
@@ -629,50 +622,34 @@ export function Nodes() {
                   <TableCell className="px-4 py-3 text-sm text-[var(--color-text-primary)]">{row.memoryUsage || "-"} <span className="text-[var(--color-text-tertiary)]">/ {row.memoryCapacity || "-"}</span></TableCell>
                   <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{row.version || row.kubelet || "-"}</TableCell>
                   <TableCell className="px-4 py-3 text-right">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button className="action-button h-10 w-10 rounded-xl" title="操作">
-                          <MoreHorizontal className="h-4 w-4" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-[156px] rounded-xl border-[var(--color-border)] p-2 shadow-xl">
-                        <DropdownMenuItem className="h-9 cursor-pointer rounded-lg text-sm" onSelect={() => toggleScheduling(row)}>
-                          {row.unschedulable ? <CheckCircle2 className="h-4 w-4" /> : <Pause className="h-4 w-4" />}
-                          {row.unschedulable ? "恢复调度" : "暂停调度"}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem className="h-9 cursor-pointer rounded-lg text-sm" onSelect={() => openAliasDialog(row)}>
-                          <Pencil className="h-4 w-4" />
-                          编辑别名
-                        </DropdownMenuItem>
-                        <DropdownMenuItem className="h-9 cursor-pointer rounded-lg text-sm text-[var(--color-danger)] focus:text-[var(--color-danger)]" onSelect={() => openDelete(row)}>
-                          <Trash2 className="h-4 w-4 text-[var(--color-danger)]" />
-                          移除节点
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    <NodeActionMenu node={row} onSchedule={() => void toggleScheduling(row)} onAlias={() => openAliasDialog(row)} onRemove={() => openDelete(row)} />
                   </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
         ) : (
-          <Table>
+          <Table className="min-w-[800px] table-fixed">
             <TableHeader>
               <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">名称</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">节点标签</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">驱动方式</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">接入地址</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">通信协议</TableHead>
-                <TableHead className="px-4 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
-                <TableHead className="w-[96px] px-4 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
+                <TableHead className="w-[220px] px-4 text-left text-xs font-medium text-[var(--color-text-tertiary)]">名称</TableHead>
+                <TableHead className="w-[220px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">节点标签</TableHead>
+                <TableHead className="w-[100px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">驱动方式</TableHead>
+                <TableHead className="w-[150px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">访问地址</TableHead>
+                <TableHead className="w-[100px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">通信协议</TableHead>
+                <TableHead className="w-[150px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
+                <TableHead className="w-[68px] px-4 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {filteredAccessConfigs.length === 0 ? (
                 <TableRow><TableCell colSpan={7}><div className="blueedge-empty-state"><span className="blueedge-empty-state-icon" aria-hidden="true" /><span className="text-sm">暂无接入配置</span></div></TableCell></TableRow>
               ) : filteredAccessConfigs.map((item) => (
-                <TableRow key={item.name} className="h-[69px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
+                <TableRow
+                  key={item.name}
+                  className="h-[69px] cursor-pointer border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]"
+                  onClick={() => navigate(`/nodes/access-config/${encodeURIComponent(item.name)}`)}
+                >
                   <TableCell className="px-4 py-3 text-sm font-semibold text-[var(--color-brand)]">{item.name}</TableCell>
                   <TableCell className="px-4 py-3"><span className="inline-block max-w-[360px] truncate rounded-md bg-[var(--color-bg-soft)] px-2 py-1 text-sm text-[var(--color-text-primary)]">{item.nodeLabel}</span></TableCell>
                   <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{item.driver || "未配置"}</TableCell>
@@ -680,30 +657,17 @@ export function Nodes() {
                   <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{item.protocol}</TableCell>
                   <TableCell className="px-4 py-3 text-sm text-[var(--color-text-tertiary)]">{item.createdAt}</TableCell>
                   <TableCell className="px-4 py-3 text-right">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <button className="action-button h-10 w-10 rounded-xl" title="操作">
-                          <MoreHorizontal className="h-4 w-4" />
-                        </button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="w-[156px] rounded-xl border-[var(--color-border)] p-2 shadow-xl">
-                        <DropdownMenuItem className="h-9 cursor-pointer rounded-lg text-sm" onSelect={() => openAccessLabelDialog(item)}>
-                          <Pencil className="h-4 w-4" />
-                          修改标签
-                        </DropdownMenuItem>
-                        <DropdownMenuItem className="h-9 cursor-pointer rounded-lg text-sm text-[var(--color-danger)] focus:text-[var(--color-danger)]" onSelect={async () => {
-                          try {
-                            await deleteAccessConfig(item.name);
-                            await loadAccessConfigs();
-                          } catch (err) {
-                            setAccessError(err instanceof Error ? err.message : "接入配置删除失败");
-                          }
-                        }}>
-                          <Trash2 className="h-4 w-4 text-[var(--color-danger)]" />
-                          删除
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
+                    <AccessConfigActionMenu
+                      onLabels={() => openAccessLabelDialog(item)}
+                      onDelete={async () => {
+                        try {
+                          await deleteAccessConfig(item.name);
+                          await loadAccessConfigs();
+                        } catch (err) {
+                          setAccessError(err instanceof Error ? err.message : "接入配置删除失败");
+                        }
+                      }}
+                    />
                   </TableCell>
                 </TableRow>
               ))}
@@ -1029,6 +993,120 @@ export function Nodes() {
 
 function Info({ label, value }: { label: string; value: string }) {
   return (<div className="blueedge-info-card"><p className="blueedge-info-card-label">{label}</p><p className="blueedge-info-card-value">{value}</p></div>);
+}
+
+type ActionMenuItem = {
+  label: string;
+  icon: React.ReactNode;
+  danger?: boolean;
+  onClick: () => void | Promise<void>;
+};
+
+function PortalActionMenu({ items }: { items: ActionMenuItem[] }) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ top: 0, left: 0 });
+
+  const updatePosition = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = 148;
+    const estimatedHeight = items.length * 36 + 12;
+    const top = rect.bottom + estimatedHeight + 8 > window.innerHeight
+      ? Math.max(12, rect.top - estimatedHeight - 8)
+      : rect.bottom + 8;
+    setPosition({
+      top,
+      left: Math.max(12, Math.min(rect.right - width, window.innerWidth - width - 12)),
+    });
+  }, [items.length]);
+
+  useEffect(() => {
+    if (!open) return;
+    updatePosition();
+    const close = (event: MouseEvent) => {
+      const target = event.target as globalThis.Node;
+      if (!triggerRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
+    };
+    const closeOnViewportChange = () => setOpen(false);
+    document.addEventListener("mousedown", close);
+    window.addEventListener("resize", closeOnViewportChange);
+    window.addEventListener("scroll", closeOnViewportChange, true);
+    return () => {
+      document.removeEventListener("mousedown", close);
+      window.removeEventListener("resize", closeOnViewportChange);
+      window.removeEventListener("scroll", closeOnViewportChange, true);
+    };
+  }, [open, updatePosition]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        className="action-button h-10 w-10 rounded-xl"
+        title="操作"
+        aria-label="操作"
+        aria-expanded={open}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (!open) updatePosition();
+          setOpen((current) => !current);
+        }}
+      >
+        <MoreHorizontal className="h-4 w-4" />
+      </button>
+      {open && createPortal(
+        <div
+          ref={menuRef}
+          className="fixed z-[2000] w-[148px] overflow-hidden rounded-xl border border-[#e5e7eb] bg-white py-1.5 text-left shadow-[0_8px_32px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)]"
+          style={position}
+          role="menu"
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              className={cn(
+                "flex h-9 w-full items-center gap-2 px-3.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)]",
+                item.danger ? "text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]" : "text-[#111827]",
+              )}
+              onClick={(event) => {
+                event.stopPropagation();
+                setOpen(false);
+                void item.onClick();
+              }}
+            >
+              {item.icon}
+              {item.label}
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
+function NodeActionMenu({ node, onSchedule, onAlias, onRemove }: { node: Node; onSchedule: () => void | Promise<void>; onAlias: () => void; onRemove: () => void }) {
+  return (
+    <PortalActionMenu items={[
+      { label: node.unschedulable ? "恢复调度" : "暂停调度", icon: node.unschedulable ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />, onClick: onSchedule },
+      { label: "编辑别名", icon: <Pencil className="h-3.5 w-3.5" />, onClick: onAlias },
+      { label: "移除节点", icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, onClick: onRemove },
+    ]} />
+  );
+}
+
+function AccessConfigActionMenu({ onLabels, onDelete }: { onLabels: () => void; onDelete: () => void | Promise<void> }) {
+  return (
+    <PortalActionMenu items={[
+      { label: "修改标签", icon: <Pencil className="h-3.5 w-3.5" />, onClick: onLabels },
+      { label: "删除", icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, onClick: onDelete },
+    ]} />
+  );
 }
 
 function NodeStatePill({ status }: { status: string }) {

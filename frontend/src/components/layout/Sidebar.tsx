@@ -1,17 +1,19 @@
 import { NavLink } from "react-router-dom";
 import {
   Box,
+  Cloud,
   ChevronLeft,
   ChevronRight,
   Cpu,
   FileCode,
+  Group,
+  HardDrive,
   Layers,
   LayoutDashboard,
   MessageSquare,
   Rocket,
   Route,
   Server,
-  Settings2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
@@ -30,9 +32,9 @@ const navGroups = [
     group: "边缘资源",
     items: [
       { label: "边缘节点", icon: Server, path: "/nodes" },
-      { label: "边缘节点组", icon: Settings2, path: "/nodegroups" },
+      { label: "边缘节点组", icon: Group, path: "/nodegroups" },
       { label: "设备模型", icon: Cpu, path: "/devicemodels" },
-      { label: "终端设备", icon: Box, path: "/deviceinstances" },
+      { label: "终端设备", icon: HardDrive, path: "/deviceinstances" },
       { label: "批量任务", icon: Rocket, path: "/batchtasks" },
     ],
   },
@@ -53,15 +55,6 @@ const navGroups = [
   },
 ];
 
-function StatusPill({ children, tone = "success" }: { children: React.ReactNode; tone?: "success" | "warning" }) {
-  return (
-    <span className={cn("inline-flex h-5 items-center gap-1 rounded-full px-2 text-xs font-semibold", tone === "success" ? "bg-[var(--color-success-soft)] text-[var(--color-success)]" : "bg-[var(--color-warning-soft)] text-[#f57c00]")}>
-      {tone === "success" && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
-      {children}
-    </span>
-  );
-}
-
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { selectedEdgeUnit, loading, error } = useEdgeUnits();
   const status = selectedEdgeUnit?.status === "running" ? "运行中" : selectedEdgeUnit?.status === "abnormal" ? "异常" : "未知";
@@ -78,10 +71,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
     >
       <div className="flex h-[72px] shrink-0 items-center border-b border-[#e8ecf3] px-5">
         <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[var(--color-text-primary)]">
-          <Box className="h-4 w-4 text-white" />
+          <Box className="h-[18px] w-[18px] text-white" />
         </div>
         {!collapsed && (
-          <span className="ml-3 text-sm font-bold text-[var(--color-text-primary)]">
+          <span className="ml-3 text-sm font-semibold tracking-tight text-[var(--color-text-primary)]">
             BlueEdge
           </span>
         )}
@@ -91,7 +84,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {navGroups.map((group) => (
           <div key={group.group || "root"}>
             {group.group && !collapsed && (
-              <div className="mb-2 mt-5 px-3 text-[11px] font-semibold text-[var(--color-text-tertiary)]">
+              <div className="mb-2 mt-5 px-3 text-[11px] font-semibold uppercase tracking-wider text-[var(--color-text-tertiary)]">
                 {group.group}
               </div>
             )}
@@ -123,22 +116,27 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       </nav>
 
       {!collapsed && (
-        <div className="shrink-0 px-3 pb-3">
-          <div className="rounded-[22px] border border-[#e8ecf3] bg-[#f6f7f9] p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
-            <div className="mb-3 flex items-center justify-between">
-              <StatusPill tone={status === "运行中" ? "success" : "warning"}>{loading ? "加载中" : status}</StatusPill>
-              <StatusPill tone="warning">{accessType}</StatusPill>
+        <div className="shrink-0 px-3 pb-2 pt-2">
+          <div className="rounded-[22px] border border-[#e8ecf3] bg-[#f6f7f9] p-[14px] shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
+            <div className="mb-2.5 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="relative flex h-3 w-3 items-center justify-center">
+                  <span className={cn("absolute h-3 w-3 rounded-full opacity-20 blur-[3px]", status === "运行中" ? "bg-[#22c55e]" : status === "异常" ? "bg-[#ef4444]" : "bg-[#9ca3af]")} />
+                  <span className={cn("relative h-[7px] w-[7px] rounded-full", status === "运行中" ? "bg-[#22c55e]" : status === "异常" ? "bg-[#ef4444]" : "bg-[#9ca3af]")} />
+                </span>
+                <span className="text-[11px] font-medium text-[var(--color-text-secondary)]">{loading ? "加载中" : status}</span>
+              </div>
+              <span className={cn("shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold", accessType === "专有" ? "bg-[#eaf2ff] text-[#2563eb]" : "bg-[#fef3c7] text-[#b45309]")}>{accessType}</span>
             </div>
-            <h3 className="mb-2 truncate text-sm font-bold text-[var(--color-text-primary)]">{selectedEdgeUnit?.name || "暂无边缘单元"}</h3>
-            <div className="space-y-1 text-[11px] text-[var(--color-text-secondary)]">
-              <div className="flex items-center gap-1.5"><Server className="h-3 w-3 text-[var(--color-text-tertiary)]" />{cluster}</div>
-              <div className="flex items-center gap-1.5"><Box className="h-3 w-3 text-[var(--color-text-tertiary)]" />KubeEdge {version}</div>
-              <div className="flex items-center gap-1.5"><Cpu className="h-3 w-3 text-[var(--color-text-tertiary)]" />节点 {selectedEdgeUnit ? `${selectedEdgeUnit.nodes.ready}/${selectedEdgeUnit.nodes.total}` : "暂不可用"}</div>
+            <div className="mb-3">
+              <h3 className="mb-1.5 truncate text-sm font-bold tracking-[0.01em] text-[var(--color-text-primary)]">{selectedEdgeUnit?.name || "暂无边缘单元"}</h3>
+              <div className="mb-1 flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]"><Cloud className="h-[11px] w-[11px] shrink-0 text-[var(--color-text-tertiary)]" />{cluster}</div>
+              <div className="flex items-center gap-1.5 text-[11px] text-[var(--color-text-secondary)]"><Server className="h-[11px] w-[11px] shrink-0 text-[var(--color-text-tertiary)]" />KubeEdge {version}</div>
             </div>
             {error && <p className="mt-2 line-clamp-2 text-[11px] text-[var(--color-danger)]">{error}</p>}
-            <div className="my-3 border-t border-[#e8ecf3]" />
-            <NavLink to="/" className="flex h-8 items-center justify-center gap-1.5 rounded-xl border border-[#e8ecf3] bg-white text-xs font-semibold text-[var(--color-text-primary)] shadow-sm hover:bg-[var(--color-text-primary)] hover:text-white">
-              <ChevronLeft className="h-3.5 w-3.5" />
+            <div className="mb-2.5 border-t border-[#e8ecf3]" />
+            <NavLink to="/" className="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[#e8ecf3] bg-white py-[7px] text-xs font-medium text-[var(--color-text-primary)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-all hover:border-[#111827] hover:bg-[#111827] hover:text-white">
+              <ChevronLeft className="h-[13px] w-[13px]" />
               返回列表
             </NavLink>
           </div>

@@ -5,7 +5,6 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
-  AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
@@ -21,7 +20,7 @@ import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, RuleEndpointView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 import { useNamespace } from "@/contexts/NamespaceContext";
-import { Activity, ArrowLeft, Bug, ClipboardList, Copy, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Terminal, Trash2, Wifi, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowLeft, Bug, ChevronDown, ClipboardList, Copy, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Terminal, Trash2, Wifi, X } from "lucide-react";
 
 type EndpointType = "rest" | "eventbus" | "servicebus";
 
@@ -323,9 +322,9 @@ export function RuleEndpoints() {
 
   const openMenu = (row: MessageEndpointRow, button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect();
-    const width = 160;
+    const width = 120;
     setMenuPosition({
-      top: rect.bottom + 10,
+      top: rect.bottom + 4,
       left: Math.min(window.innerWidth - width - 16, Math.max(16, rect.right - width)),
     });
     setMenuTarget((current) => (current?.name === row.name && current.namespace === row.namespace ? null : row));
@@ -422,46 +421,37 @@ export function RuleEndpoints() {
   }
 
   return (
-    <div className="blueedge-page space-y-5">
-      <div>
-        <h1 className="mb-1 text-lg font-semibold text-[var(--color-text-primary)]">消息端点</h1>
-        <p className="text-xs text-[var(--color-text-secondary)]">定义消息进入或离开边缘单元的连接端点</p>
-      </div>
+    <div className="page-container">
+      <div className="space-y-5">
+        <div>
+          <h1 className="mb-1 text-lg font-semibold text-[#111827]">消息端点</h1>
+          <p className="text-xs text-[var(--color-text-secondary)]">定义消息进入或离开边缘单元的连接端点</p>
+        </div>
 
-      <div className="page-toolbar">
-        <div className="relative w-[240px] transition-all focus-within:w-[300px]">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
-          <Input
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder="搜索消息端点名称..."
-            className="h-10 rounded-xl border-2 border-[var(--color-input-border)] bg-white pl-10 text-sm shadow-sm"
-          />
+        <div className="page-toolbar">
+          <div className="toolbar-search relative">
+            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+            <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索消息端点名称..." className="h-9 rounded-[10px] pl-9 text-sm" />
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => void loadData(true)} className="action-button" title="刷新" disabled={isLoading}><RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} /></button>
+            <button type="button" onClick={() => setCreateOpen(true)} className="btn-black text-xs"><Plus className="h-3.5 w-3.5" />创建消息端点</button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => void loadData(true)} className="action-button h-10 w-10" title="刷新" disabled={isLoading}>
-            <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
-          </button>
-          <button type="button" onClick={() => setCreateOpen(true)} className="blueedge-primary-button h-10 rounded-xl px-4">
-            <Plus className="h-4 w-4" />
-            创建消息端点
-          </button>
-        </div>
-      </div>
 
       {error && <div className="rounded-xl border border-[#fde68a] bg-[var(--color-warning-soft)] px-4 py-3 text-sm text-[#b45309]">{error}</div>}
 
       <section className="table-card overflow-visible">
-        <Table className="min-w-[980px] table-fixed">
+        <Table className="min-w-[820px] table-fixed">
           <TableHeader>
-            <TableRow className="h-12 bg-white hover:bg-white">
-              <TableHead className="w-[24%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">端点名称</TableHead>
-              <TableHead className="w-[12%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">类型</TableHead>
-              <TableHead className="w-[11%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">位置</TableHead>
-              <TableHead className="w-[13%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">命名空间</TableHead>
-              <TableHead className="w-[13%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">连接状态</TableHead>
-              <TableHead className="w-[18%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
-              <TableHead className="w-[9%] px-5 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
+            <TableRow className="table-header-row bg-white hover:bg-white">
+              <TableHead className="table-header-cell table-header-name w-[200px]">端点名称</TableHead>
+              <TableHead className="table-header-cell w-[100px]">类型</TableHead>
+              <TableHead className="table-header-cell w-[90px]">位置</TableHead>
+              <TableHead className="table-header-cell w-[110px]">命名空间</TableHead>
+              <TableHead className="table-header-cell w-[100px]">连接状态</TableHead>
+              <TableHead className="table-header-cell w-[150px]">创建时间</TableHead>
+              <TableHead className="table-header-cell table-header-action w-[80px]">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -484,20 +474,20 @@ export function RuleEndpoints() {
               </TableRow>
             ) : (
               filtered.map((row) => (
-                <TableRow key={`${row.namespace}-${row.name}`} className="h-[72px] border-t border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
-                  <TableCell className="px-5">
-                    <button type="button" onClick={() => navigate(`/ruleendpoints/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.name)}`)} className="text-left text-sm font-semibold text-[var(--color-brand)] hover:underline">{row.name}</button>
+                <TableRow key={`${row.namespace}-${row.name}`} className="table-row cursor-pointer" onClick={() => navigate(`/ruleendpoints/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.name)}`)}>
+                  <TableCell className="table-name-cell">
+                    <span className="text-sm font-medium text-[var(--color-brand)]">{row.name}</span>
                   </TableCell>
-                  <TableCell className="px-5 text-sm font-medium text-[var(--color-text-primary)]">{displayRuleEndpointType(row.ruleEndpointType)}</TableCell>
-                  <TableCell className="px-5 text-sm font-medium text-[var(--color-text-primary)]">{endpointLocation(row.ruleEndpointType)}</TableCell>
-                  <TableCell className="px-5 text-sm font-medium text-[var(--color-text-primary)]">{row.namespace}</TableCell>
-                  <TableCell className="px-5">
+                  <TableCell className="table-cell text-xs">{displayRuleEndpointType(row.ruleEndpointType)}</TableCell>
+                  <TableCell className="table-cell text-xs">{endpointLocation(row.ruleEndpointType)}</TableCell>
+                  <TableCell className="table-cell text-xs">{row.namespace}</TableCell>
+                  <TableCell className="table-cell">
                     <StatusPill connected={row.connected} />
                   </TableCell>
-                  <TableCell className="px-5 text-sm text-[var(--color-text-tertiary)]">{formatCreatedAt(row.createdAt)}</TableCell>
-                  <TableCell className="px-5 text-right" onClick={(event) => event.stopPropagation()}>
-                    <button type="button" className="action-button h-10 w-10" title="更多" onClick={(event) => openMenu(row, event.currentTarget)}>
-                      <MoreHorizontal className="h-4 w-4" />
+                  <TableCell className="table-cell text-xs text-[var(--color-text-tertiary)]">{formatCreatedAt(row.createdAt)}</TableCell>
+                  <TableCell className="table-action-cell text-right" onClick={(event) => event.stopPropagation()}>
+                    <button type="button" className="action-button" title="更多" onClick={(event) => openMenu(row, event.currentTarget)}>
+                      <MoreHorizontal className="h-3.5 w-3.5" />
                     </button>
                   </TableCell>
                 </TableRow>
@@ -511,18 +501,18 @@ export function RuleEndpoints() {
         <>
           <button type="button" aria-label="关闭操作菜单" className="fixed inset-0 z-[70] cursor-default" onClick={() => setMenuTarget(null)} />
           <div
-            className="fixed z-[90] rounded-2xl border border-[#eef2f7] bg-white p-2 shadow-[0_18px_45px_rgba(15,23,42,0.14)]"
-            style={{ top: menuPosition.top, left: menuPosition.left, width: 160 }}
+            className="fixed z-[90] rounded-xl border border-[var(--color-border)] bg-white py-1.5 shadow-[0_8px_32px_rgba(0,0,0,0.12),0_2px_8px_rgba(0,0,0,0.08)]"
+            style={{ top: menuPosition.top, left: menuPosition.left, width: 120 }}
           >
             <button
               type="button"
-              className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-medium text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]"
+              className="mx-1 flex h-9 w-[calc(100%-8px)] items-center gap-2 rounded-lg px-3 text-left text-xs text-[#ef4444] transition-colors hover:bg-[#fdecec]"
               onClick={() => {
                 setDeleteTarget(menuTarget);
                 setMenuTarget(null);
               }}
             >
-              <Trash2 className="h-4 w-4" />
+              <Trash2 className="h-3.5 w-3.5" />
               删除
             </button>
           </div>
@@ -543,6 +533,7 @@ export function RuleEndpoints() {
       />
 
       <EndpointDeleteDialog target={deleteTarget} isLoading={isLoading} onOpenChange={(open) => !open && setDeleteTarget(null)} onConfirm={confirmDelete} />
+      </div>
     </div>
   );
 }
@@ -551,7 +542,7 @@ function StatusPill({ connected }: { connected: boolean | null }) {
   return (
     <span
       className={cn(
-        "inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-semibold",
+        "inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium",
         connected === true ? "bg-[var(--color-success-soft)] text-[var(--color-success)]" : "bg-[#f3f4f6] text-[#9ca3af]",
       )}
     >
@@ -586,17 +577,17 @@ function CreateEndpointDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[min(720px,calc(100vh-48px))] w-[calc(100vw-48px)] max-w-[620px] gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[620px]" showCloseButton={false}>
-        <DialogHeader className="flex h-14 flex-row items-center justify-between border-b border-[var(--color-border)] px-7 text-left">
+      <DialogContent className="max-h-[min(720px,calc(100vh-48px))] w-[calc(100vw-48px)] max-w-[600px] gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[600px]" showCloseButton={false}>
+        <DialogHeader className="flex h-14 flex-row items-center justify-between border-b border-[var(--color-border)] px-6 text-left">
           <DialogTitle className="text-base font-semibold">创建消息端点</DialogTitle>
-          <button type="button" onClick={() => onOpenChange(false)} className="action-button h-10 w-10 rounded-xl">
+          <button type="button" onClick={() => onOpenChange(false)} className="action-button h-8 w-8 rounded-[10px]">
             <X className="h-4 w-4" />
           </button>
         </DialogHeader>
 
-        <div className="max-h-[calc(100vh-168px)] overflow-y-auto px-7 py-5">
+        <div className="max-h-[calc(100vh-168px)] overflow-y-auto px-6 py-5">
           <div>
-            <Label className="mb-3 block text-sm font-semibold text-[var(--color-text-primary)]">
+            <Label className="mb-2 block text-sm font-medium text-[var(--color-text-primary)]">
               消息端点类型 <span className="text-[var(--color-danger)]">*</span>
             </Label>
             <div className="space-y-3">
@@ -611,7 +602,7 @@ function CreateEndpointDialog({
                   )}
                 >
                   <span className={cn("block text-sm font-semibold", form.type === option.key ? "text-[var(--color-brand)]" : "text-[#374151]")}>{option.label}</span>
-                  <span className="mt-2 block text-xs leading-5 text-[var(--color-text-secondary)]">备注:{option.desc}</span>
+                  <span className="mt-1 block text-xs leading-5 text-[var(--color-text-secondary)]">备注:{option.desc}</span>
                 </button>
               ))}
             </div>
@@ -622,38 +613,41 @@ function CreateEndpointDialog({
           <div className="space-y-5">
             <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">基础信息</h3>
             <div>
-              <Label className="mb-1.5 block text-sm font-semibold text-[var(--color-text-primary)]">
+              <Label className="mb-1.5 block text-sm font-medium text-[var(--color-text-primary)]">
                 命名空间 <span className="text-[var(--color-danger)]">*</span>
               </Label>
               <div className="flex items-center gap-3">
-                <select
-                  value={form.namespace}
-                  onChange={(event) => onChange({ ...form, namespace: event.target.value })}
-                  className="h-10 min-w-0 flex-1 rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm text-[var(--color-text-primary)] outline-none transition-colors focus:border-[var(--color-brand)]"
-                >
-                  {namespaceItems.length === 0 && <option value="default">default</option>}
-                  {namespaceItems.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-                <button type="button" onClick={() => void onRefreshNamespaces()} className="action-button h-10 w-10 rounded-xl" title="刷新命名空间" disabled={refreshingNamespaces}>
+                <div className="relative min-w-0 flex-1">
+                  <select
+                    value={form.namespace}
+                    onChange={(event) => onChange({ ...form, namespace: event.target.value })}
+                    className="h-9 w-full appearance-none rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-3 pr-9 text-sm text-[var(--color-text-primary)] outline-none transition-colors focus:border-[var(--color-text-primary)]"
+                  >
+                    {namespaceItems.length === 0 && <option value="default">default</option>}
+                    {namespaceItems.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+                </div>
+                <button type="button" onClick={() => void onRefreshNamespaces()} className="action-button h-9 w-9 rounded-[10px]" title="刷新命名空间" disabled={refreshingNamespaces}>
                   <RefreshCw className={cn("h-4 w-4", refreshingNamespaces && "animate-spin")} />
                 </button>
-                <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">创建命名空间暂未开放</span>
+                <a href="https://183.95.195.121:31417/kpanda/clusters/ali-139-131/namespaces" target="_blank" rel="noreferrer" className="shrink-0 text-xs text-[#1a73e8]">创建命名空间</a>
               </div>
             </div>
 
             <div>
-              <Label className="mb-1.5 block text-sm font-semibold text-[var(--color-text-primary)]">
+              <Label className="mb-1.5 block text-sm font-medium text-[var(--color-text-primary)]">
                 消息端点名称 <span className="text-[var(--color-danger)]">*</span>
               </Label>
               <Input
                 value={form.name}
                 onChange={(event) => onChange({ ...form, name: event.target.value })}
                 placeholder="mqtt-internal"
-                className="h-10 rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm"
+                className="h-9 rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-3 text-sm"
               />
               <p className={cn("mt-1.5 text-xs", form.name && !validEndpointName(form.name) ? "text-[var(--color-danger)]" : "text-[var(--color-text-tertiary)]")}>
                 支持小写字母、数字、"-"，长度1~253
@@ -662,15 +656,15 @@ function CreateEndpointDialog({
           </div>
         </div>
 
-        <DialogFooter className="h-16 border-t border-[var(--color-border)] px-7 py-3">
-          <button type="button" onClick={() => onOpenChange(false)} className="blueedge-muted-button h-10 rounded-xl px-5 text-sm">
+        <DialogFooter className="h-16 border-t border-[var(--color-border)] px-6 py-3">
+          <button type="button" onClick={() => onOpenChange(false)} className="blueedge-muted-button h-9 rounded-[10px] px-4 text-sm">
             取消
           </button>
           <button
             type="button"
             onClick={onCreate}
             disabled={!canCreate || isLoading}
-            className="blueedge-primary-button h-10 rounded-xl px-6 text-sm disabled:cursor-not-allowed disabled:bg-[#9ca3af] disabled:opacity-70"
+            className="blueedge-primary-button h-9 rounded-[10px] px-4 text-sm disabled:cursor-not-allowed disabled:bg-[#9ca3af] disabled:opacity-70"
           >
             创建
           </button>
@@ -705,8 +699,8 @@ function EndpointDetailPage({
 }) {
   const [tab, setTab] = useState<EndpointDetailTab>("detail");
 
-  if (loading) return <div className="blueedge-page flex min-h-[520px] items-center justify-center"><RefreshCw className="h-9 w-9 animate-spin text-[#94a3b8]" /></div>;
-  if (!row) return <div className="blueedge-page space-y-5"><button type="button" onClick={onBack} className="inline-flex items-center gap-2 text-sm font-semibold text-[#475569]"><ArrowLeft className="h-4 w-4" />返回列表</button><div className="rounded-2xl border border-[#fecaca] bg-[#fef2f2] p-5 text-sm text-[#b91c1c]">{error || "消息端点不存在或无权访问"}</div></div>;
+  if (loading) return <div className="page-container flex min-h-[520px] items-center justify-center"><RefreshCw className="h-9 w-9 animate-spin text-[#94a3b8]" /></div>;
+  if (!row) return <div className="page-container space-y-5"><button type="button" onClick={onBack} className="inline-flex items-center gap-2 text-sm font-semibold text-[#475569]"><ArrowLeft className="h-4 w-4" />返回列表</button><div className="rounded-2xl border border-[#fecaca] bg-[#fef2f2] p-5 text-sm text-[#b91c1c]">{error || "消息端点不存在或无权访问"}</div></div>;
 
   const tabs: Array<{ id: EndpointDetailTab; label: string; icon: typeof Terminal }> = [
     { id: "detail", label: "端点详情", icon: Terminal },
@@ -716,40 +710,43 @@ function EndpointDetailPage({
   ];
 
   return (
-    <div className="blueedge-page space-y-6">
-      <div className="flex items-start justify-between gap-6">
-        <div className="flex min-w-0 items-center gap-4">
-          <button type="button" onClick={onBack} className="action-button h-11 w-11 shrink-0 rounded-xl" title="返回列表"><ArrowLeft className="h-5 w-5" /></button>
+    <div className="page-container space-y-5">
+      <div className="flex items-center justify-between gap-6">
+        <div className="flex min-w-0 items-center gap-3">
+          <button type="button" onClick={onBack} className="action-button h-9 w-9 shrink-0 rounded-[10px]" title="返回列表"><ArrowLeft className="h-4 w-4" /></button>
           <div className="min-w-0">
-            <div className="flex items-center gap-3"><h1 className="truncate text-xl font-semibold text-[#111827]">{row.name}</h1><StatusPill connected={row.connected} /></div>
-            <p className="mt-1 truncate text-sm text-[#64748b]">{displayRuleEndpointType(row.ruleEndpointType)} · {endpointLocation(row.ruleEndpointType)} · {endpointAddress(row)}</p>
+            <div className="mb-0.5 flex items-center gap-3"><h1 className="truncate text-lg font-semibold text-[#111827]">{row.name}</h1><StatusPill connected={row.connected} /></div>
+            <p className="truncate text-xs text-[var(--color-text-secondary)]">{displayRuleEndpointType(row.ruleEndpointType)} · {endpointLocation(row.ruleEndpointType)} · {endpointAddress(row)}</p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <button type="button" onClick={onEdit} className="blueedge-primary-button h-10 rounded-xl px-5"><Pencil className="h-4 w-4" />编辑</button>
-          <button type="button" onClick={onDelete} className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#fee2e2] bg-white px-5 text-sm font-semibold text-[#ff4d4f] hover:bg-[#fff5f5]"><Trash2 className="h-4 w-4" />删除</button>
+          <button type="button" onClick={onEdit} className="btn-black text-xs"><Pencil className="h-3.5 w-3.5" />编辑</button>
+          <button type="button" onClick={onDelete} className="btn-danger-outline text-xs"><Trash2 className="h-3.5 w-3.5" />删除</button>
         </div>
       </div>
 
       {error && <div className="rounded-xl border border-[#fde68a] bg-[#fffbeb] px-4 py-3 text-sm text-[#b45309]">{error}</div>}
 
-      <section className="rounded-2xl border border-[#eef2f7] bg-white px-6 py-6 shadow-[0_12px_35px_rgba(15,23,42,0.05)]">
-        <h2 className="mb-6 text-base font-semibold text-[#111827]">基本信息</h2>
-        <div className="grid grid-cols-4 gap-x-8 gap-y-8">
+      <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+        <h2 className="mb-5 text-sm font-semibold text-[#111827]">基本信息</h2>
+        <div className="grid grid-cols-4 gap-x-6 gap-y-5">
           <EndpointInfo label="端点名称" value={row.name} />
-          <div><div className="mb-2 text-sm text-[#94a3b8]">连接状态</div><StatusPill connected={row.connected} /></div>
+          <div><div className="mb-1.5 text-xs tracking-[0.01em] text-[var(--color-text-tertiary)]">连接状态</div><StatusPill connected={row.connected} /></div>
           <EndpointInfo label="类型" value={displayRuleEndpointType(row.ruleEndpointType)} />
           <EndpointInfo label="创建时间" value={formatCreatedAt(row.createdAt)} />
+          <div className="col-span-4 my-2 border-t border-[#f0f1f3]" />
           <EndpointInfo label="位置" value={endpointLocation(row.ruleEndpointType)} />
           <EndpointInfo label="连接地址" value={endpointAddress(row)} mono />
           <EndpointInfo label="服务端口" value={endpointPort(row)} />
           <EndpointInfo label="命名空间" value={row.namespace} />
+          <div className="col-span-4 my-2 border-t border-[#f0f1f3]" />
           <EndpointInfo label="协议" value={endpointProtocol(row)} />
           <EndpointInfo label="认证方式" value={endpointAuth(row)} />
+          <div className="col-span-2" />
         </div>
       </section>
 
-      <div className="flex items-center gap-2">{tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" onClick={() => setTab(id)} className={cn("inline-flex h-10 items-center gap-2 rounded-xl border px-4 text-sm font-semibold", tab === id ? "border-[#0f172a] bg-[#0f172a] text-white" : "border-[#dfe5ee] bg-white text-[#64748b] hover:bg-[#f8fafc]")}><Icon className="h-4 w-4" />{label}</button>)}</div>
+      <div className="flex items-center gap-2">{tabs.map(({ id, label, icon: Icon }) => <button key={id} type="button" onClick={() => setTab(id)} className={tab === id ? "btn-tab-active" : "btn-tab"}><Icon className="h-3.5 w-3.5" />{label}</button>)}</div>
 
       {tab === "detail" && <EndpointPropertiesPanel row={row} />}
       {tab === "connectivity" && <EndpointConnectivityPanel row={row} />}
@@ -760,22 +757,20 @@ function EndpointDetailPage({
 }
 
 function EndpointInfo({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return <div className="min-w-0"><div className="mb-2 text-sm text-[#94a3b8]">{label}</div><div className={cn("break-words text-sm font-semibold leading-6 text-[#111827]", mono && "font-mono")}>{value || "-"}</div></div>;
+  return <div className="min-w-0"><div className="mb-1.5 text-xs tracking-[0.01em] text-[var(--color-text-tertiary)]">{label}</div><div className={cn("break-words text-sm font-medium leading-5 text-[#111827]", mono && "font-mono text-xs")}>{value || "-"}</div></div>;
 }
 
 function EndpointPropertiesPanel({ row }: { row: MessageEndpointRow }) {
-  const properties = Object.entries(endpointProperties(row));
+  const properties = endpointProperties(row);
   return (
-    <section className="rounded-2xl border border-[#eef2f7] bg-white p-6 shadow-[0_12px_35px_rgba(15,23,42,0.05)]">
-      <h2 className="mb-5 text-base font-semibold text-[#111827]">连接详情</h2>
-      <div className="grid grid-cols-4 gap-5 rounded-2xl bg-[#f8fafc] p-5">
-        <EndpointInfo label="端点类型" value={displayRuleEndpointType(row.ruleEndpointType)} />
-        <EndpointInfo label="目标资源" value={explicitTargetResource(row) || "-"} />
-        <EndpointInfo label="协议" value={endpointProtocol(row)} />
-        <EndpointInfo label="服务端口" value={endpointPort(row)} />
+    <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+      <h2 className="mb-4 text-sm font-semibold text-[#111827]">连接详情</h2>
+      <div className="grid grid-cols-4 gap-4 rounded-xl bg-[#f8f9fb] p-4">
+        <EndpointInfo label="协议版本" value={properties.protocolVersion || endpointProtocol(row)} />
+        <EndpointInfo label="Keep Alive" value={properties.keepAlive || "-"} />
+        <EndpointInfo label="Clean Session" value={properties.cleanSession || "-"} />
+        <EndpointInfo label="QoS 支持" value={properties.qos || properties.qosSupport || "-"} />
       </div>
-      <h3 className="mb-3 mt-6 text-sm font-semibold text-[#111827]">spec.properties</h3>
-      {properties.length === 0 ? <EndpointEmpty text="当前端点没有 properties 配置" /> : <div className="overflow-hidden rounded-xl border border-[#e2e8f0]">{properties.map(([key, value]) => <div key={key} className="grid grid-cols-[220px_1fr_60px] items-center border-b border-[#e2e8f0] px-4 py-4 last:border-b-0"><span className="font-mono text-sm text-[#64748b]">{key}</span><span className="break-all font-mono text-sm text-[#111827]">{value || "-"}</span><button type="button" onClick={() => void navigator.clipboard.writeText(value)} className="action-button ml-auto h-9 w-9" title="复制"><Copy className="h-4 w-4" /></button></div>)}</div>}
     </section>
   );
 }
@@ -784,11 +779,11 @@ function EndpointConnectivityPanel({ row }: { row: MessageEndpointRow }) {
   const known = row.connected !== null;
   const healthy = row.connected === true;
   return (
-    <section className="flex min-h-[360px] flex-col items-center justify-center rounded-2xl border border-[#eef2f7] bg-white p-8 text-center shadow-[0_12px_35px_rgba(15,23,42,0.05)]">
-      <div className={cn("mb-5 flex h-20 w-20 items-center justify-center rounded-full", known ? healthy ? "bg-[#dcfce7] text-[#16a34a]" : "bg-[#fee2e2] text-[#dc2626]" : "bg-[#f1f5f9] text-[#94a3b8]")}><Wifi className="h-8 w-8" /></div>
-      <h2 className="text-lg font-semibold text-[#111827]">{known ? healthy ? "连接正常" : "连接异常" : "连接状态未知"}</h2>
-      <p className="mt-2 max-w-[620px] text-sm leading-6 text-[#94a3b8]">{known ? "状态来自 RuleEndpoint.status。" : "当前集群的 RuleEndpoint 资源未返回 status，官方 BFF 也没有提供主动探测接口，因此不使用前端模拟结果。"}</p>
-      <div className="mt-6 rounded-xl bg-[#f8fafc] px-5 py-3 font-mono text-sm text-[#475569]">{endpointAddress(row)}</div>
+    <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 text-center shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+      <div className={cn("mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full", known ? healthy ? "bg-[#dcfce7] text-[#16a34a]" : "bg-[#fee2e2] text-[#dc2626]" : "bg-[#f1f5f9] text-[#94a3b8]")}><Wifi className="h-5 w-5" /></div>
+      <h2 className="mb-1 text-sm font-medium text-[#111827]">{known ? healthy ? "连接正常" : "连接异常" : "连接状态未知"}</h2>
+      <p className="mx-auto max-w-[620px] text-xs leading-5 text-[var(--color-text-tertiary)]">{known ? "状态来自 RuleEndpoint.status。" : "当前集群的 RuleEndpoint 资源未返回 status，官方 BFF 也没有提供主动探测接口，因此不使用前端模拟结果。"}</p>
+      <div className="mx-auto mt-4 w-fit rounded-xl bg-[#f8f9fb] px-4 py-2 font-mono text-xs text-[#475569]">{endpointAddress(row)}</div>
     </section>
   );
 }
@@ -813,10 +808,6 @@ function EndpointAuditPanel({ row }: { row: MessageEndpointRow }) {
   );
 }
 
-function EndpointEmpty({ text }: { text: string }) {
-  return <div className="rounded-xl border border-dashed border-[#d1d5db] bg-[#fafbfc] px-4 py-12 text-center text-sm text-[#94a3b8]">{text}</div>;
-}
-
 function EditEndpointDialog({ open, row, isLoading, onOpenChange, onSave, onDelete }: { open: boolean; row: MessageEndpointRow | null; isLoading: boolean; onOpenChange: (open: boolean) => void; onSave: (form: EditForm) => Promise<void>; onDelete: () => void }) {
   const [form, setForm] = useState<EditForm>(() => row ? editFormFromRow(row) : { type: "rest", namespace: "default", name: "", targetResource: "", propertyKey: "resource", propertyValue: "" });
   useEffect(() => {
@@ -827,18 +818,65 @@ function EditEndpointDialog({ open, row, isLoading, onOpenChange, onSave, onDele
   if (!row) return null;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="!flex max-h-[calc(100vh-48px)] w-[calc(100vw-48px)] max-w-[760px] flex-col gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[760px]" showCloseButton={false}>
-        <DialogHeader className="flex h-16 shrink-0 flex-row items-center justify-between border-b border-[#eef2f7] px-7"><DialogTitle className="text-lg">编辑消息端点</DialogTitle><div className="flex gap-2"><button type="button" onClick={onDelete} className="action-button h-10 w-10 text-[#ff4d4f]" title="删除"><Trash2 className="h-4 w-4" /></button><button type="button" onClick={() => onOpenChange(false)} className="action-button h-10 w-10"><X className="h-4 w-4" /></button></div></DialogHeader>
-        <div className="min-h-0 flex-1 space-y-6 overflow-y-auto px-7 py-6">
-          <div><Label className="mb-3 block text-sm font-semibold">消息端点类型 <span className="text-[#ff4d4f]">*</span></Label><div className="space-y-3">{endpointTypeOptions.map((option) => <button key={option.key} type="button" onClick={() => setForm({ ...form, type: option.key, propertyKey: propertyKeyForType(option.key), propertyValue: option.key === form.type ? form.propertyValue : "" })} className={cn("w-full rounded-2xl border p-4 text-left", form.type === option.key ? "border-2 border-[#1e6bff] bg-[#eff6ff]" : "border-[#dfe5ee] bg-white")}><span className={cn("block font-semibold", form.type === option.key && "text-[#1e6bff]")}>{option.label}</span><span className="mt-2 block text-sm text-[#64748b]">备注:{option.desc}</span></button>)}</div></div>
-          <div className="border-t border-[#eef2f7] pt-6"><h3 className="mb-5 text-base font-semibold">基础信息</h3><div className="grid grid-cols-2 gap-5"><div><Label className="mb-2 block">命名空间</Label><Input value={form.namespace} disabled className="h-11 rounded-xl" /></div><div><Label className="mb-2 block">消息端点名称</Label><Input value={form.name} disabled className="h-11 rounded-xl" /></div></div><div className="mt-5"><Label className="mb-2 block">目标资源</Label><Input value={form.targetResource} onChange={(event) => setForm({ ...form, targetResource: event.target.value })} placeholder="可选，填写真实目标资源或连接地址" className="h-11 rounded-xl" /></div><div className="mt-5 grid grid-cols-[180px_1fr] gap-4"><div><Label className="mb-2 block">属性键</Label><Input value={propertyKeyForType(form.type)} disabled className="h-11 rounded-xl font-mono" /></div><div><Label className="mb-2 block">属性值</Label><Input value={form.propertyValue} onChange={(event) => setForm({ ...form, propertyValue: event.target.value })} className="h-11 rounded-xl font-mono" /></div></div></div>
+      <DialogContent className="!flex max-h-[calc(100vh-48px)] w-[calc(100vw-48px)] max-w-[600px] flex-col gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[600px]" showCloseButton={false}>
+        <DialogHeader className="flex h-14 shrink-0 flex-row items-center justify-between border-b border-[#f0f1f3] px-6"><DialogTitle className="text-base">编辑消息端点</DialogTitle><div className="flex gap-2"><button type="button" onClick={onDelete} className="action-button h-8 w-8 rounded-[10px]" style={{ color: "var(--color-danger)" }} title="删除"><Trash2 className="h-4 w-4" /></button><button type="button" onClick={() => onOpenChange(false)} className="action-button h-8 w-8 rounded-[10px]"><X className="h-4 w-4" /></button></div></DialogHeader>
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
+          <div><Label className="mb-2 block text-sm font-medium">消息端点类型 <span className="text-[#ff4d4f]">*</span></Label><div className="space-y-3">{endpointTypeOptions.map((option) => <button key={option.key} type="button" onClick={() => setForm({ ...form, type: option.key, propertyKey: propertyKeyForType(option.key), propertyValue: option.key === form.type ? form.propertyValue : "" })} className={cn("w-full rounded-xl border p-3.5 text-left transition-all", form.type === option.key ? "border-[1.5px] border-[#1e6bff] bg-[#eff6ff]" : "border-[#e5e7eb] bg-white hover:border-[#d8dee8]")}><span className={cn("block text-sm font-semibold", form.type === option.key && "text-[#1e6bff]")}>{option.label}</span><span className="mt-1 block text-xs leading-5 text-[#64748b]">备注:{option.desc}</span></button>)}</div></div>
+          <div className="space-y-5 border-t border-[#f0f1f3] pt-5">
+            <h3 className="text-sm font-semibold">基础信息</h3>
+            <div>
+              <Label className="mb-1.5 block text-sm font-medium">命名空间 <span className="text-[var(--color-danger)]">*</span></Label>
+              <div className="relative"><Input value={form.namespace} readOnly className="h-9 rounded-[10px] bg-white pr-9" /><ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" /></div>
+            </div>
+            <div>
+              <Label className="mb-1.5 block text-sm font-medium">消息端点名称 <span className="text-[var(--color-danger)]">*</span></Label>
+              <Input value={form.name} readOnly className="h-9 rounded-[10px] bg-white" />
+              <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">支持小写字母、数字、"-"，长度1~253</p>
+            </div>
+          </div>
         </div>
-        <DialogFooter className="h-16 shrink-0 border-t border-[#eef2f7] px-7 py-3"><button type="button" onClick={() => onOpenChange(false)} className="blueedge-muted-button h-10 rounded-xl px-6">取消</button><button type="button" onClick={() => void onSave(form)} disabled={isLoading} className="blueedge-primary-button h-10 rounded-xl px-7">{isLoading ? "保存中..." : "保存"}</button></DialogFooter>
+        <DialogFooter className="h-16 shrink-0 border-t border-[#f0f1f3] px-6 py-3"><button type="button" onClick={() => onOpenChange(false)} className="blueedge-muted-button h-9 rounded-[10px] px-4">取消</button><button type="button" onClick={() => void onSave(form)} disabled={isLoading} className="blueedge-primary-button h-9 rounded-[10px] px-4">{isLoading ? "保存中..." : "保存"}</button></DialogFooter>
       </DialogContent>
     </Dialog>
   );
 }
 
 function EndpointDeleteDialog({ target, isLoading, onOpenChange, onConfirm }: { target: MessageEndpointRow | null; isLoading: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => Promise<void> }) {
-  return <AlertDialog open={Boolean(target)} onOpenChange={onOpenChange}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle className="text-base">确认删除消息端点？</AlertDialogTitle><AlertDialogDescription>即将删除消息端点 <span className="font-semibold text-[var(--color-text-primary)]">{target?.name}</span>，此操作不可恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel className="h-10 rounded-xl text-sm">取消</AlertDialogCancel><AlertDialogAction className="h-10 rounded-xl text-sm" onClick={() => void onConfirm()} disabled={isLoading}>删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>;
+  const [confirmName, setConfirmName] = useState("");
+  useEffect(() => {
+    if (!target) return;
+    const timer = window.setTimeout(() => setConfirmName(""), 0);
+    return () => window.clearTimeout(timer);
+  }, [target]);
+  const confirmed = Boolean(target && confirmName === target.name);
+  return (
+    <AlertDialog open={Boolean(target)} onOpenChange={onOpenChange}>
+      <AlertDialogContent className="max-w-[480px] gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-[480px]">
+        <AlertDialogHeader className="flex h-[61px] flex-row items-center justify-between border-b border-[#f0f1f3] px-6 text-left">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#ff4d4f]/10"><AlertTriangle className="h-4 w-4 text-[#ff4d4f]" /></span>
+            <AlertDialogTitle className="text-sm">确认删除「{target?.name}」吗？</AlertDialogTitle>
+          </div>
+          <AlertDialogCancel className="action-button m-0 h-8 w-8 rounded-[10px] border-[#e8ecf3] p-0"><X className="h-4 w-4" /></AlertDialogCancel>
+        </AlertDialogHeader>
+        <div className="space-y-4 px-6 py-5">
+          <div className="flex items-start gap-2 rounded-lg border border-[#ffd591] bg-[#fff7e6] p-3">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#fa8c16]" />
+            <p className="text-xs leading-5 text-[#ad6800]">此操作不可恢复。删除后相关资源将被永久移除。</p>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-[#111827]">请输入 <strong className="text-[#ff4d4f]">{target?.name}</strong> 以确认删除</label>
+              <button type="button" onClick={() => target && void navigator.clipboard.writeText(target.name)} className="flex items-center gap-1 text-xs text-[#1a73e8]"><Copy className="h-3 w-3" />复制名称</button>
+            </div>
+            <Input value={confirmName} onChange={(event) => setConfirmName(event.target.value)} placeholder={target?.name} className="h-10 rounded-[10px]" />
+          </div>
+        </div>
+        <AlertDialogFooter className="h-[69px] border-t border-[#f0f1f3] px-6 py-4">
+          <AlertDialogCancel className="btn-secondary m-0">取消</AlertDialogCancel>
+          <AlertDialogAction className="h-9 rounded-[10px] px-5 text-sm" onClick={() => void onConfirm()} disabled={!confirmed || isLoading}>删除</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
 }

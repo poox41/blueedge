@@ -4,17 +4,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Check, ChevronLeft, ChevronRight, Copy, Download, Maximize2, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
-import { StatusBadge } from "@/components/common/StatusBadge";
-import { listNodes } from "@/api/services/resources";
-import { createDeviceConfig, deleteDeviceConfig, getDeviceSummary, getResourceObservability, listDeviceModelSummaries, listDeviceSummaries } from "@/api/services/product";
-import { deviceStatusColor, deviceStatusText, twinStatusText } from "@/api/adapters/device-summary.adapter";
+import { Check, ChevronLeft, ChevronRight, Copy, Download, Maximize2, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X, ArrowLeft, Settings, Tag, FileCode2, Bug, ClipboardList } from "lucide-react";
+import { createDeviceConfig, deleteDeviceConfig, getDeviceSummary, getResourceObservability, listDeviceModelSummaries, listDeviceSummaries, updateDeviceConfig } from "@/api/services/product";
+import { deviceStatusColor, deviceStatusText } from "@/api/adapters/device-summary.adapter";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { ObservabilityEvent } from "@/api/adapters/observability.adapter";
 import type { DeviceSummary } from "@/api/adapters/device-summary.adapter";
@@ -23,8 +18,9 @@ import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 import { useNamespace } from "@/contexts/NamespaceContext";
 import { validateAccessConfigYaml, validateDeviceTwin, type DeviceTwinFormValue } from "@/lib/device-config";
+import { useNavigate, useParams } from "react-router-dom";
 
-interface DI { namespace: string; name: string; model: string; node: string; edgeUnitRef?: string; nodeGroupRef?: string; status: string; statusColor: string; twins: number; createdAt: string; lastReport: string; protocol?: string; raw: KubeResource | any; }
+interface DI { namespace: string; name: string; model: string; node: string; edgeUnitRef?: string; nodeGroupRef?: string; status: string; statusColor: string; twins: number; createdAt: string; lastReport: string; protocol?: string; description: string; labels: Record<string, string>; raw: KubeResource | any; }
 interface LabelRule { id: string; key: string; value: string; }
 type DeviceTwin = DeviceTwinFormValue;
 interface TwinForm { propertyName: string; desiredValue: string; collectIntervalSeconds: string; reportIntervalSeconds: string; accessConfigYaml: string; }
@@ -44,17 +40,20 @@ function toDeviceRow(item: DeviceSummary): DI {
     createdAt: item.createdAt,
     lastReport: item.twins.items.find((t) => t.lastUpdatedAt)?.lastUpdatedAt || "-",
     protocol: item.protocol || "-",
+    description: item.annotations?.description || item.annotations?.["blueedge.io/description"] || "-",
+    labels: item.labels || {},
     raw: { ...(item.raw || {}), extension: item.extension, twins: item.twins },
   };
 }
 
-function getTwins(raw: KubeResource | any): Array<{ name: string; desired: string; reported: string; status: string }> {
+function getTwins(raw: KubeResource | any): Array<{ name: string; desired: string; reported: string; status: string; syncTime: string }> {
   if (Array.isArray(raw?.twins?.items)) {
     return raw.twins.items.map((item: any) => ({
       name: item?.propertyName || item?.name || "-",
       desired: String(item?.desiredValue || "-"),
       reported: String(item?.reportedValue || "-"),
       status: item?.status || "unknown",
+      syncTime: item?.lastUpdatedAt || "-",
     }));
   }
   const twins = Array.isArray(raw.status?.twins) ? raw.status.twins : [];
@@ -64,6 +63,7 @@ function getTwins(raw: KubeResource | any): Array<{ name: string; desired: strin
       desired: String(item?.desired?.value ?? item?.desired ?? "-"),
       reported: String(item?.reported?.value ?? item?.reported ?? "-"),
       status: "unknown",
+      syncTime: item?.lastUpdatedAt || "-",
     }));
   }
   const properties = Array.isArray(raw.spec?.properties) ? raw.spec.properties : [];
@@ -72,6 +72,28 @@ function getTwins(raw: KubeResource | any): Array<{ name: string; desired: strin
     desired: "-",
     reported: "-",
     status: "unknown",
+    syncTime: "-",
+  }));
+}
+
+function getEditableTwins(device: DI): DeviceTwin[] {
+  const extension = device.raw?.extension || {};
+  const items = Array.isArray(device.raw?.twins?.items) ? device.raw.twins.items : [];
+  if (items.length > 0) {
+    return items.map((item: any) => ({
+      propertyName: item.propertyName || item.name || "",
+      desiredValue: String(item.desiredValue ?? item.desired?.value ?? ""),
+      collectIntervalSeconds: Number(item.collectIntervalSeconds || 10),
+      reportIntervalSeconds: Number(item.reportIntervalSeconds || 60),
+      accessConfigYaml: extension.twinAccessConfigs?.[item.propertyName || item.name] || defaultTwinYaml,
+    })).filter((item: DeviceTwin) => item.propertyName);
+  }
+  return getTwins(device.raw).filter((item) => item.name !== "-").map((item) => ({
+    propertyName: item.name,
+    desiredValue: item.desired === "-" ? "" : item.desired,
+    collectIntervalSeconds: 10,
+    reportIntervalSeconds: 60,
+    accessConfigYaml: extension.twinAccessConfigs?.[item.name] || defaultTwinYaml,
   }));
 }
 
@@ -95,20 +117,24 @@ report:
   qos: 0`;
 
 export function DeviceInstances() {
+  const navigate = useNavigate();
+  const { namespace: detailNamespaceParam, name: detailNameParam } = useParams<{ namespace?: string; name?: string }>();
+  const detailNamespace = detailNamespaceParam ? decodeURIComponent(detailNamespaceParam) : "";
+  const detailName = detailNameParam ? decodeURIComponent(detailNameParam) : "";
+  const isDetailRoute = Boolean(detailNamespace && detailName);
   const { selectedNamespace } = useNamespace();
   const namespaces = useNamespaceOptions();
   const [data, setData] = useState<DI[]>([]);
   const [modelOptions, setModelOptions] = useState<DeviceModelSummary[]>([]);
-  const [nodeOptions, setNodeOptions] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
   const [events, setEvents] = useState<ObservabilityEvent[]>([]);
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
-  const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<DI | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editingDevice, setEditingDevice] = useState<DI | null>(null);
   const [createStep, setCreateStep] = useState<1 | 2 | 3 | 4>(1);
   const [cancelCreateOpen, setCancelCreateOpen] = useState(false);
   const [addTwinOpen, setAddTwinOpen] = useState(false);
@@ -133,21 +159,18 @@ export function DeviceInstances() {
     setError("");
     setWarnings([]);
     try {
-      const [rows, models, nodes] = await Promise.all([
+      const [rows, models] = await Promise.all([
         listDeviceSummaries(),
         listDeviceModelSummaries().catch(() => ({ items: [], warnings: [] })),
-        listNodes().catch(() => []),
       ]);
       setData(rows.items.map(toDeviceRow));
       setWarnings([...(rows.warnings || []), ...(models.warnings || [])].map((item) => item.message));
       setModelOptions(models.items);
-      setNodeOptions(Array.from(new Set(nodes.map((item) => item.name))));
       setPage(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载终端设备数据失败");
       setData([]);
       setModelOptions([]);
-      setNodeOptions([]);
     } finally {
       setIsLoading(false);
     }
@@ -156,6 +179,24 @@ export function DeviceInstances() {
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    if (!detailNamespace || !detailName) return;
+    let active = true;
+    setEvents([]);
+    Promise.all([
+      getDeviceSummary(detailNamespace, detailName),
+      getResourceObservability("device", detailNamespace, detailName, { includeMetrics: false, includeEvents: true }),
+    ]).then(([detail, observability]) => {
+      if (!active) return;
+      setSelected(toDeviceRow(detail.item));
+      setEvents(observability.item.events.items);
+      setWarnings([...(detail.warnings || []), ...(observability.warnings || [])].map((item) => item.message));
+    }).catch((err) => {
+      if (active) setError(err instanceof Error ? err.message : "加载终端设备详情失败");
+    });
+    return () => { active = false; };
+  }, [detailName, detailNamespace]);
 
   const filtered = useMemo(() => {
     let r = data;
@@ -167,21 +208,9 @@ export function DeviceInstances() {
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
-  const openDetail = async (d: DI) => {
+  const openDetail = (d: DI) => {
     setSelected(d);
-    setDetailOpen(true);
-    setEvents([]);
-    try {
-      const [detail, observability] = await Promise.all([
-        getDeviceSummary(d.namespace, d.name),
-        getResourceObservability("device", d.namespace, d.name, { includeMetrics: false, includeEvents: true }),
-      ]);
-      setSelected(toDeviceRow(detail.item));
-      setEvents(observability.item.events.items);
-      setWarnings([...(detail.warnings || []), ...(observability.warnings || [])].map((item) => item.message));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "加载终端设备详情失败");
-    }
+    navigate(`/deviceinstances/${encodeURIComponent(d.namespace)}/${encodeURIComponent(d.name)}`);
   };
   const openDel = (d: DI) => { setDelItem(d); setDelOpen(true); };
   const confirmDel = async () => {
@@ -204,7 +233,7 @@ export function DeviceInstances() {
     setError("");
     try {
       validateAccessConfigYaml(accessConfigYaml, form.protocol);
-      await createDeviceConfig({
+      const payload = {
         name: form.name.trim(),
         namespace: form.namespace,
         deviceModelRef: form.model,
@@ -214,9 +243,17 @@ export function DeviceInstances() {
         labels: Object.fromEntries(labels.filter((item) => item.key.trim()).map((item) => [item.key.trim(), item.value.trim()])),
         accessConfigYaml,
         properties: twins,
-      });
+      };
+      if (editingDevice) {
+        await updateDeviceConfig(editingDevice.namespace, editingDevice.name, payload);
+        const detail = await getDeviceSummary(editingDevice.namespace, editingDevice.name);
+        setSelected(toDeviceRow(detail.item));
+      } else {
+        await createDeviceConfig(payload);
+      }
       await loadData();
       setCreateOpen(false);
+      setEditingDevice(null);
       setCreateStep(1);
       setForm({ name: "", namespace: "default", model: "", node: "", protocol: "", description: "" });
       setLabels([{ id: "label-1", key: "", value: "" }]);
@@ -233,6 +270,7 @@ export function DeviceInstances() {
   const confirmCancelCreate = () => {
     setCancelCreateOpen(false);
     setCreateOpen(false);
+    setEditingDevice(null);
     setCreateStep(1);
     setForm({ name: "", namespace: "default", model: "", node: "", protocol: "", description: "" });
     setLabels([{ id: "label-1", key: "", value: "" }]);
@@ -282,6 +320,78 @@ export function DeviceInstances() {
     }
   };
 
+  const openCreate = () => {
+    setEditingDevice(null);
+    setCreateStep(1);
+    setForm({ name: "", namespace: selectedNamespace === "all" ? "default" : selectedNamespace, model: "", node: "", protocol: "", description: "" });
+    setLabels([{ id: "label-1", key: "", value: "" }]);
+    setTwins([]);
+    setAccessConfigYaml(defaultAccessYaml);
+    setCreateOpen(true);
+  };
+
+  const openEdit = (device: DI) => {
+    const extension = device.raw?.extension || {};
+    const nextTwins = getEditableTwins(device);
+    const nextLabels = Object.entries(device.labels).map(([key, value], index) => ({ id: `label-${index + 1}`, key, value }));
+    setEditingDevice(device);
+    setCreateStep(1);
+    setForm({ name: device.name, namespace: device.namespace, model: device.model, node: device.node === "-" ? "" : device.node, protocol: device.protocol === "-" ? "" : device.protocol || "", description: device.description === "-" ? "" : device.description });
+    setLabels(nextLabels.length ? nextLabels : [{ id: "label-1", key: "", value: "" }]);
+    setTwins(nextTwins);
+    setAccessConfigYaml(extension.accessConfigYaml || defaultAccessYaml);
+    setCreateOpen(true);
+  };
+
+  const persistDetailDevice = async (device: DI, nextTwins: DeviceTwin[], nextLabels: Record<string, string>) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      const extension = device.raw?.extension || {};
+      await updateDeviceConfig(device.namespace, device.name, {
+        name: device.name,
+        namespace: device.namespace,
+        deviceModelRef: device.model,
+        nodeName: device.node === "-" ? undefined : device.node,
+        protocol: device.protocol === "-" ? "" : device.protocol || "",
+        description: device.description === "-" ? undefined : device.description,
+        labels: nextLabels,
+        accessConfigYaml: extension.accessConfigYaml || defaultAccessYaml,
+        properties: nextTwins,
+      });
+      const detail = await getDeviceSummary(device.namespace, device.name);
+      const nextDevice = toDeviceRow(detail.item);
+      setSelected(nextDevice);
+      setData((current) => current.map((item) => item.namespace === nextDevice.namespace && item.name === nextDevice.name ? nextDevice : item));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "更新终端设备详情失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const persistDetailTwins = (device: DI, nextTwins: DeviceTwin[]) => persistDetailDevice(device, nextTwins, device.labels);
+
+  const updateDetailTwinDesired = (device: DI, propertyName: string, desiredValue: string) => {
+    const nextTwins = getEditableTwins(device).map((item) => item.propertyName === propertyName ? { ...item, desiredValue } : item);
+    void persistDetailTwins(device, nextTwins);
+  };
+
+  const deleteDetailTwin = (device: DI, propertyName: string) => {
+    const nextTwins = getEditableTwins(device).filter((item) => item.propertyName !== propertyName);
+    void persistDetailTwins(device, nextTwins);
+  };
+
+  const addDetailLabel = (device: DI, key: string, value: string) => {
+    void persistDetailDevice(device, getEditableTwins(device), { ...device.labels, [key]: value });
+  };
+
+  const deleteDetailLabel = (device: DI, key: string) => {
+    const nextLabels = { ...device.labels };
+    delete nextLabels[key];
+    void persistDetailDevice(device, getEditableTwins(device), nextLabels);
+  };
+
   const goNext = () => {
     setError("");
     try {
@@ -295,52 +405,53 @@ export function DeviceInstances() {
       setError(err instanceof Error ? err.message : "当前步骤校验失败");
     }
   };
+  const detailDevice = selected?.namespace === detailNamespace && selected?.name === detailName
+    ? selected
+    : data.find((item) => item.namespace === detailNamespace && item.name === detailName) || null;
   return (
-    <div className="blueedge-page space-y-6">
-      <div className="space-y-8">
+    <>
+      {isDetailRoute && detailDevice && <TerminalDeviceDetailPage device={detailDevice} events={events} error={error} onBack={() => navigate("/deviceinstances")} onEdit={() => openEdit(detailDevice)} onUpdateTwin={(propertyName, desiredValue) => updateDetailTwinDesired(detailDevice, propertyName, desiredValue)} onDeleteTwin={(propertyName) => deleteDetailTwin(detailDevice, propertyName)} onAddLabel={(key, value) => addDetailLabel(detailDevice, key, value)} onDeleteLabel={(key) => deleteDetailLabel(detailDevice, key)} saving={isLoading} />}
+      {isDetailRoute && !detailDevice && <div className="blueedge-page"><div className="flex min-h-[320px] items-center justify-center rounded-2xl border border-[var(--color-border)] bg-white text-sm text-[var(--color-text-secondary)]">{isLoading ? "正在加载终端设备详情..." : error || "未找到该终端设备"}</div></div>}
+    <div className={cn("blueedge-page space-y-6", isDetailRoute && "hidden")}>
+      <div className="space-y-5">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-[var(--color-text-primary)]">终端设备</h1>
-          <p className="mt-2 text-sm text-[var(--color-text-secondary)]">创建并管理现场设备实例</p>
+          <h1 className="text-lg font-semibold tracking-tight text-[#111827]">终端设备</h1>
+          <p className="mt-1 text-xs leading-5 text-[var(--color-text-secondary)]">创建并管理现场设备实例</p>
         </div>
         <div className="flex items-center justify-between gap-4">
-          <div className="toolbar-search relative w-[340px]">
-            <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
-            <Input placeholder="搜索设备名称..." value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="h-12 rounded-xl bg-white pl-12 text-sm" />
+          <div className="toolbar-search relative w-[240px] transition-[width] focus-within:w-[300px]">
+            <Search className="absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+            <Input placeholder="搜索设备名称..." value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="h-10 rounded-xl bg-white pl-11 text-sm" />
           </div>
-          <div className="flex items-center gap-3">
-            <Button variant="outline" size="icon" className="h-12 w-12 rounded-xl border-[var(--color-border-strong)] bg-white" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("h-5 w-5", isLoading && "animate-spin")} /></Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="icon" className="h-9 w-9 rounded-[10px] border-[var(--color-border-strong)] bg-white" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} /></Button>
             <Dialog open={createOpen} onOpenChange={(open) => open ? setCreateOpen(true) : requestCancelCreate()}>
-              <DialogTrigger asChild><Button className="h-12 rounded-xl bg-[var(--color-text-primary)] px-6 text-sm font-semibold text-white hover:bg-[var(--color-text-primary)]/90"><Plus className="mr-2 h-5 w-5" />创建设备</Button></DialogTrigger>
-              <DialogContent className={cn("!flex !max-w-none max-h-[92vh] flex-col gap-0 overflow-hidden rounded-[24px] p-0", createStep === 1 ? "!w-[min(860px,calc(100vw-48px))]" : createStep === 2 ? "!w-[min(1120px,calc(100vw-48px))]" : "!w-[min(1180px,calc(100vw-48px))]")} showCloseButton={false}>
-                {createStep > 1 && (
-                  <button type="button" onClick={() => setCreateStep((createStep - 1) as 1 | 2 | 3 | 4)} className="absolute left-7 top-5 flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--color-border-strong)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]" aria-label="返回上一步">
+              <DialogTrigger asChild><Button onClick={openCreate} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-xs font-medium text-white hover:bg-[var(--color-text-primary)]/90"><Plus className="mr-1.5 h-4 w-4" />创建设备</Button></DialogTrigger>
+              <DialogContent className="!flex !w-[min(600px,calc(100vw-48px))] !max-w-none max-h-[min(720px,calc(100vh-48px))] flex-col gap-0 overflow-hidden rounded-[24px] p-0" showCloseButton={false}>
+                {!editingDevice && createStep > 1 && (
+                  <button type="button" onClick={() => setCreateStep((createStep - 1) as 1 | 2 | 3 | 4)} className="absolute left-7 top-[18px] flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--color-border-strong)] text-[var(--color-text-secondary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]" aria-label="返回上一步">
                     <ChevronLeft className="h-5 w-5" />
                   </button>
                 )}
-                <button type="button" onClick={requestCancelCreate} className="absolute right-7 top-5 flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--color-border-strong)] text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"><X className="h-5 w-5" /></button>
-                <DialogHeader className={cn("shrink-0 border-b border-[#eef1f5] px-7 py-6", createStep > 1 && "pl-20")}><DialogTitle className="text-base font-bold">创建设备</DialogTitle></DialogHeader>
-                <div className="shrink-0 border-b border-[#eef1f5] px-7 py-5">
-                  <CreateStepper current={createStep} steps={["基础信息", "设备配置", "访问配置", "信息确认"]} />
-                </div>
+                <button type="button" onClick={requestCancelCreate} className="absolute right-7 top-[18px] flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--color-border-strong)] text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"><X className="h-4 w-4" /></button>
+                <DialogHeader className={cn("h-[72px] shrink-0 justify-center border-b border-[#eef1f5] px-7", !editingDevice && createStep > 1 && "pl-20")}><DialogTitle className="text-base font-semibold">{editingDevice ? "编辑设备" : "创建设备"}</DialogTitle></DialogHeader>
+                {!editingDevice && <div className="shrink-0 px-7 pt-4"><CreateStepper current={createStep} steps={["基础信息", "设备配置", "访问配置", "信息确认"]} /></div>}
                 {error && <div className="mx-8 mt-4 rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#dc2626]">{error}</div>}
-                <div className="min-h-0 flex-1 overflow-y-auto px-8 py-7">
+                <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-8 pt-6">
                   {createStep === 1 && (
-                    <div className="space-y-6">
+                    <div className="space-y-5">
                       <PrototypeField label="设备名称" required>
-                        <Input placeholder="temp-sensor-01" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-10 rounded-xl text-sm" />
+                        <Input disabled={Boolean(editingDevice)} placeholder="temp-sensor-01" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-10 rounded-xl text-sm disabled:bg-[var(--color-bg-soft)] disabled:text-[var(--color-text-tertiary)]" />
                         <p className="mt-1.5 text-xs leading-5 text-[var(--color-text-tertiary)]">最长 253 字符，只能是小写字母、数字、中划线(-)、点(.)的组合，不能有连续符号</p>
                       </PrototypeField>
                       <PrototypeField label="命名空间" required>
-                        <select value={form.namespace} onChange={e => { setForm({ ...form, namespace: e.target.value, model: "", protocol: "" }); setTwins([]); }} className="blueedge-native-select !h-10 !rounded-xl !text-sm">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
+                        {editingDevice ? <Input disabled value={form.namespace} className="h-10 rounded-xl bg-[var(--color-bg-soft)] text-sm text-[var(--color-text-tertiary)]" /> : <select value={form.namespace} onChange={e => { setForm({ ...form, namespace: e.target.value, model: "", protocol: "" }); setTwins([]); }} className="blueedge-native-select !h-10 !rounded-xl !text-sm">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>}
                       </PrototypeField>
                       <PrototypeField label="设备模型" required>
-                        <select value={form.model} onChange={e => { const model = availableModels.find((item) => item.name === e.target.value); setForm({ ...form, model: e.target.value, protocol: model?.protocol || form.protocol }); setTwins([]); }} className="blueedge-native-select !h-10 !rounded-xl !text-sm"><option value="">请选择真实设备模型</option>{availableModels.map(model => <option key={`${model.namespace}/${model.name}`} value={model.name}>{model.name}</option>)}</select>
-                      </PrototypeField>
-                      <PrototypeField label="边缘节点">
-                        <select value={form.node} onChange={e => setForm({ ...form, node: e.target.value })} className="blueedge-native-select !h-10 !rounded-xl !text-sm"><option value="">不指定节点</option>{nodeOptions.map(node => <option key={node} value={node}>{node}</option>)}</select>
+                        {editingDevice ? <Input disabled value={form.model} className="h-10 rounded-xl bg-[var(--color-bg-soft)] text-sm text-[var(--color-text-tertiary)]" /> : <select value={form.model} onChange={e => { const model = availableModels.find((item) => item.name === e.target.value); setForm({ ...form, model: e.target.value, protocol: model?.protocol || form.protocol }); setTwins([]); }} className="blueedge-native-select !h-10 !rounded-xl !text-sm"><option value="">请选择真实设备模型</option>{availableModels.map(model => <option key={`${model.namespace}/${model.name}`} value={model.name}>{model.name}</option>)}</select>}
                       </PrototypeField>
                       <PrototypeField label="访问协议" required>
-                        <Input placeholder="MQTT / Modbus TCP / OPC UA" value={form.protocol} onChange={e => setForm({ ...form, protocol: e.target.value })} className="h-10 rounded-xl text-sm" />
+                        <Input disabled={Boolean(editingDevice)} placeholder="MQTT / Modbus TCP / OPC UA" value={form.protocol} onChange={e => setForm({ ...form, protocol: e.target.value })} className="h-10 rounded-xl text-sm disabled:bg-[var(--color-bg-soft)] disabled:text-[var(--color-text-tertiary)]" />
                       </PrototypeField>
                       <PrototypeField label="描述">
                         <Textarea placeholder="请输入设备描述" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="min-h-[82px] rounded-xl text-sm" />
@@ -381,10 +492,7 @@ export function DeviceInstances() {
                   {createStep === 3 && (
                     <div className="space-y-5">
                       <PrototypeField label="参数配置 YAML" required>
-                        <div className="grid grid-cols-2 gap-5">
-                          <YamlPanel title="YAML 配置" value={accessConfigYaml} onChange={setAccessConfigYaml} actions downloadName={`${form.name || "device"}-access-config.yaml`} />
-                          <YamlPanel title="YAML 示例" readonly readonlyActions value={defaultAccessYaml} downloadName="device-access-config-example.yaml" />
-                        </div>
+                        <YamlPanel title="YAML 配置" value={accessConfigYaml} onChange={setAccessConfigYaml} actions downloadName={`${form.name || "device"}-access-config.yaml`} />
                       </PrototypeField>
                     </div>
                   )}
@@ -395,7 +503,6 @@ export function DeviceInstances() {
                           <ConfirmItem label="设备名称" value={form.name || "-"} />
                           <ConfirmItem label="命名空间" value={form.namespace} />
                           <ConfirmItem label="设备模型" value={form.model} />
-                          <ConfirmItem label="边缘节点" value={form.node || "-"} />
                           <ConfirmItem label="访问协议" value={form.protocol || "-"} />
                           <ConfirmItem label="描述" value={form.description || "-"} />
                         </div>
@@ -413,14 +520,14 @@ export function DeviceInstances() {
                   )}
                 </div>
                 <DialogFooter className="shrink-0 border-t border-[#eef1f5] bg-white px-7 py-5">
-                  {createStep > 1 && <Button variant="outline" onClick={() => setCreateStep((createStep - 1) as 1 | 2 | 3 | 4)} className="mr-auto h-9 rounded-[10px] px-4 text-sm"><ChevronLeft className="mr-1 h-4 w-4" />上一步</Button>}
+                  {!editingDevice && createStep > 1 && <Button variant="outline" onClick={() => setCreateStep((createStep - 1) as 1 | 2 | 3 | 4)} className="mr-auto h-9 rounded-[10px] px-4 text-sm"><ChevronLeft className="mr-1 h-4 w-4" />上一步</Button>}
                   <Button variant="outline" onClick={requestCancelCreate} className="h-9 rounded-[10px] px-4 text-sm">取消</Button>
-                  <Button onClick={() => createStep === 4 ? handleCreate() : goNext()} disabled={isLoading} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">{createStep === 4 ? (isLoading ? "创建中..." : "创建") : "下一步"} <ChevronRight className="ml-1 h-4 w-4" /></Button>
+                  <Button onClick={() => editingDevice ? handleCreate() : createStep === 4 ? handleCreate() : goNext()} disabled={isLoading} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">{editingDevice ? (isLoading ? "保存中..." : "保存") : createStep === 4 ? (isLoading ? "创建中..." : "创建") : "下一步"}{!editingDevice && createStep < 4 && <ChevronRight className="ml-1 h-4 w-4" />}</Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>
             <Dialog open={addTwinOpen} onOpenChange={setAddTwinOpen}>
-              <DialogContent className="!flex !w-[min(1200px,calc(100vw-48px))] !max-w-none max-h-[92vh] flex-col gap-0 overflow-hidden rounded-[24px] p-0" showCloseButton={false}>
+              <DialogContent className="!flex !w-[min(600px,calc(100vw-48px))] !max-w-none max-h-[90vh] flex-col gap-0 overflow-hidden rounded-[24px] p-0" showCloseButton={false}>
                 <button type="button" onClick={() => setAddTwinOpen(false)} className="absolute right-7 top-5 flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--color-border-strong)] text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"><X className="h-5 w-5" /></button>
                 <DialogHeader className="shrink-0 border-b border-[#eef1f5] px-7 py-6"><DialogTitle className="text-base font-bold">{editingTwinName ? "编辑孪生属性" : "新增孪生属性"}</DialogTitle></DialogHeader>
                 <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-7 py-7">
@@ -435,10 +542,7 @@ export function DeviceInstances() {
                     <PrototypeField label="上报间隔（秒）"><Input type="number" min="1" value={twinForm.reportIntervalSeconds} onChange={(event) => setTwinForm({ ...twinForm, reportIntervalSeconds: event.target.value })} className="h-10 rounded-xl text-sm" /></PrototypeField>
                   </div>
                   <PrototypeField label="属性访问方式（YAML）" required>
-                    <div className="grid grid-cols-2 gap-5">
-                      <YamlPanel title="YAML 配置" value={twinForm.accessConfigYaml} onChange={(value) => setTwinForm({ ...twinForm, accessConfigYaml: value })} actions compact downloadName={`${twinForm.propertyName || "property"}-visitor.yaml`} />
-                      <YamlPanel title="YAML 示例" readonly readonlyActions compact value={defaultTwinYaml} downloadName="twin-visitor-example.yaml" />
-                    </div>
+                    <YamlPanel title="YAML 配置" value={twinForm.accessConfigYaml} onChange={(value) => setTwinForm({ ...twinForm, accessConfigYaml: value })} actions compact downloadName={`${twinForm.propertyName || "property"}-visitor.yaml`} />
                   </PrototypeField>
                 </div>
                 <DialogFooter className="shrink-0 border-t border-[#eef1f5] bg-white px-7 py-5">
@@ -448,14 +552,15 @@ export function DeviceInstances() {
               </DialogContent>
             </Dialog>
             <AlertDialog open={cancelCreateOpen} onOpenChange={setCancelCreateOpen}>
-            <AlertDialogContent className="z-[120] max-w-[560px] rounded-[24px] p-0">
-              <AlertDialogHeader className="border-b border-[var(--color-border)] px-8 py-6">
-                <AlertDialogTitle className="text-xl">确认取消创建</AlertDialogTitle>
-                <AlertDialogDescription className="pt-4 text-base">取消后，当前创建设备内容将不会保存。</AlertDialogDescription>
+            <AlertDialogContent className="z-[140] !w-[calc(100%-2rem)] !max-w-[440px] gap-0 overflow-hidden rounded-2xl p-0 sm:!max-w-[440px]">
+              <AlertDialogHeader className="flex-row items-center justify-between border-b border-[var(--color-border)] px-6 py-4 text-left">
+                <AlertDialogTitle className="text-base font-semibold">确认取消{editingDevice ? "编辑" : "创建"}</AlertDialogTitle>
+                <AlertDialogCancel className="m-0 h-8 w-8 rounded-lg p-0"><X className="h-4 w-4" /></AlertDialogCancel>
               </AlertDialogHeader>
-              <AlertDialogFooter className="px-8 py-6">
-                <AlertDialogCancel className="h-11 rounded-xl px-8">取消</AlertDialogCancel>
-                <AlertDialogAction onClick={confirmCancelCreate} className="h-11 rounded-xl bg-[var(--color-danger)] px-8 text-white hover:bg-[var(--color-danger)]/90">确认取消</AlertDialogAction>
+              <div className="px-6 py-5"><AlertDialogDescription className="text-sm">取消后，当前{editingDevice ? "编辑" : "创建"}设备内容将不会保存。</AlertDialogDescription></div>
+              <AlertDialogFooter className="border-t border-[var(--color-border)] px-6 py-4">
+                <AlertDialogCancel className="h-9 rounded-[10px] px-5 text-sm">继续填写</AlertDialogCancel>
+                <AlertDialogAction onClick={confirmCancelCreate} className="h-9 rounded-[10px] bg-[var(--color-danger)] px-5 text-sm text-white hover:bg-[var(--color-danger)]/90">确认取消</AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
             </AlertDialog>
@@ -464,27 +569,27 @@ export function DeviceInstances() {
       </div>
       {error && <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
       {warnings.length > 0 && <div className="rounded-md border border-[#F7BA1E]/30 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{warnings.slice(0, 3).join("；")}</div>}
-      <div className="table-card">
-        <Table><TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
-          <TableHead className="w-[19%] px-6 text-xs font-medium text-[var(--color-text-tertiary)]">设备名称</TableHead>
-          <TableHead className="w-[14%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">绑定节点</TableHead>
-          <TableHead className="w-[15%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">设备模型</TableHead>
-          <TableHead className="w-[9%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">协议</TableHead>
-          <TableHead className="w-[9%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">状态</TableHead>
-          <TableHead className="w-[15%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">最后上报</TableHead>
-          <TableHead className="w-[15%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
-          <TableHead className="w-[8%] px-5 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
+      <div className="table-card overflow-x-auto">
+        <Table className="min-w-[1040px] table-fixed"><TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+          <TableHead className="w-[180px] px-6 text-xs font-medium text-[var(--color-text-tertiary)]">设备名称</TableHead>
+          <TableHead className="w-[120px] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">绑定节点</TableHead>
+          <TableHead className="w-[150px] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">设备模型</TableHead>
+          <TableHead className="w-[80px] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">协议</TableHead>
+          <TableHead className="w-[90px] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">状态</TableHead>
+          <TableHead className="w-[140px] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">最后上报</TableHead>
+          <TableHead className="w-[160px] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
+          <TableHead className="w-[80px] px-5 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
         </TableRow></TableHeader>
         <TableBody>{isLoading ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[var(--color-text-tertiary)] text-sm">正在加载终端设备数据...</TableCell></TableRow>) : paginated.length === 0 ? (<TableRow><TableCell colSpan={8} className="text-center py-16 text-[var(--color-text-tertiary)] text-sm">暂无终端设备数据</TableCell></TableRow>) : paginated.map(row => (
-          <TableRow key={row.name} className="h-[69px] border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]">
-            <TableCell className="cursor-pointer px-6 py-3 text-sm font-semibold text-[var(--color-brand)] hover:underline" onClick={() => openDetail(row)}>{row.name}</TableCell>
-            <TableCell className="px-5 py-3 text-sm font-medium text-[var(--color-text-primary)]">{row.node}</TableCell>
-            <TableCell className="px-5 py-3 text-sm text-[var(--color-text-primary)]">{row.model}</TableCell>
+          <TableRow key={`${row.namespace}/${row.name}`} className="group h-[69px] cursor-pointer border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]" onClick={() => openDetail(row)}>
+            <TableCell className="truncate px-6 py-3 text-sm font-medium text-[var(--color-brand)] group-hover:underline">{row.name}</TableCell>
+            <TableCell className="truncate px-5 py-3 text-xs font-medium text-[var(--color-text-primary)]">{row.node}</TableCell>
+            <TableCell className="truncate px-5 py-3 text-xs text-[var(--color-text-primary)]">{row.model}</TableCell>
             <TableCell className="px-5 py-3"><ProtocolBadge value={row.protocol || "-"} /></TableCell>
             <TableCell className="px-5 py-3"><StatusPill status={row.status} /></TableCell>
-            <TableCell className="px-5 py-3 text-sm text-[var(--color-text-tertiary)]">{row.lastReport}</TableCell>
-            <TableCell className="px-5 py-3 text-sm text-[var(--color-text-tertiary)]">{row.createdAt}</TableCell>
-            <TableCell className="px-5 py-3 text-right"><button type="button" className="action-button is-danger ml-auto" title="删除" onClick={() => openDel(row)}><Trash2 className="h-3.5 w-3.5" /></button></TableCell>
+            <TableCell className="truncate px-5 py-3 text-xs text-[var(--color-text-tertiary)]">{row.lastReport}</TableCell>
+            <TableCell className="truncate px-5 py-3 text-xs text-[var(--color-text-tertiary)]">{row.createdAt}</TableCell>
+            <TableCell className="px-5 py-3 text-right"><button type="button" className="action-button is-danger ml-auto" title="删除" onClick={(event) => { event.stopPropagation(); openDel(row); }}><Trash2 className="h-3.5 w-3.5" /></button></TableCell>
           </TableRow>
         ))}</TableBody></Table>
       </div>
@@ -498,61 +603,97 @@ export function DeviceInstances() {
           </PaginationContent></Pagination>
         </div>
       )}
-      <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
-        <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
-          <SheetHeader className="pb-4 border-b border-[var(--color-border-strong)]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle><div className="flex items-center gap-2 mt-2"><StatusBadge status={selected?.status || ""} color={selected?.statusColor || "default"} /><Badge variant="outline" className="text-xs font-normal">{selected?.namespace}</Badge></div></SheetHeader>
-          {selected && (<Tabs defaultValue="overview" className="mt-4"><TabsList className="bg-[var(--color-bg-soft)] h-9"><TabsTrigger value="overview" className="text-xs h-7">概览</TabsTrigger><TabsTrigger value="twins" className="text-xs h-7">设备孪生</TabsTrigger><TabsTrigger value="events" className="text-xs h-7">事件</TabsTrigger><TabsTrigger value="yaml" className="text-xs h-7">YAML</TabsTrigger></TabsList>
-            <TabsContent value="overview" className="mt-3 space-y-4">
-              <div className="grid grid-cols-2 gap-3">
-                <Info label="名称" value={selected.name} /><Info label="命名空间" value={selected.namespace} />
-                <Info label="设备模型" value={selected.model} /><Info label="边缘节点" value={selected.node} />
-                <Info label="状态" value={selected.status} /><Info label="协议" value={selected.protocol || "-"} />
-                <Info label="Twin 数" value={String(selected.twins)} />
-              </div>
-            </TabsContent>
-            <TabsContent value="twins" className="mt-3 space-y-2">
-              {getTwins(selected.raw).map((t, i) => (
-                <div key={i} className="bg-[var(--color-bg-soft)] rounded-md p-3"><div className="flex items-center justify-between"><span className="text-sm font-medium">{t.name}</span><Badge className="text-xs font-normal bg-[var(--color-success-soft)] text-[var(--color-success)]">{twinStatusText(t.status)}</Badge></div><div className="grid grid-cols-2 gap-2 mt-2"><Info label="期望值" value={t.desired} /><Info label="上报值" value={t.reported} /></div></div>
-              ))}
-              {getTwins(selected.raw).length === 0 && <div className="text-sm text-[var(--color-text-tertiary)] py-6 text-center">暂无设备孪生数据</div>}
-            </TabsContent>
-            <TabsContent value="events" className="mt-3 space-y-2">
-              {events.length === 0 ? <div className="text-sm text-[var(--color-text-tertiary)] py-6 text-center">暂无关联事件</div> : events.map((event) => (
-                <div key={event.name || `${event.reason}-${event.lastTimestamp}`} className="rounded-md bg-[var(--color-bg-soft)] p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="text-sm font-medium">{event.reason}</span>
-                    <Badge variant="outline" className="text-xs font-normal">{event.type}</Badge>
-                  </div>
-                  <p className="mt-1 text-xs text-[var(--color-text-secondary)]">{event.message}</p>
-                  <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">{event.lastTimestamp || "-"}</p>
-                </div>
-              ))}
-            </TabsContent>
-            <TabsContent value="yaml" className="mt-3 space-y-4">
-              {selected.raw?.extension?.accessConfigYaml ? <YamlPanel title="访问配置 YAML" readonly readonlyActions compact value={selected.raw.extension.accessConfigYaml} downloadName={`${selected.name}-access-config.yaml`} /> : <div className="text-sm text-[var(--color-text-tertiary)] py-6 text-center">该设备没有 BlueEdge 扩展 YAML</div>}
-              {Object.entries(selected.raw?.extension?.twinAccessConfigs || {}).map(([propertyName, config]) => <YamlPanel key={propertyName} title={`${propertyName} 访问 YAML`} readonly readonlyActions compact value={String(config)} downloadName={`${selected.name}-${propertyName}-visitor.yaml`} />)}
-              <div className="relative"><pre className="blueedge-code-block max-h-[360px] overflow-auto p-4">{JSON.stringify(selected.raw, null, 2)}</pre><Button variant="ghost" size="sm" className="absolute top-2 right-2 text-white/60 hover:text-white h-6" onClick={() => navigator.clipboard.writeText(JSON.stringify(selected.raw, null, 2))}><Copy className="w-3.5 h-3.5" /></Button></div>
-            </TabsContent>
-          </Tabs>)}
-        </SheetContent>
-      </Sheet>
       <AlertDialog open={delOpen} onOpenChange={setDelOpen}>
         <AlertDialogContent><AlertDialogHeader><AlertDialogTitle className="text-base">确认删除？</AlertDialogTitle><AlertDialogDescription className="text-sm">即将删除终端设备 <span className="font-medium text-[var(--color-text-primary)]">{delItem?.name}</span>，此操作不可恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel><AlertDialogAction className="h-8 text-sm" onClick={confirmDel}>确认删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>
     </div>
+    </>
   );
 }
 
-function Info({ label, value }: { label: string; value: string }) {
-  return (<div className="blueedge-info-card"><p className="blueedge-info-card-label">{label}</p><p className="blueedge-info-card-value">{value}</p></div>);
+type TerminalDetailTab = "twins" | "labels" | "access" | "events" | "audit";
+
+function TerminalDeviceDetailPage({ device, events, error, onBack, onEdit, onUpdateTwin, onDeleteTwin, onAddLabel, onDeleteLabel, saving }: { device: DI; events: ObservabilityEvent[]; error: string; onBack: () => void; onEdit: () => void; onUpdateTwin: (propertyName: string, desiredValue: string) => void; onDeleteTwin: (propertyName: string) => void; onAddLabel: (key: string, value: string) => void; onDeleteLabel: (key: string) => void; saving: boolean }) {
+  const [activeTab, setActiveTab] = useState<TerminalDetailTab>("twins");
+  const [labelInput, setLabelInput] = useState({ key: "", value: "" });
+  const twinItems = getTwins(device.raw);
+  const accessYaml = device.raw?.extension?.accessConfigYaml || defaultAccessYaml;
+  const handleAddLabel = () => {
+    const key = labelInput.key.trim();
+    if (!key || saving) return;
+    onAddLabel(key, labelInput.value.trim());
+    setLabelInput({ key: "", value: "" });
+  };
+  const tabs: Array<{ id: TerminalDetailTab; label: string; icon: React.ReactNode }> = [
+    { id: "twins", label: `孪生数据 (${twinItems.length})`, icon: <Settings className="h-3.5 w-3.5" /> },
+    { id: "labels", label: "标签", icon: <Tag className="h-3.5 w-3.5" /> },
+    { id: "access", label: "访问配置", icon: <FileCode2 className="h-3.5 w-3.5" /> },
+    { id: "events", label: `事件 (${events.length})`, icon: <Bug className="h-3.5 w-3.5" /> },
+    { id: "audit", label: "审计", icon: <ClipboardList className="h-3.5 w-3.5" /> },
+  ];
+  return <div className="blueedge-page space-y-5">
+    <div className="flex items-center justify-between">
+      <div className="flex items-center gap-3"><button type="button" onClick={onBack} className="action-button" aria-label="返回终端设备列表"><ArrowLeft className="h-4 w-4" /></button><div><div className="mb-0.5 flex items-center gap-3"><h1 className="text-lg font-semibold text-[#111827]">{device.name}</h1><StatusPill status={device.status} /><ProtocolBadge value={device.protocol || "-"} /></div><p className="text-xs text-[var(--color-text-secondary)]">{device.model} · {device.node} · 创建于 {device.createdAt}</p></div></div>
+      <Button onClick={onEdit} className="h-9 rounded-[10px] bg-[#0f172a] px-4 text-xs text-white"><Pencil className="mr-1.5 h-3.5 w-3.5" />编辑</Button>
+    </div>
+    {error && <div className="rounded-[10px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-xs text-[#dc2626]">{error}</div>}
+    <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]"><h2 className="mb-5 text-sm font-semibold text-[#111827]">基本信息</h2><div className="grid grid-cols-3 gap-x-6 gap-y-5"><DeviceInfo label="设备名称" value={device.name} /><DeviceInfo label="设备模型" value={device.model} /><DeviceInfo label="绑定节点" value={device.node} /><DeviceInfo label="协议" value={<ProtocolBadge value={device.protocol || "-"} />} /><DeviceInfo label="状态" value={<StatusPill status={device.status} />} /><DeviceInfo label="最后上报" value={device.lastReport} /></div>{device.description !== "-" && <><div className="my-5 border-t border-[#f0f1f3]" /><DeviceInfo label="描述" value={device.description} /></>}</section>
+    <div className="flex flex-wrap gap-2">{tabs.map((tab) => <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={cn("inline-flex h-9 items-center gap-1.5 rounded-[10px] border px-3 text-xs font-medium", activeTab === tab.id ? "border-[#0f172a] bg-[#0f172a] text-white" : "border-[var(--color-border-strong)] bg-white text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]")}>{tab.icon}{tab.label}</button>)}</div>
+    {activeTab === "twins" && <DevicePanel title="孪生数据"><div className="table-card overflow-x-auto"><Table className="min-w-[700px] table-fixed"><TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)]"><TableHead className="w-[160px] px-4 text-xs">属性</TableHead><TableHead className="w-[140px] px-4 text-xs">期望值</TableHead><TableHead className="w-[140px] px-4 text-xs">上报值</TableHead><TableHead className="w-[160px] px-4 text-xs">同步时间</TableHead><TableHead className="w-[100px] px-4 text-right text-xs">操作</TableHead></TableRow></TableHeader><TableBody>{twinItems.length === 0 ? <TableRow><TableCell colSpan={5} className="py-12 text-center text-sm text-[var(--color-text-secondary)]">暂无孪生数据</TableCell></TableRow> : twinItems.map((twin) => <TableRow key={`${twin.name}-${twin.desired}`} className="h-[60px]"><TableCell className="px-4 text-sm font-medium text-[var(--color-brand)]">{twin.name}</TableCell><TableCell className="px-4"><Input defaultValue={twin.desired === "-" ? "" : twin.desired} onBlur={(event) => { const nextValue = event.currentTarget.value; if (nextValue !== (twin.desired === "-" ? "" : twin.desired)) onUpdateTwin(twin.name, nextValue); }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} disabled={saving} className="h-9 w-full rounded-[10px] px-3 font-mono text-xs" /></TableCell><TableCell className="px-4 font-mono text-xs">{twin.reported}</TableCell><TableCell className="px-4 text-xs text-[var(--color-text-tertiary)]">{twin.syncTime}</TableCell><TableCell className="px-4 text-right"><button type="button" disabled={saving} onClick={() => onDeleteTwin(twin.name)} className="action-button is-danger ml-auto" title="删除孪生属性"><Trash2 className="h-3.5 w-3.5" /></button></TableCell></TableRow>)}</TableBody></Table></div></DevicePanel>}
+    {activeTab === "labels" && (
+      <section className="rounded-2xl border border-[#f0f1f3] bg-white p-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-sm font-semibold text-[#111827]">设备标签</h2>
+          <span className="text-xs text-[var(--color-text-tertiary)]">{Object.keys(device.labels).length} 个标签</span>
+        </div>
+        {Object.keys(device.labels).length === 0 ? (
+          <p className="mb-4 text-sm text-[var(--color-text-secondary)]">暂无标签</p>
+        ) : (
+          <div className="mb-4 grid grid-cols-2 gap-3">
+            {Object.entries(device.labels).map(([key, value]) => (
+              <div key={key} className="flex items-center gap-2 rounded-lg border border-[#f0f1f3] bg-[#fafbfc] p-3">
+                <Tag className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />
+                <span className="text-sm font-medium text-[#111827]">{key}</span>
+                <span className="text-[var(--color-text-tertiary)]">=</span>
+                <span className="min-w-0 flex-1 truncate text-sm text-[var(--color-text-secondary)]">{value || "—"}</span>
+                <button type="button" disabled={saving} onClick={() => onDeleteLabel(key)} className="action-button is-danger shrink-0" title="删除标签"><Trash2 className="h-[13px] w-[13px]" /></button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center gap-2 border-t border-[#f0f1f3] pt-4">
+          <Input value={labelInput.key} onChange={(event) => setLabelInput((current) => ({ ...current, key: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") handleAddLabel(); }} placeholder="键" className="h-9 flex-1 rounded-[10px] px-3 text-xs" />
+          <Input value={labelInput.value} onChange={(event) => setLabelInput((current) => ({ ...current, value: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") handleAddLabel(); }} placeholder="值" className="h-9 flex-1 rounded-[10px] px-3 text-xs" />
+          <Button type="button" disabled={!labelInput.key.trim() || saving} onClick={handleAddLabel} className="h-8 shrink-0 rounded-[10px] bg-[#0f172a] px-3 text-xs font-medium text-white hover:bg-[#0f172a]/90"><Plus className="mr-1 h-3 w-3" />添加标签</Button>
+        </div>
+      </section>
+    )}
+    {activeTab === "access" && (
+      <section className="overflow-hidden rounded-2xl border border-[#f0f1f3] bg-white shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+        <div className="flex items-center justify-between border-b border-[#f0f1f3] bg-[#fafbfc] px-4 py-2">
+          <span className="text-xs font-medium text-[#6b7280]">YAML 预览</span>
+          <button type="button" onClick={() => void navigator.clipboard.writeText(accessYaml)} className="inline-flex h-7 items-center gap-1 rounded-lg border border-[var(--color-border-strong)] bg-white px-2 text-xs text-[#1a73e8] transition-colors hover:bg-[var(--color-bg-hover)]"><Copy className="h-3 w-3" />复制</button>
+        </div>
+        <div className="max-h-[420px] overflow-hidden bg-[#1e1e1e]">
+          <pre className="max-h-[420px] overflow-auto whitespace-pre p-4 font-mono text-xs leading-6 text-[#d4d4d4]">{accessYaml}</pre>
+        </div>
+      </section>
+    )}
+    {activeTab === "events" && (events.length === 0 ? <DeviceEmpty icon={<Bug className="h-10 w-10" />} text="暂无事件" /> : <DevicePanel title="事件"><div className="space-y-3">{events.map((event) => <div key={event.name || `${event.reason}-${event.lastTimestamp}`} className="rounded-xl bg-[var(--color-bg-soft)] p-4"><div className="flex items-center justify-between"><span className="text-sm font-semibold">{event.reason}</span><span className="rounded-full bg-white px-2 py-0.5 text-xs text-[var(--color-text-secondary)]">{event.type}</span></div><p className="mt-2 text-xs text-[var(--color-text-secondary)]">{event.message}</p><p className="mt-2 text-xs text-[var(--color-text-tertiary)]">{event.lastTimestamp || "-"}</p></div>)}</div></DevicePanel>)}
+    {activeTab === "audit" && <DeviceEmpty icon={<ClipboardList className="h-10 w-10" />} text="暂无审计记录" />}
+  </div>;
 }
+
+function DeviceInfo({ label, value }: { label: string; value: React.ReactNode }) { return <div><p className="mb-1 text-xs text-[var(--color-text-tertiary)]">{label}</p><div className="text-sm font-medium text-[#111827]">{value}</div></div>; }
+function DevicePanel({ title, children }: { title: string; children: React.ReactNode }) { return <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]"><h2 className="mb-4 text-sm font-semibold text-[#111827]">{title}</h2>{children}</section>; }
+function DeviceEmpty({ icon, text }: { icon: React.ReactNode; text: string }) { return <div className="flex min-h-[260px] flex-col items-center justify-center text-[var(--color-text-tertiary)]">{icon}<p className="mt-3 text-sm font-medium text-[var(--color-text-secondary)]">{text}</p></div>; }
 
 function ProtocolBadge({ value }: { value: string }) {
   const normalized = value.toLowerCase();
   const isMqtt = normalized.includes("mqtt");
   return (
     <span className={cn(
-      "inline-flex max-w-[120px] items-center rounded-lg px-3 py-1 text-xs font-semibold",
+      "inline-flex max-w-[120px] items-center rounded-full px-2 py-0.5 text-xs font-medium",
       isMqtt ? "bg-[var(--color-success-soft)] text-[var(--color-success)]" : "bg-[var(--color-brand-light)] text-[var(--color-brand)]"
     )}>
       <span className="truncate">{value}</span>
@@ -565,7 +706,7 @@ function StatusPill({ status }: { status: string }) {
   const unknown = status === "未知" || status.toLowerCase() === "unknown";
   return (
     <span className={cn(
-      "inline-flex items-center gap-1 rounded-lg px-3 py-1 text-xs font-semibold",
+      "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
       online ? "bg-[var(--color-success-soft)] text-[var(--color-success)]" : "bg-[#f2f4f7] text-[var(--color-text-tertiary)]"
     )}>
       <span className={cn("h-1.5 w-1.5 rounded-full", online ? "bg-[var(--color-success)]" : "bg-[#9ca3af]")} />
@@ -576,17 +717,17 @@ function StatusPill({ status }: { status: string }) {
 
 function CreateStepper({ current, steps }: { current: number; steps: string[] }) {
   return (
-    <div className="flex w-full items-center justify-center gap-3 overflow-visible">
+    <div className="flex w-full items-center justify-center gap-2 overflow-visible">
       {steps.map((step, index) => {
         const active = index + 1 === current;
         const done = index + 1 < current;
         return (
-          <div key={step} className="flex shrink-0 items-center gap-3">
-            {index > 0 && <span className={cn("h-px w-9 shrink-0", done || active ? "bg-[var(--color-text-primary)]" : "bg-[var(--color-border-strong)]")} />}
-            <span className={cn("flex h-8 w-8 shrink-0 items-center justify-center rounded-full", active || done ? "bg-[var(--color-text-primary)] text-white" : "bg-[#e5eaf1] text-[#94a3b8]")}>
-              {done ? <Check className="h-4 w-4" /> : <span className="h-2.5 w-2.5 rounded-full bg-current ring-[5px] ring-white" />}
+          <div key={step} className="flex shrink-0 items-center gap-2">
+            {index > 0 && <span className={cn("h-px w-6 shrink-0", done || active ? "bg-[var(--color-text-primary)]" : "bg-[var(--color-border-strong)]")} />}
+            <span className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-full", active || done ? "bg-[var(--color-text-primary)] text-white" : "bg-[#e5eaf1] text-[#94a3b8]")}>
+              {done ? <Check className="h-3.5 w-3.5" /> : <span className="h-2 w-2 rounded-full bg-current" />}
             </span>
-            <span className={cn("whitespace-nowrap text-sm font-bold", active || done ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-tertiary)]")}>{step}</span>
+            <span className={cn("whitespace-nowrap text-xs font-medium", active || done ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-tertiary)]")}>{step}</span>
           </div>
         );
       })}

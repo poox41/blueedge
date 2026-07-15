@@ -68,5 +68,10 @@ export async function proxyBffRequest(req: express.Request, res: express.Respons
 
   const contentType = response.headers.get("content-type");
   if (contentType) res.type(contentType);
-  res.status(response.status).send(Buffer.from(await response.arrayBuffer()));
+  const body = Buffer.from(await response.arrayBuffer());
+  if (response.status === 401) {
+    res.status(502).json({ message: "上游 BFF 鉴权失败，请检查服务器访问凭证" });
+    return;
+  }
+  res.status(response.status).send(body);
 }

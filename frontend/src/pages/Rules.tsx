@@ -2,10 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNamespace } from "@/contexts/NamespaceContext";
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   Bug,
   ClipboardList,
+  ChevronDown,
   Copy,
   MoreHorizontal,
   Pencil,
@@ -20,7 +22,6 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
-  AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
@@ -231,6 +232,19 @@ function buildRuleResource(form: RouteForm, source?: RuleEndpointView, target?: 
   };
 }
 
+function prepareRuleForCreate(resource: KubeResource): KubeResource {
+  const metadata = { ...(resource.metadata as Record<string, unknown> | undefined) };
+  for (const key of ["uid", "resourceVersion", "generation", "creationTimestamp", "managedFields", "selfLink"]) {
+    delete metadata[key];
+  }
+  const next: KubeResource = {
+    ...resource,
+    metadata: metadata as KubeResource["metadata"],
+  };
+  delete next.status;
+  return next;
+}
+
 function routeYaml(row: MessageRouteRow) {
   return `apiVersion: rules.kubeedge.io/v1
 kind: Rule
@@ -344,8 +358,7 @@ export function Rules() {
         form.source &&
         form.target &&
         validDirection &&
-        form.sourceResource.trim() &&
-        form.targetResource.trim(),
+        (editing || (form.sourceResource.trim() && form.targetResource.trim())),
     );
 
   const openCreate = () => {
@@ -419,11 +432,30 @@ export function Rules() {
     setNotice("");
     try {
       if (editing) {
-        await updateRuleResource(editing.namespace, resource);
+        const identityChanged = editing.name !== form.name.trim() || editing.namespace !== form.namespace;
+        if (identityChanged) {
+          await createRuleResource(prepareRuleForCreate(resource));
+          try {
+            await deleteRuleResource(editing.namespace, editing.name);
+          } catch (deleteError) {
+            try {
+              await deleteRuleResource(form.namespace, form.name.trim());
+            } catch {
+              // The follow-up list refresh exposes either resource if rollback also fails.
+            }
+            throw deleteError;
+          }
+        } else {
+          await updateRuleResource(editing.namespace, resource);
+        }
       } else {
         await createRuleResource(resource);
       }
       await loadData(true);
+      if (editing && detail) {
+        const fresh = await getRule(form.namespace, form.name.trim());
+        setDetail(toRouteRow(fresh));
+      }
       setNotice(editing ? "消息路由更新成功" : "消息路由创建成功");
       setCreateOpen(false);
       setEditing(null);
@@ -454,7 +486,7 @@ export function Rules() {
 
   const openMenu = (route: MessageRouteRow, button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect();
-    const width = 160;
+    const width = 120;
     setMenuPosition({
       top: rect.bottom + 10,
       left: Math.min(window.innerWidth - width - 16, Math.max(16, rect.right - width)),
@@ -519,7 +551,7 @@ export function Rules() {
   }
 
   return (
-    <div className="blueedge-page space-y-5">
+    <div className="page-container space-y-5">
       <div>
         <h1 className="mb-1 text-lg font-semibold text-[var(--color-text-primary)]">消息路由</h1>
         <p className="text-xs text-[var(--color-text-secondary)]">定义消息在云端与边缘端点之间的转发规则</p>
@@ -549,16 +581,16 @@ export function Rules() {
       {error && <div className="rounded-xl border border-[#fde68a] bg-[var(--color-warning-soft)] px-4 py-3 text-sm text-[#b45309]">{error}</div>}
       {notice && <div className="rounded-xl border border-[#bbf7d0] bg-[#f0fdf4] px-4 py-3 text-sm text-[#15803d]">{notice}</div>}
 
-      <section className="table-card overflow-visible">
-        <Table className="min-w-[980px] table-fixed">
+      <section className="table-card overflow-x-auto">
+        <Table className="min-w-[860px] table-fixed border-collapse">
           <TableHeader>
-            <TableRow className="h-12 bg-white hover:bg-white">
-              <TableHead className="w-[22%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">消息路由名称</TableHead>
-              <TableHead className="w-[20%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">源端点</TableHead>
-              <TableHead className="w-[20%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">目的端点</TableHead>
-              <TableHead className="w-[13%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">命名空间</TableHead>
-              <TableHead className="w-[17%] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">创建时间</TableHead>
-              <TableHead className="w-[8%] px-5 text-right text-xs font-medium text-[var(--color-text-tertiary)]">操作</TableHead>
+            <TableRow className="table-header-row hover:bg-white">
+              <TableHead className="table-header-cell table-header-name w-[190px]">消息路由名称</TableHead>
+              <TableHead className="table-header-cell w-[170px]">源端点</TableHead>
+              <TableHead className="table-header-cell w-[170px]">目的端点</TableHead>
+              <TableHead className="table-header-cell w-[110px]">命名空间</TableHead>
+              <TableHead className="table-header-cell w-[150px]">创建时间</TableHead>
+              <TableHead className="table-header-cell table-header-action w-20">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -584,21 +616,21 @@ export function Rules() {
                 const source = findEndpoint(endpoints, route.namespace, route.source);
                 const target = findEndpoint(endpoints, route.namespace, route.target);
                 return (
-                  <TableRow key={route.id} className="h-[72px] cursor-pointer border-t border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]" onClick={() => openDetail(route)}>
-                    <TableCell className="px-5">
-                      <span className="text-sm font-semibold text-[var(--color-brand)]">{route.name}</span>
+                  <TableRow key={route.id} className="table-row group cursor-pointer" onClick={() => openDetail(route)}>
+                    <TableCell className="table-name-cell">
+                      <span className="text-sm font-medium text-[#1e6bff]">{route.name}</span>
                     </TableCell>
-                    <TableCell className="px-5">
+                    <TableCell className="table-cell">
                       <EndpointCell name={route.source} endpoint={source} />
                     </TableCell>
-                    <TableCell className="px-5">
+                    <TableCell className="table-cell">
                       <EndpointCell name={route.target} endpoint={target} />
                     </TableCell>
-                    <TableCell className="px-5 text-sm font-medium text-[var(--color-text-primary)]">{route.namespace}</TableCell>
-                    <TableCell className="px-5 text-sm text-[var(--color-text-tertiary)]">{route.createdAt}</TableCell>
-                    <TableCell className="px-5 text-right" onClick={(event) => event.stopPropagation()}>
-                      <button type="button" className="action-button h-10 w-10" title="更多" onClick={(event) => openMenu(route, event.currentTarget)}>
-                        <MoreHorizontal className="h-4 w-4" />
+                    <TableCell className="table-cell"><span className="text-xs">{route.namespace}</span></TableCell>
+                    <TableCell className="table-cell"><span className="text-xs text-[var(--color-text-tertiary)]">{route.createdAt}</span></TableCell>
+                    <TableCell className="table-action-cell text-right" onClick={(event) => event.stopPropagation()}>
+                      <button type="button" className="action-button" title="更多" onClick={(event) => openMenu(route, event.currentTarget)}>
+                        <MoreHorizontal className="h-3.5 w-3.5" />
                       </button>
                     </TableCell>
                   </TableRow>
@@ -612,10 +644,10 @@ export function Rules() {
       {menuTarget && (
         <>
           <button type="button" aria-label="关闭操作菜单" className="fixed inset-0 z-[70] cursor-default" onClick={() => setMenuTarget(null)} />
-          <div className="fixed z-[90] rounded-2xl border border-[#eef2f7] bg-white p-2 shadow-[0_18px_45px_rgba(15,23,42,0.14)]" style={{ top: menuPosition.top, left: menuPosition.left, width: 160 }}>
+          <div className="fixed z-[90] rounded-xl border border-[#eef2f7] bg-white p-1.5 shadow-[0_18px_45px_rgba(15,23,42,0.14)]" style={{ top: menuPosition.top, left: menuPosition.left, width: 120 }}>
             <button
               type="button"
-              className="flex h-11 w-full items-center gap-3 rounded-xl px-3 text-sm font-medium text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]"
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-xs font-medium text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]"
               onClick={() => {
                 setDeleteTarget(menuTarget);
                 setMenuTarget(null);
@@ -664,7 +696,7 @@ function filterEndpoints(endpoints: RuleEndpointView[], namespace: string, keywo
 function EndpointCell({ name, endpoint }: { name: string; endpoint?: RuleEndpointView }) {
   return (
     <div className="flex min-w-0 items-center gap-2">
-      <span className="truncate text-sm font-medium text-[var(--color-text-primary)]">{name || "-"}</span>
+      <span className="truncate text-xs text-[var(--color-text-primary)]">{name || "-"}</span>
       {endpoint && <EndpointTag type={endpoint.type} />}
     </div>
   );
@@ -723,16 +755,16 @@ function CreateRouteDialog({
   const [showHelp, setShowHelp] = useState(true);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[min(720px,calc(100vh-48px))] w-[calc(100vw-48px)] max-w-[620px] gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[620px]" showCloseButton={false}>
-        <DialogHeader className="flex h-14 flex-row items-center gap-3 border-b border-[var(--color-border)] px-6 text-left">
-          <button type="button" onClick={() => onOpenChange(false)} className="action-button h-10 w-10 rounded-xl">
+      <DialogContent className="flex max-h-[min(720px,calc(100vh-48px))] w-[calc(100vw-48px)] max-w-[600px] flex-col gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[600px]" showCloseButton={false}>
+        <DialogHeader className="flex h-14 shrink-0 flex-row items-center gap-3 border-b border-[var(--color-border)] px-6 text-left">
+          <button type="button" onClick={() => onOpenChange(false)} className="action-button h-9 w-9">
             <ArrowLeft className="h-4 w-4" />
           </button>
           <DialogTitle className="text-base font-semibold">{editing ? "编辑消息路由" : "创建消息路由"}</DialogTitle>
         </DialogHeader>
 
-        <div className="max-h-[calc(100vh-168px)] overflow-y-auto px-7 py-5">
-          <div className="space-y-5">
+        <div className="min-h-0 flex-1 overflow-y-auto px-7 py-6">
+          <div className="space-y-6">
             {showHelp && (
               <div className="flex items-start gap-2 rounded-xl border border-[#d6e4ff] bg-[var(--color-brand-light)] p-3">
                 <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--color-brand)]" />
@@ -750,75 +782,81 @@ function CreateRouteDialog({
               </div>
             )}
 
-            <RouteTextField label="消息路由名称" required disabled={Boolean(editing)} value={form.name} onChange={(value) => onChange({ ...form, name: value })} placeholder="请输入消息路由名称" />
-            <p className="-mt-3 text-xs leading-5 text-[var(--color-text-tertiary)]">支持小写英文字母、数字和中横线（-）；必须以小写英文字母或数字开头和结尾；长度限制为 1~253 个字符。</p>
-
-            <div>
-              <RouteLabel required>命名空间</RouteLabel>
-              <div className="flex items-center gap-2">
-                <select disabled={Boolean(editing)} value={form.namespace} onChange={(event) => onChange({ ...form, namespace: event.target.value, source: "", target: "" })} className="h-10 min-w-0 flex-1 rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm outline-none focus:border-[var(--color-brand)] disabled:cursor-not-allowed disabled:bg-[#f3f4f6] disabled:text-[#64748b]">
-                  {namespaceItems.length === 0 && <option value="default">default</option>}
-                  {namespaceItems.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                </select>
-                <button type="button" onClick={() => void onRefreshNamespaces()} className="action-button h-10 w-10 rounded-xl" title="刷新命名空间" disabled={refreshingNamespaces}>
-                  <RefreshCw className={cn("h-4 w-4", refreshingNamespaces && "animate-spin")} />
-                </button>
-                <span className="shrink-0 text-xs text-[var(--color-text-tertiary)]">创建命名空间暂未开放</span>
+            <div className="space-y-5">
+              <div>
+                <RouteTextField label="消息路由名称" required value={form.name} onChange={(value) => onChange({ ...form, name: value })} placeholder="请输入消息路由名称" />
+                <p className="mt-1.5 text-xs leading-5 text-[var(--color-text-tertiary)]">支持小写英文字母、数字和中横线（-）；必须以小写英文字母或数字开头和结尾；长度限制为 1~253 个字符。</p>
               </div>
-            </div>
+              <div>
+                <RouteLabel required>命名空间</RouteLabel>
+                <div className="flex items-center gap-2">
+                  <div className="relative min-w-0 flex-1">
+                    <select value={form.namespace} onChange={(event) => onChange({ ...form, namespace: event.target.value, source: "", target: "" })} className="h-9 w-full appearance-none rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 pr-9 text-sm outline-none focus:border-[var(--color-brand)]">
+                      {namespaceItems.length === 0 && <option value="default">default</option>}
+                      {namespaceItems.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+                  </div>
+                  <button type="button" onClick={() => void onRefreshNamespaces()} className="action-button h-9 w-9" title="刷新命名空间" disabled={refreshingNamespaces}>
+                    <RefreshCw className={cn("h-3.5 w-3.5", refreshingNamespaces && "animate-spin")} />
+                  </button>
+                  <a href="https://183.95.195.121:31417/kpanda/clusters/ali-139-131/namespaces" target="_blank" rel="noreferrer" className="shrink-0 text-xs text-[#1a73e8]">创建命名空间</a>
+                </div>
+              </div>
 
-            <EndpointPicker
-              label="源端点"
-              required
-              showSearch={!editing}
-              searchValue={form.sourceSearch}
-              selectValue={form.source}
-              searchPlaceholder="搜索端点"
-              selectPlaceholder="请选择源端点"
-              options={sourceOptions}
-              onSearchChange={(value) => onChange({ ...form, sourceSearch: value })}
-              onSelectChange={(value) => onChange({ ...form, source: value, target: "", targetResource: "" })}
-            />
-            <RouteTextField label="源端点资源" required value={form.sourceResource} onChange={(value) => onChange({ ...form, sourceResource: value })} placeholder={resourcePlaceholder(sourceEndpoint, "source")} />
+              <EndpointPicker
+                label="源端点"
+                required
+                showSearch={!editing}
+                searchValue={form.sourceSearch}
+                selectValue={form.source}
+                searchPlaceholder="搜索端点"
+                selectPlaceholder="请选择源端点"
+                options={sourceOptions}
+                onSearchChange={(value) => onChange({ ...form, sourceSearch: value })}
+                onSelectChange={(value) => onChange({ ...form, source: value, target: "", targetResource: "" })}
+              />
+              {!editing && <RouteTextField label="源端点资源" required value={form.sourceResource} onChange={(value) => onChange({ ...form, sourceResource: value })} placeholder={resourcePlaceholder(sourceEndpoint, "source")} />}
 
-            <EndpointPicker
-              label="目的端点"
-              required
-              showSearch={!editing}
-              searchValue={form.targetSearch}
-              selectValue={form.target}
-              searchPlaceholder="搜索端点"
-              selectPlaceholder="请选择目的端点"
-              options={targetOptions}
-              onSearchChange={(value) => onChange({ ...form, targetSearch: value })}
-              onSelectChange={(value) => onChange({ ...form, target: value })}
-            />
-            <RouteTextField label="目的端点资源" required value={form.targetResource} onChange={(value) => onChange({ ...form, targetResource: value })} placeholder={resourcePlaceholder(targetEndpoint, "target")} />
+              <EndpointPicker
+                label="目的端点"
+                required
+                showSearch={!editing}
+                searchValue={form.targetSearch}
+                selectValue={form.target}
+                searchPlaceholder="搜索端点"
+                selectPlaceholder="请选择目的端点"
+                options={targetOptions}
+                onSearchChange={(value) => onChange({ ...form, targetSearch: value })}
+                onSelectChange={(value) => onChange({ ...form, target: value })}
+              />
+              {!editing && <RouteTextField label="目的端点资源" required value={form.targetResource} onChange={(value) => onChange({ ...form, targetResource: value })} placeholder={resourcePlaceholder(targetEndpoint, "target")} />}
 
-            <div>
-              <RouteLabel>描述</RouteLabel>
-              <Textarea value={form.description} onChange={(event) => onChange({ ...form, description: event.target.value })} placeholder="请输入消息路由描述" className="min-h-[48px] resize-none rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 py-3 text-sm" />
+              <div>
+                <RouteLabel>描述</RouteLabel>
+                <Textarea value={form.description} onChange={(event) => onChange({ ...form, description: event.target.value })} placeholder="请输入消息路由描述" rows={3} className="min-h-[76px] resize-none rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 py-3 text-sm" />
+              </div>
             </div>
 
             {(sourceEndpoint || targetEndpoint) && (
               <div className="space-y-3 border-t border-[var(--color-border)] pt-5">
                 <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">路由预览</h3>
                 <div className="flex items-center gap-3">
-                  <RoutePreviewCard endpoint={sourceEndpoint} resource={form.sourceResource} />
+                  <RoutePreviewCard endpoint={sourceEndpoint} resource={editing ? undefined : form.sourceResource} />
                   <div className="flex shrink-0 flex-col items-center gap-1 text-[var(--color-text-tertiary)]">
                     <ArrowRight className="h-5 w-5 text-[var(--color-brand)]" />
                     <span className="text-xs">路由</span>
                   </div>
-                  <RoutePreviewCard endpoint={targetEndpoint} resource={form.targetResource} />
+                  <RoutePreviewCard endpoint={targetEndpoint} resource={editing ? undefined : form.targetResource} />
                 </div>
               </div>
             )}
           </div>
         </div>
 
-        <DialogFooter className="h-16 border-t border-[var(--color-border)] px-6 py-3">
-          <button type="button" onClick={() => onOpenChange(false)} className="blueedge-muted-button h-10 rounded-xl px-5 text-sm">取消</button>
-          <button type="button" onClick={onSave} disabled={!canSave} className="blueedge-primary-button h-10 rounded-xl px-6 text-sm disabled:cursor-not-allowed disabled:bg-[#9ca3af] disabled:opacity-70">
+        <DialogFooter className="h-16 shrink-0 border-t border-[var(--color-border)] px-6 py-3">
+          <button type="button" onClick={() => onOpenChange(false)} className="btn-secondary">取消</button>
+          <button type="button" onClick={onSave} disabled={!canSave} className="btn-black text-sm disabled:cursor-not-allowed disabled:opacity-45">
             {editing ? "保存" : "创建"}
           </button>
         </DialogFooter>
@@ -846,7 +884,7 @@ function RouteTextField({ label, required, disabled, value, onChange, placeholde
   return (
     <div>
       <RouteLabel required={required}>{label}</RouteLabel>
-      <Input disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="h-10 rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm disabled:cursor-not-allowed disabled:bg-[#f3f4f6]" />
+      <Input disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="h-9 rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 text-sm disabled:cursor-not-allowed disabled:bg-[#f3f4f6]" />
     </div>
   );
 }
@@ -877,15 +915,18 @@ function EndpointPicker({
   return (
     <div>
       <RouteLabel required={required}>{label}</RouteLabel>
-      {showSearch && <Input value={searchValue} onChange={(event) => onSearchChange(event.target.value)} placeholder={searchPlaceholder} className="mb-2 h-10 rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm" />}
-      <select value={selectValue} onChange={(event) => onSelectChange(event.target.value)} className="h-10 w-full rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]">
-        <option value="">{selectPlaceholder}</option>
-        {options.map((endpoint) => (
-          <option key={`${endpoint.namespace}-${endpoint.name}`} value={endpoint.name}>
-            {endpoint.name}    {endpointTagText(endpoint)}
-          </option>
-        ))}
-      </select>
+      {showSearch && <Input value={searchValue} onChange={(event) => onSearchChange(event.target.value)} placeholder={searchPlaceholder} className="mb-2 h-9 rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 text-sm" />}
+      <div className="relative">
+        <select value={selectValue} onChange={(event) => onSelectChange(event.target.value)} className="h-9 w-full appearance-none rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 pr-9 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]">
+          <option value="">{selectPlaceholder}</option>
+          {options.map((endpoint) => (
+            <option key={`${endpoint.namespace}-${endpoint.name}`} value={endpoint.name}>
+              {endpoint.name}    {endpointTagText(endpoint)}
+            </option>
+          ))}
+        </select>
+        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+      </div>
     </div>
   );
 }
@@ -942,10 +983,10 @@ function RouteDetailPage({
   const source = findEndpoint(endpoints, route.namespace, route.source);
   const target = findEndpoint(endpoints, route.namespace, route.target);
   return (
-    <div className="blueedge-page space-y-5">
+    <div className="page-container space-y-5">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <button type="button" onClick={onBack} className="action-button h-10 w-10">
+          <button type="button" onClick={onBack} className="action-button">
             <ArrowLeft className="h-4 w-4" />
           </button>
           <div>
@@ -954,18 +995,18 @@ function RouteDetailPage({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={onEdit} className="blueedge-primary-button h-10 rounded-xl px-4">
-            <Pencil className="h-4 w-4" />
+          <button type="button" onClick={onEdit} className="btn-black flex items-center gap-1.5 text-xs">
+            <Pencil className="h-[13px] w-[13px]" />
             编辑
           </button>
-          <button type="button" onClick={onDelete} className="blueedge-muted-button h-10 rounded-xl px-4 text-[var(--color-danger)]">
-            <Trash2 className="h-4 w-4" />
+          <button type="button" onClick={onDelete} className="btn-danger-outline flex items-center gap-1.5 text-xs">
+            <Trash2 className="h-[13px] w-[13px]" />
             删除
           </button>
         </div>
       </div>
 
-      <section className="blueedge-card p-7">
+      <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
         <h2 className="mb-5 text-sm font-semibold text-[var(--color-text-primary)]">基本信息</h2>
         <div className="grid grid-cols-4 gap-x-6 gap-y-5">
           <InfoField label="消息路由名称" value={route.name} />
@@ -975,11 +1016,11 @@ function RouteDetailPage({
         </div>
       </section>
 
-      <section className="blueedge-card p-7">
+      <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
         <h2 className="mb-5 text-sm font-semibold text-[var(--color-text-primary)]">路由规则</h2>
-        <div className="flex items-stretch gap-6">
+        <div className="flex items-stretch gap-4">
           <DetailEndpointCard title="源端点" endpoint={source} fallbackName={route.source} resource={route.sourceResource} />
-          <div className="flex shrink-0 flex-col items-center justify-center gap-2">
+          <div className="flex shrink-0 flex-col items-center justify-center gap-1">
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--color-brand-light)]">
               <ArrowRight className="h-5 w-5 text-[var(--color-brand)]" />
             </div>
@@ -990,12 +1031,12 @@ function RouteDetailPage({
       </section>
 
       <div className="flex items-center gap-2">
-        <TabButton active={activeTab === "delivery"} onClick={() => onTabChange("delivery")} icon={<ArrowRight className="h-4 w-4" />} label="投递记录" />
-        <TabButton active={activeTab === "events"} onClick={() => onTabChange("events")} icon={<Bug className="h-4 w-4" />} label="事件" />
-        <TabButton active={activeTab === "audit"} onClick={() => onTabChange("audit")} icon={<ClipboardList className="h-4 w-4" />} label="审计" />
+        <TabButton active={activeTab === "delivery"} onClick={() => onTabChange("delivery")} icon={<ArrowRight className="h-3.5 w-3.5" />} label="投递记录" />
+        <TabButton active={activeTab === "events"} onClick={() => onTabChange("events")} icon={<Bug className="h-3.5 w-3.5" />} label="事件" />
+        <TabButton active={activeTab === "audit"} onClick={() => onTabChange("audit")} icon={<ClipboardList className="h-3.5 w-3.5" />} label="审计" />
       </div>
 
-      <section className="blueedge-card p-7">
+      <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
         {activeTab === "delivery" && (
           <DeliveryPanel data={delivery} loading={panelLoading.delivery} error={panelErrors.delivery} onRefresh={() => onRefresh("delivery")} />
         )}
@@ -1022,7 +1063,7 @@ function InfoField({ label, value }: { label: string; value: React.ReactNode }) 
 
 function DetailEndpointCard({ title, endpoint, fallbackName, resource }: { title: string; endpoint?: RuleEndpointView; fallbackName: string; resource: string }) {
   return (
-    <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-soft)] p-5">
+    <div className="min-w-0 flex-1 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-soft)] p-4">
       <p className="mb-3 text-xs font-semibold text-[var(--color-text-secondary)]">{title}</p>
       <div className="space-y-2">
         {endpoint && (
@@ -1031,9 +1072,9 @@ function DetailEndpointCard({ title, endpoint, fallbackName, resource }: { title
             <span className="text-xs text-[var(--color-text-tertiary)]">{endpointTagText(endpoint)}</span>
           </div>
         )}
-        <p className="text-base font-semibold text-[var(--color-text-primary)]">{endpoint?.name || fallbackName}</p>
-        <p className="font-mono text-sm text-[var(--color-text-secondary)]">{endpointAddress(endpoint)}</p>
-        {resource && <p className="text-sm text-[var(--color-brand)]">资源: {resource}</p>}
+        <p className="text-sm font-semibold text-[var(--color-text-primary)]">{endpoint?.name || fallbackName}</p>
+        <p className="font-mono text-xs text-[var(--color-text-secondary)]">{endpointAddress(endpoint)}</p>
+        {resource && <p className="text-xs text-[var(--color-brand)]">资源: {resource}</p>}
       </div>
     </div>
   );
@@ -1044,10 +1085,7 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
     <button
       type="button"
       onClick={onClick}
-      className={cn(
-        "inline-flex h-10 items-center gap-2 rounded-xl border px-4 text-sm font-semibold transition-colors",
-        active ? "border-[var(--color-text-primary)] bg-[var(--color-text-primary)] text-white" : "border-[var(--color-border-strong)] bg-white text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
-      )}
+      className={active ? "btn-tab-active" : "btn-tab"}
     >
       {icon}
       {label}
@@ -1172,18 +1210,39 @@ function AuditPanel({ data, loading, error, onRefresh }: { data: RuleAuditRespon
 }
 
 function ConfirmDeleteDialog({ target, loading, onCancel, onConfirm }: { target: MessageRouteRow | null; loading: boolean; onCancel: () => void; onConfirm: () => void }) {
+  const [confirmName, setConfirmName] = useState("");
+  useEffect(() => {
+    if (!target) return;
+    const timer = window.setTimeout(() => setConfirmName(""), 0);
+    return () => window.clearTimeout(timer);
+  }, [target]);
+  const confirmed = Boolean(target && confirmName === target.name);
   return (
     <AlertDialog open={Boolean(target)} onOpenChange={(open) => !open && onCancel()}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle className="text-base">确认删除消息路由？</AlertDialogTitle>
-          <AlertDialogDescription>
-            即将删除消息路由 <span className="font-semibold text-[var(--color-text-primary)]">{target?.name}</span>，此操作不可恢复。
-          </AlertDialogDescription>
+      <AlertDialogContent className="max-w-[480px] gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-[480px]">
+        <AlertDialogHeader className="flex h-[61px] flex-row items-center justify-between border-b border-[#f0f1f3] px-6 text-left">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#ff4d4f]/10"><AlertTriangle className="h-4 w-4 text-[#ff4d4f]" /></span>
+            <AlertDialogTitle className="text-sm">确认删除「{target?.name}」吗？</AlertDialogTitle>
+          </div>
+          <AlertDialogCancel className="action-button m-0 h-8 w-8 rounded-[10px] border-[#e8ecf3] p-0"><X className="h-4 w-4" /></AlertDialogCancel>
         </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel className="h-10 rounded-xl text-sm">取消</AlertDialogCancel>
-          <AlertDialogAction className="h-10 rounded-xl text-sm" disabled={loading} onClick={onConfirm}>删除</AlertDialogAction>
+        <div className="space-y-4 px-6 py-5">
+          <div className="flex items-start gap-2 rounded-lg border border-[#ffd591] bg-[#fff7e6] p-3">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#fa8c16]" />
+            <p className="text-xs leading-5 text-[#ad6800]">此操作不可恢复。删除后相关资源将被永久移除。</p>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-[#111827]">请输入 <strong className="text-[#ff4d4f]">{target?.name}</strong> 以确认删除</label>
+              <button type="button" onClick={() => target && void navigator.clipboard.writeText(target.name)} className="flex items-center gap-1 text-xs text-[#1a73e8]"><Copy className="h-3 w-3" />复制名称</button>
+            </div>
+            <Input value={confirmName} onChange={(event) => setConfirmName(event.target.value)} placeholder={target?.name} className="h-10 rounded-[10px]" />
+          </div>
+        </div>
+        <AlertDialogFooter className="h-[69px] border-t border-[#f0f1f3] px-6 py-4">
+          <AlertDialogCancel className="btn-secondary m-0">取消</AlertDialogCancel>
+          <AlertDialogAction className="h-9 rounded-[10px] px-5 text-sm" disabled={!confirmed || loading} onClick={onConfirm}>删除</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

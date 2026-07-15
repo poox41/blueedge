@@ -83,6 +83,252 @@
   }
 }
 
+/* BlueEdge 1.2.0 prototype compatibility layer.
+ * Keep these values identical to the delivered prototype so migrated pages
+ * can retain their original geometry while binding to real APIs. */
+@layer utilities {
+  .page-container {
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 32px 32px 56px;
+    max-width: 1440px;
+    margin: 0 auto;
+    scrollbar-gutter: stable;
+  }
+
+  .page-container::-webkit-scrollbar { width: 6px; }
+  .page-container::-webkit-scrollbar-track { background: transparent; }
+  .page-container::-webkit-scrollbar-thumb {
+    background: rgba(15, 23, 42, 0.18);
+    border-radius: 999px;
+  }
+  .page-container::-webkit-scrollbar-thumb:hover { background: rgba(15, 23, 42, 0.32); }
+
+  .btn-black {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 16px;
+    border-radius: 10px;
+    background: #0f172a;
+    color: #ffffff;
+    font-size: 13px;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: background 120ms ease-out, transform 120ms ease-out;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .btn-black:hover { background: #1e293b; }
+  .btn-black:active { transform: scale(0.98); }
+
+  .btn-secondary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 16px;
+    border-radius: 10px;
+    background: #ffffff;
+    color: #111827;
+    font-size: 13px;
+    font-weight: 500;
+    border: 1px solid #e2e8f0;
+    cursor: pointer;
+    transition: background 120ms ease-out, border-color 120ms ease-out;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .btn-secondary:hover { background: #f8fafc; border-color: #d1d5db; }
+
+  .btn-danger-outline {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 12px;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--color-danger);
+    font-size: 13px;
+    font-weight: 500;
+    border: 1px solid var(--color-border-strong);
+    cursor: pointer;
+    transition: all 120ms ease-out;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .btn-danger-outline:hover { background: var(--color-danger-soft); border-color: var(--color-danger); }
+
+  .btn-tab,
+  .btn-tab-active {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 36px;
+    padding: 0 14px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 120ms ease-out;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .btn-tab {
+    border: 1px solid #e2e8f0;
+    background: #ffffff;
+    color: #64748b;
+  }
+  .btn-tab:hover { border-color: #d1d5db; color: #475569; }
+  .btn-tab-active {
+    border: 1.5px solid #0f172a;
+    background: #0f172a;
+    color: #ffffff;
+  }
+
+  .segmented-filter {
+    height: 36px;
+    padding: 3px;
+    border-radius: 10px;
+    background: #ffffff;
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid var(--color-border);
+  }
+
+  .segmented-filter-item {
+    height: 30px;
+    padding: 0 14px;
+    border-radius: 10px;
+    font-size: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    background: transparent;
+    color: var(--color-text-tertiary);
+    cursor: pointer;
+    transition: all 120ms ease-out;
+    white-space: nowrap;
+  }
+
+  .segmented-filter-item.is-active {
+    background: #111827;
+    color: #ffffff;
+    font-weight: 500;
+  }
+
+  .segmented-filter-item:not(.is-active):hover {
+    color: var(--color-text-secondary);
+    background: var(--color-bg-hover);
+  }
+
+  .table-row {
+    height: 69px;
+    border-bottom: 1px solid var(--color-border);
+    transition: background 120ms ease-out;
+  }
+  .table-row:hover .table-cell,
+  .table-row:hover .table-name-cell,
+  .table-row:hover .table-action-cell { background: var(--color-bg-hover); }
+  .table-cell {
+    height: 69px;
+    padding-left: 16px;
+    padding-right: 16px;
+    vertical-align: middle;
+    transition: background 120ms ease-out;
+  }
+  .table-name-cell {
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    width: 220px;
+    min-width: 220px;
+    max-width: 220px;
+    height: 69px;
+    padding-left: 16px;
+    padding-right: 16px;
+    overflow: hidden;
+    background: #ffffff;
+    box-shadow: 8px 0 12px rgba(15, 23, 42, 0.03);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+    transition: background 120ms ease-out;
+  }
+  .table-action-cell {
+    position: sticky;
+    right: 0;
+    z-index: 3;
+    width: 80px;
+    min-width: 80px;
+    max-width: 80px;
+    height: 69px;
+    padding-right: 16px;
+    padding-left: 16px;
+    background: #ffffff;
+    box-shadow: -8px 0 12px rgba(15, 23, 42, 0.04);
+    text-align: right;
+    vertical-align: middle;
+    transition: background 120ms ease-out;
+  }
+  .table-header-row { height: 48px; border-bottom: 1px solid var(--color-border); }
+  .table-header-cell {
+    height: 48px;
+    padding-left: 16px;
+    padding-right: 16px;
+    overflow: hidden;
+    color: var(--color-text-tertiary);
+    font-size: 12px;
+    font-weight: 500;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: middle;
+  }
+  .table-header-name {
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    width: 220px;
+    min-width: 220px;
+    max-width: 220px;
+    background: #ffffff;
+    box-shadow: 8px 0 12px rgba(15, 23, 42, 0.03);
+  }
+  .table-header-action {
+    position: sticky;
+    right: 0;
+    z-index: 3;
+    width: 80px;
+    min-width: 80px;
+    max-width: 80px;
+    background: #ffffff;
+    box-shadow: -8px 0 12px rgba(15, 23, 42, 0.04);
+    text-align: right;
+  }
+  .table-name-cell.table-name-workload,
+  .table-header-name.table-name-workload {
+    width: 160px;
+    min-width: 160px;
+    max-width: 160px;
+  }
+  .table-action-cell.table-action-wide,
+  .table-header-action.table-action-wide {
+    width: 160px;
+    min-width: 160px;
+    max-width: 160px;
+  }
+}
+
 @layer utilities {
   .blueedge-page {
     width: 100%;
@@ -239,7 +485,6 @@
     border-radius: 16px;
     border: 1px solid var(--color-border);
     background: #ffffff;
-    box-shadow: var(--shadow-sm);
   }
 
   .action-group {

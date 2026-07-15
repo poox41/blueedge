@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNamespace } from "@/contexts/NamespaceContext";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import yaml from "js-yaml";
 import {
   Activity,
+  AlertTriangle,
   ArrowLeft,
   Box,
   ChevronDown,
   ChevronUp,
+  Copy,
   Download,
   ExternalLink,
   Eye,
@@ -34,12 +37,10 @@ import {
   AlertDialogAction,
   AlertDialogCancel,
   AlertDialogContent,
-  AlertDialogDescription,
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -837,27 +838,14 @@ export function Deployments() {
           onMetadataUpdate={updateFromMetadata}
           onReload={reloadWorkload}
         />
-        <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle className="text-base">确认删除工作负载？</AlertDialogTitle>
-              <AlertDialogDescription className="text-sm">
-                即将删除工作负载 <span className="font-medium text-[var(--color-text-primary)]">{deleteTarget?.name}</span>，此操作不可恢复。
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel>
-              <AlertDialogAction className="h-8 bg-[var(--color-danger)] text-sm hover:bg-[var(--color-danger)]/90" onClick={confirmDelete}>确认删除</AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
+        <WorkloadDeleteDialog target={deleteTarget} loading={isLoading} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDelete} />
         <ToastNotice message={toast} onClose={() => setToast(null)} />
       </>
     );
   }
 
   return (
-    <div className="blueedge-page space-y-5">
+    <div className="page-container space-y-5">
       <ToastNotice message={toast} onClose={() => setToast(null)} />
 
       <section>
@@ -866,27 +854,23 @@ export function Deployments() {
       </section>
 
       <section className="page-toolbar">
-        <div className="relative w-[260px]">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+        <div className="toolbar-search relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
           <Input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="输入工作负载名称搜索"
-            className="h-10 rounded-xl border-[var(--color-input-border)] bg-white pl-9 text-sm shadow-sm"
+            className="h-9 rounded-[10px] pl-9 text-sm"
           />
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => void loadData()} className="h-10 rounded-xl border-[#dfe5ee] bg-white px-4 text-sm font-semibold text-[#111827] shadow-sm hover:bg-[#f8fafc]">
-            <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
-            {isLoading ? "刷新中" : "刷新"}
-          </Button>
-          <Button variant="outline" onClick={() => setYamlOpen(true)} className="h-10 rounded-xl bg-white px-5 text-sm font-semibold">
+          <button type="button" onClick={() => setYamlOpen(true)} className="btn-secondary flex shrink-0 items-center gap-1.5 text-xs">
             YAML 创建
-          </Button>
-          <Button onClick={() => setWizardOpen(true)} className="h-10 rounded-xl bg-[#0f172a] px-5 text-sm font-semibold text-white hover:bg-[#172033]">
-            <Plus className="h-4 w-4" />
+          </button>
+          <button type="button" onClick={() => setWizardOpen(true)} className="btn-black flex shrink-0 items-center gap-1.5 text-xs">
+            <Plus className="h-3.5 w-3.5" />
             镜像创建
-          </Button>
+          </button>
         </div>
       </section>
 
@@ -896,18 +880,18 @@ export function Deployments() {
         </div>
       )}
 
-      <section className="table-card overflow-visible">
-        <Table className="[&_td:last-child]:overflow-visible">
+      <section className="table-card overflow-x-auto">
+        <Table className="min-w-[1000px] table-fixed border-collapse">
           <TableHeader>
-            <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
-              <TableHead className="w-[15%] px-5 text-xs text-[var(--color-text-tertiary)]">工作负载名称</TableHead>
-              <TableHead className="w-[14%] px-5 text-xs text-[var(--color-text-tertiary)]">工作负载别名</TableHead>
-              <TableHead className="w-[9%] px-5 text-xs text-[var(--color-text-tertiary)]">状态</TableHead>
-              <TableHead className="w-[8%] px-5 text-xs text-[var(--color-text-tertiary)]">命名空间</TableHead>
-              <TableHead className="w-[7%] px-5 text-xs text-[var(--color-text-tertiary)]">容器组</TableHead>
-              <TableHead className="w-[18%] px-5 text-xs text-[var(--color-text-tertiary)]">镜像</TableHead>
-              <TableHead className="w-[16%] px-5 text-xs text-[var(--color-text-tertiary)]">创建时间</TableHead>
-              <TableHead className="w-[13%] min-w-[150px] px-5 text-right text-xs text-[var(--color-text-tertiary)]">操作</TableHead>
+            <TableRow className="table-header-row bg-white hover:bg-white">
+              <TableHead className="table-header-cell table-header-name table-name-workload w-[160px]">工作负载名称</TableHead>
+              <TableHead className="table-header-cell w-[140px]">工作负载别名</TableHead>
+              <TableHead className="table-header-cell w-[90px]">状态</TableHead>
+              <TableHead className="table-header-cell w-[90px]">命名空间</TableHead>
+              <TableHead className="table-header-cell w-[80px]">容器组</TableHead>
+              <TableHead className="table-header-cell w-[180px]">镜像</TableHead>
+              <TableHead className="table-header-cell w-[140px]">创建时间</TableHead>
+              <TableHead className="table-header-cell table-header-action table-action-wide w-[160px]">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -931,25 +915,22 @@ export function Deployments() {
               </TableRow>
             ) : (
               filtered.map((item) => (
-                <TableRow key={item.id} className="h-[72px] hover:bg-[var(--color-bg-hover)]">
-                  <TableCell className="px-5">
-                    <button type="button" onClick={() => setSelectedWorkload(item)} className="text-left text-sm font-semibold text-[#1e6bff] hover:underline">
-                      {item.name}
-                    </button>
+                <TableRow key={item.id} className="table-row group cursor-pointer" onClick={() => setSelectedWorkload(item)}>
+                  <TableCell className="table-name-cell table-name-workload">
+                    <span className="text-sm font-medium text-[#1e6bff]">{item.name}</span>
                   </TableCell>
-                  <TableCell className="px-5 text-sm text-[var(--color-text-secondary)]">{item.alias || "-"}</TableCell>
-                  <TableCell className="px-5"><StatusPill status={item.status} /></TableCell>
-                  <TableCell className="px-5 text-sm text-[#111827]">{item.namespace}</TableCell>
-                  <TableCell className="px-5"><PodCount ready={item.readyReplicas} total={item.replicas} /></TableCell>
-                  <TableCell className="px-5"><ImageChip image={item.image} /></TableCell>
-                  <TableCell className="px-5 text-sm text-[var(--color-text-tertiary)]">{item.createTime}</TableCell>
-                  <TableCell className="overflow-visible px-5 text-right">
+                  <TableCell className="table-cell text-xs text-[var(--color-text-secondary)]">{item.alias || "-"}</TableCell>
+                  <TableCell className="table-cell overflow-visible"><StatusPill status={item.status} /></TableCell>
+                  <TableCell className="table-cell text-xs text-[#111827]">{item.namespace}</TableCell>
+                  <TableCell className="table-cell"><PodCount ready={item.readyReplicas} total={item.replicas} /></TableCell>
+                  <TableCell className="table-cell"><ImageChip image={item.image} /></TableCell>
+                  <TableCell className="table-cell text-xs text-[var(--color-text-tertiary)]">{item.createTime}</TableCell>
+                  <TableCell className="table-action-cell table-action-wide" onClick={(event) => event.stopPropagation()}>
                     <WorkloadRowActions
                       open={menuOpenId === item.id}
                       onOpenChange={(open) => setMenuOpenId(open ? item.id : null)}
                       onView={() => setSelectedWorkload(item)}
-                      onRefresh={() => void loadData()}
-                      refreshing={isLoading}
+                      onRestart={() => handleMenuAction("status", item)}
                       onDelete={() => setDeleteTarget(item)}
                       onAction={(action) => handleMenuAction(action, item)}
                     />
@@ -972,31 +953,84 @@ export function Deployments() {
         onReload={reloadWorkload}
       />
 
-      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle className="text-base">确认删除工作负载？</AlertDialogTitle>
-            <AlertDialogDescription className="text-sm">
-              即将删除工作负载 <span className="font-medium text-[var(--color-text-primary)]">{deleteTarget?.name}</span>，此操作不可恢复。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel>
-            <AlertDialogAction className="h-8 bg-[var(--color-danger)] text-sm hover:bg-[var(--color-danger)]/90" onClick={confirmDelete}>确认删除</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <WorkloadDeleteDialog target={deleteTarget} loading={isLoading} onCancel={() => setDeleteTarget(null)} onConfirm={confirmDelete} />
     </div>
+  );
+}
+
+function WorkloadDeleteDialog({ target, loading, onCancel, onConfirm }: { target: Workload | null; loading: boolean; onCancel: () => void; onConfirm: () => void }) {
+  const [confirmName, setConfirmName] = useState("");
+  useEffect(() => {
+    if (!target) return;
+    const timer = window.setTimeout(() => setConfirmName(""), 0);
+    return () => window.clearTimeout(timer);
+  }, [target]);
+  const confirmed = Boolean(target && confirmName === target.name);
+  return (
+    <AlertDialog open={Boolean(target)} onOpenChange={(open) => !open && onCancel()}>
+      <AlertDialogContent className="max-w-[480px] gap-0 overflow-hidden rounded-2xl p-0 sm:max-w-[480px]">
+        <AlertDialogHeader className="flex h-[61px] flex-row items-center justify-between border-b border-[#f0f1f3] px-6 text-left">
+          <div className="flex items-center gap-2.5">
+            <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#ff4d4f]/10"><AlertTriangle className="h-4 w-4 text-[#ff4d4f]" /></span>
+            <AlertDialogTitle className="text-sm">确认删除「{target?.name}」吗？</AlertDialogTitle>
+          </div>
+          <AlertDialogCancel className="action-button m-0 h-8 w-8 rounded-[10px] border-[#e8ecf3] p-0"><X className="h-4 w-4" /></AlertDialogCancel>
+        </AlertDialogHeader>
+        <div className="space-y-4 px-6 py-5">
+          <div className="flex items-start gap-2 rounded-lg border border-[#ffd591] bg-[#fff7e6] p-3">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#fa8c16]" />
+            <p className="text-xs leading-5 text-[#ad6800]">此操作不可恢复。删除后相关资源将被永久移除。</p>
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-[#111827]">请输入 <strong className="text-[#ff4d4f]">{target?.name}</strong> 以确认删除</label>
+              <button type="button" onClick={() => target && void navigator.clipboard.writeText(target.name)} className="flex items-center gap-1 text-xs text-[#1a73e8]"><Copy className="h-3 w-3" />复制名称</button>
+            </div>
+            <Input value={confirmName} onChange={(event) => setConfirmName(event.target.value)} placeholder={target?.name} className="h-10 rounded-[10px]" />
+          </div>
+        </div>
+        <AlertDialogFooter className="h-[69px] border-t border-[#f0f1f3] px-6 py-4">
+          <AlertDialogCancel className="btn-secondary m-0">取消</AlertDialogCancel>
+          <AlertDialogAction className="h-9 rounded-[10px] px-5 text-sm" disabled={!confirmed || loading} onClick={onConfirm}>删除</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
 function StatusPill({ status }: { status: WorkloadStatus }) {
   const style = statusConfig[status];
   return (
-    <span className={cn("inline-flex h-6 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold", style.className)}>
+    <span className={cn("inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium", style.className)}>
       <span className="h-1.5 w-1.5 rounded-full" style={{ backgroundColor: style.dot }} />
       {status}
     </span>
+  );
+}
+
+function WorkloadStatusOverview({ status }: { status: WorkloadStatus }) {
+  const items = [
+    { label: "运行中", active: status === "运行中", color: "#16a34a", bg: "#dcfce7" },
+    { label: "等待中", active: false, color: "#f59e0b", bg: "#fff5e5" },
+    { label: "未就绪", active: status !== "运行中", color: "#ef4444", bg: "#fdecec" },
+  ];
+  return (
+    <div className="flex items-center gap-2">
+      {items.map((item) => (
+        <span
+          key={item.label}
+          className="inline-flex h-6 items-center gap-1.5 rounded-full border px-2.5 text-xs font-medium"
+          style={{
+            color: item.active ? item.color : "#94a3b8",
+            background: item.active ? item.bg : "#f8fafc",
+            borderColor: item.active ? item.bg : "#e5e7eb",
+          }}
+        >
+          <span className="h-1.5 w-1.5 rounded-full" style={{ background: item.active ? item.color : "#cbd5e1" }} />
+          {item.label}
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -1030,16 +1064,14 @@ function WorkloadRowActions({
   open,
   onOpenChange,
   onView,
-  onRefresh,
-  refreshing,
+  onRestart,
   onDelete,
   onAction,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onView: () => void;
-  onRefresh: () => void;
-  refreshing: boolean;
+  onRestart: () => void;
   onDelete: () => void;
   onAction: (action: WorkloadMenuAction) => void;
 }) {
@@ -1049,7 +1081,7 @@ function WorkloadRowActions({
   const toggleMenu = () => {
     if (!open && moreButtonRef.current) {
       const rect = moreButtonRef.current.getBoundingClientRect();
-      const menuWidth = 196;
+      const menuWidth = 148;
       const menuHeight = 392;
       const viewportPadding = 12;
       const gap = 8;
@@ -1075,20 +1107,20 @@ function WorkloadRowActions({
         <button type="button" className="action-button" title="查看" onClick={onView}>
           <Eye className="h-3.5 w-3.5" />
         </button>
-        <button type="button" className="action-button" title="刷新" onClick={onRefresh} disabled={refreshing}>
-          <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+        <button type="button" className="action-button" title="重启" onClick={onRestart}>
+          <RotateCcw className="h-3.5 w-3.5" />
         </button>
         <button ref={moreButtonRef} type="button" className="action-button" title="更多" onClick={toggleMenu}>
           <MoreHorizontal className="h-3.5 w-3.5" />
         </button>
       </div>
 
-      {open && (
+      {open && createPortal(
         <>
           <button type="button" aria-label="关闭菜单" className="fixed inset-0 z-[70] cursor-default" onClick={() => onOpenChange(false)} />
           <div
             className="fixed z-[90] overflow-hidden rounded-2xl border border-[#eef2f7] bg-white py-1.5 text-left shadow-[0_18px_45px_rgba(15,23,42,0.14)]"
-            style={{ top: menuPosition.top, left: menuPosition.left, width: 196 }}
+            style={{ top: menuPosition.top, left: menuPosition.left, width: 148 }}
             onClick={(event) => event.stopPropagation()}
           >
             <div className="space-y-0.5 px-1.5">
@@ -1112,7 +1144,8 @@ function WorkloadRowActions({
               <WorkloadMenuItem icon={<Trash2 className="h-3.5 w-3.5" />} label="删除" danger onClick={() => { onOpenChange(false); onDelete(); }} />
             </div>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </div>
   );
@@ -1182,12 +1215,17 @@ function WorkloadDetailPage({
   const [observabilityWarning, setObservabilityWarning] = useState("");
   const [eventsLoading, setEventsLoading] = useState(false);
   const [pods, setPods] = useState<DeploymentPodRow[]>([]);
+  const [podSearch, setPodSearch] = useState("");
   const [podsLoading, setPodsLoading] = useState(false);
   const [podsError, setPodsError] = useState("");
   const podsRequestId = useRef(0);
   const eventsRequestId = useRef(0);
   const yaml = buildWorkloadYaml(item);
   const strategy = configuredValue(asRecord(item.raw?.spec).strategy && asRecord(asRecord(item.raw?.spec).strategy).type);
+  const visiblePods = useMemo(() => {
+    const keyword = podSearch.trim().toLowerCase();
+    return keyword ? pods.filter((pod) => pod.name.toLowerCase().includes(keyword)) : pods;
+  }, [podSearch, pods]);
 
   const loadEvents = useCallback(async () => {
     const requestId = ++eventsRequestId.current;
@@ -1235,30 +1273,30 @@ function WorkloadDetailPage({
   };
 
   return (
-    <div className="blueedge-page space-y-5">
+    <div className="page-container space-y-5">
       <section className="flex items-start justify-between gap-4">
         <div className="flex items-start gap-3">
-          <button type="button" onClick={onBack} className="action-button mt-0.5 h-10 w-10">
+          <button type="button" onClick={onBack} className="action-button mt-0.5">
             <ArrowLeft className="h-4 w-4" />
           </button>
           <div>
             <div className="flex items-center gap-3">
-              <h1 className="text-xl font-semibold text-[#111827]">{item.name}</h1>
+              <h1 className="text-lg font-semibold text-[#111827]">{item.name}</h1>
               <StatusPill status={item.status} />
             </div>
-            <p className="mt-1 text-sm text-[var(--color-text-secondary)]">{item.namespace} · {item.image}</p>
+            <p className="mt-1 text-xs text-[var(--color-text-secondary)]">{item.namespace} · {item.image}</p>
           </div>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
-          <button type="button" onClick={() => onAction("yaml")} className="h-10 rounded-xl border border-[#dfe5ee] bg-white px-4 text-sm font-semibold text-[#334155] hover:bg-[#f8fafc]">
-            编辑 YAML
+          <button type="button" onClick={() => onAction("yaml")} className="btn-secondary flex items-center gap-1.5 text-xs">
+            <FileText className="h-[13px] w-[13px]" />编辑YAML
           </button>
-          <button type="button" onClick={() => onAction("update")} className="h-10 rounded-xl bg-[#0f172a] px-4 text-sm font-semibold text-white hover:bg-[#172033]">
-            编辑
+          <button type="button" onClick={() => onAction("update")} className="btn-black flex items-center gap-1.5 text-xs">
+            <Pencil className="h-[13px] w-[13px]" />编辑
           </button>
-          <button type="button" onClick={() => onAction("logs")} className="h-10 rounded-xl border border-[#dfe5ee] bg-white px-4 text-sm font-semibold text-[#334155] hover:bg-[#f8fafc]">日志</button>
-          <button type="button" onClick={() => onAction("console")} className="h-10 rounded-xl border border-[#dfe5ee] bg-white px-4 text-sm font-semibold text-[#334155] hover:bg-[#f8fafc]">控制台</button>
-          <button type="button" onClick={() => onAction("monitor")} className="h-10 rounded-xl border border-[#dfe5ee] bg-white px-4 text-sm font-semibold text-[#334155] hover:bg-[#f8fafc]">监控</button>
+          <button type="button" onClick={() => onAction("console")} className="btn-secondary flex items-center gap-1.5 text-xs"><Terminal className="h-[13px] w-[13px]" />控制台</button>
+          <button type="button" onClick={() => onAction("monitor")} className="btn-secondary flex items-center gap-1.5 text-xs"><Activity className="h-[13px] w-[13px]" />监控</button>
+          <button type="button" onClick={() => onAction("logs")} className="btn-secondary flex items-center gap-1.5 text-xs"><FileText className="h-[13px] w-[13px]" />日志</button>
           <div className="relative">
             <button type="button" onClick={() => setMoreOpen((current) => !current)} className="action-button h-10 w-10"><MoreHorizontal className="h-4 w-4" /></button>
             {moreOpen && (
@@ -1282,7 +1320,7 @@ function WorkloadDetailPage({
       </section>
 
       <section className="rounded-2xl border border-[#eef2f7] bg-white p-6 shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
-        <h2 className="mb-6 text-base font-semibold text-[#111827]">基本信息</h2>
+        <h2 className="mb-6 text-sm font-semibold text-[#111827]">基本信息</h2>
         <div className="grid grid-cols-4 gap-x-10 gap-y-6">
           <DetailInfoItem label="工作负载名称" value={item.name} />
           <DetailInfoItem label="工作负载别名" value={item.alias} />
@@ -1295,7 +1333,7 @@ function WorkloadDetailPage({
             label="状态"
             value={(
               <div className="flex flex-wrap gap-2">
-                <StatusPill status={item.status} />
+                <WorkloadStatusOverview status={item.status} />
               </div>
             )}
           />
@@ -1313,11 +1351,7 @@ function WorkloadDetailPage({
             onClick={() => !tab.disabled && setActiveTab(tab.id as WorkloadDetailTab)}
             disabled={tab.disabled}
             title={tab.disabled ? "当前版本暂未开放" : undefined}
-            className={cn(
-              "inline-flex h-10 items-center gap-2 rounded-xl border px-4 text-sm font-semibold",
-              activeTab === tab.id ? "border-[#0f172a] bg-[#0f172a] text-white" : "border-[#dfe5ee] bg-white text-[#64748b] hover:bg-[#f8fafc]",
-              tab.disabled && "cursor-not-allowed opacity-50 hover:bg-white",
-            )}
+            className={cn(activeTab === tab.id ? "btn-tab-active" : "btn-tab", tab.disabled && "cursor-not-allowed opacity-50 hover:bg-white")}
           >
             {tab.icon}
             {tab.label}
@@ -1326,22 +1360,31 @@ function WorkloadDetailPage({
       </section>
 
       {activeTab === "pods" && (
-        <section className="rounded-2xl border border-[#eef2f7] bg-white p-5 shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="text-base font-semibold text-[#111827]">关联 Pod</h2>
-            <button type="button" onClick={() => void loadDeploymentPods()} disabled={podsLoading} className="detail-action-button" title="刷新关联 Pod">
-              <RefreshCw className={cn("h-4 w-4", podsLoading && "animate-spin")} />
-            </button>
+        <section className="rounded-2xl border border-[#eef2f7] bg-white px-7 py-6 shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="relative w-[240px]">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+              <Input value={podSearch} onChange={(event) => setPodSearch(event.target.value)} placeholder="搜索容器组名称" className="h-9 rounded-[10px] pl-9 text-sm" />
+            </div>
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => setActiveTab("scheduling")} className="action-button" title="容器组设置"><Settings className="h-3.5 w-3.5" /></button>
+              <button type="button" onClick={() => void loadDeploymentPods()} disabled={podsLoading} className="action-button" title="刷新关联 Pod">
+                <RotateCcw className={cn("h-3.5 w-3.5", podsLoading && "animate-spin")} />
+              </button>
+            </div>
           </div>
           {podsError && <div className="mb-3 rounded-lg border border-[#F7BA1E]/30 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{podsError}</div>}
+          <div className="overflow-hidden rounded-2xl border border-[#eef2f7]">
           <Table>
-            <TableHeader><TableRow><TableHead>名称</TableHead><TableHead>状态</TableHead><TableHead>容器</TableHead><TableHead>Pod IP</TableHead><TableHead>节点</TableHead><TableHead>重启</TableHead><TableHead>CPU 请求/限制</TableHead><TableHead>内存请求/限制</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow><TableHead>容器组名称</TableHead><TableHead>状态</TableHead><TableHead>容器（正常/总量）</TableHead><TableHead>容器组 IP</TableHead><TableHead>节点</TableHead><TableHead>重启次数</TableHead><TableHead>CPU 申请值/限制值</TableHead><TableHead>内存申请值/限制值</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
             <TableBody>
-              {pods.length === 0 ? <TableRow><TableCell colSpan={8} className="py-10 text-center text-sm text-[var(--color-text-tertiary)]">{podsLoading ? "正在加载关联 Pod..." : "暂无关联 Pod"}</TableCell></TableRow> : pods.map((pod) => (
-                <TableRow key={pod.name}><TableCell className="font-semibold text-[#1e6bff]">{pod.name}</TableCell><TableCell>{pod.status}</TableCell><TableCell>{pod.readyContainers}/{pod.totalContainers}</TableCell><TableCell>{pod.podIP}</TableCell><TableCell>{pod.nodeName}</TableCell><TableCell>{pod.restartCount}</TableCell><TableCell>{pod.cpu}</TableCell><TableCell>{pod.memory}</TableCell></TableRow>
+              {visiblePods.length === 0 ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-sm text-[var(--color-text-tertiary)]">{podsLoading ? "正在加载关联 Pod..." : "暂无关联 Pod"}</TableCell></TableRow> : visiblePods.map((pod) => (
+                <TableRow key={pod.name}><TableCell className="font-semibold text-[#1e6bff]">{pod.name}</TableCell><TableCell>{pod.status}</TableCell><TableCell>{pod.readyContainers}/{pod.totalContainers}</TableCell><TableCell>{pod.podIP}</TableCell><TableCell>{pod.nodeName}</TableCell><TableCell>{pod.restartCount}</TableCell><TableCell>{pod.cpu}</TableCell><TableCell>{pod.memory}</TableCell><TableCell className="text-right"><button type="button" onClick={() => onAction("logs")} className="action-button" title="查看日志"><MoreHorizontal className="h-3.5 w-3.5" /></button></TableCell></TableRow>
               ))}
             </TableBody>
           </Table>
+          </div>
+          <div className="mt-4 flex items-center justify-between text-xs text-[var(--color-text-secondary)]"><span>共 {visiblePods.length} 条</span><span>第 1 / 1 页</span></div>
         </section>
       )}
 
@@ -1953,10 +1996,12 @@ function WorkloadConsoleDialog({ item, onClose }: { item: Workload; onClose: () 
   const [podName, setPodName] = useState("");
   const [containerName, setContainerName] = useState("");
   const [command, setCommand] = useState("");
-  const [output, setOutput] = useState("请选择运行中的 Pod 和容器，然后输入命令。\n命令会通过 Kubernetes Pod Exec 在真实集群中执行。");
+  const [output, setOutput] = useState("");
   const [loading, setLoading] = useState(true);
   const [executing, setExecuting] = useState(false);
   const [error, setError] = useState("");
+  const [commandFocused, setCommandFocused] = useState(false);
+  const commandInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1994,7 +2039,8 @@ function WorkloadConsoleDialog({ item, onClose }: { item: Workload; onClose: () 
     setError("");
     try {
       const result = await executeDeploymentCommand(item.namespace, item.name, { pod: podName, container: containerName, command: command.trim() });
-      setOutput(`$ ${result.command}\n${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ""}${result.exitCode === null ? "" : `\n[exit ${result.exitCode}]`}`.trim());
+      setOutput(`${result.stdout}${result.stderr ? `\n[stderr]\n${result.stderr}` : ""}${result.exitCode === null ? "" : `\n[exit ${result.exitCode}]`}`.trim());
+      setCommand("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Pod 命令执行失败");
     } finally {
@@ -2004,19 +2050,59 @@ function WorkloadConsoleDialog({ item, onClose }: { item: Workload; onClose: () 
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-[760px] rounded-[24px] p-0" showCloseButton={false}>
-        <DialogHeader className="border-b border-[#eef2f7] px-7 py-5"><div className="flex items-center justify-between"><div><DialogTitle>打开控制台 {item.name}</DialogTitle><p className="mt-1 text-xs text-[#94a3b8]">真实 Kubernetes Pod Exec（单次命令执行）</p></div><button type="button" onClick={onClose} className="action-button"><X className="h-4 w-4" /></button></div></DialogHeader>
-        <div className="space-y-5 p-7">
-          {error && <div className="rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#b91c1c]">{error}</div>}
-          <div className="grid grid-cols-2 gap-4">
-            <CreateField label="容器组"><select value={podName} disabled={loading} onChange={(event) => { const next = pods.find((pod) => pod.name === event.target.value); setPodName(event.target.value); setContainerName(next?.containers[0] || ""); }} className="h-11 w-full rounded-xl border border-[#dfe5ee] bg-white px-3 text-sm"><option value="">{loading ? "正在加载真实 Pod..." : "请选择 Pod"}</option>{pods.map((pod) => <option key={pod.name} value={pod.name}>{pod.name} ({pod.phase})</option>)}</select></CreateField>
-            <CreateField label="容器"><select value={containerName} onChange={(event) => setContainerName(event.target.value)} className="h-11 w-full rounded-xl border border-[#dfe5ee] bg-white px-3 text-sm"><option value="">请选择容器</option>{(selectedPod?.containers || []).map((container) => <option key={container} value={container}>{container}</option>)}</select></CreateField>
+      <DialogContent className="!flex w-[min(600px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.14)] sm:max-w-none" showCloseButton={false}>
+        <DialogHeader className="h-[72px] shrink-0 border-b border-[#eef1f5] px-7 py-0">
+          <div className="flex h-full items-center justify-between">
+            <DialogTitle className="text-base font-semibold text-[#111827]">打开控制台 {item.name}</DialogTitle>
+            <button type="button" onClick={onClose} className="action-button"><X className="h-4 w-4" /></button>
           </div>
-          <div className="rounded-2xl bg-[#0b1220] p-5">
-            <pre className="min-h-[220px] max-h-[360px] overflow-auto whitespace-pre-wrap font-mono text-xs leading-6 text-[#d1d5db]">{output}</pre>
-            <div className="mt-4 flex gap-3 border-t border-[#1f2937] pt-4"><span className="pt-2 font-mono text-sm text-[#22c55e]">$</span><Input value={command} onChange={(event) => setCommand(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void execute(); }} placeholder="例如：uname -a 或 ls -la /" className="h-10 border-[#334155] bg-[#111827] font-mono text-sm text-white placeholder:text-[#64748b]" /><button type="button" onClick={() => void execute()} disabled={executing || !podName || !containerName || !command.trim()} className="h-10 rounded-xl bg-white px-5 text-sm font-semibold text-[#0f172a] disabled:bg-[#64748b]">{executing ? "执行中" : "执行"}</button></div>
+        </DialogHeader>
+        <div className="space-y-5 overflow-y-auto p-7">
+          {error && <div className="rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#b91c1c]">{error}</div>}
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-[#111827]">容器组</label>
+            <select value={podName} disabled={loading} onChange={(event) => { const next = pods.find((pod) => pod.name === event.target.value); setPodName(event.target.value); setContainerName(next?.containers[0] || ""); setOutput(""); }} className="blueedge-native-select h-9 w-full rounded-[10px] border-2 border-[#e6eaf0] bg-white px-3 text-sm">
+              <option value="">{loading ? "正在加载真实 Pod..." : "请选择容器组"}</option>
+              {pods.map((pod) => <option key={pod.name} value={pod.name}>{pod.name}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-medium text-[#111827]">容器</label>
+            <select value={containerName} onChange={(event) => { setContainerName(event.target.value); setOutput(""); }} className="blueedge-native-select h-9 w-full rounded-[10px] border-2 border-[#e6eaf0] bg-white px-3 text-sm">
+              <option value="">请选择容器</option>
+              {(selectedPod?.containers || []).map((container) => <option key={container} value={container}>{container}</option>)}
+            </select>
+          </div>
+          <div className="overflow-hidden rounded-xl border border-[#1f2937] bg-[#0b1220]">
+            <div className="border-b border-[#1f2937] px-4 py-2 font-mono text-xs text-[#94a3b8]">{podName || "-"} / {containerName || "-"}</div>
+            <div className="min-h-[180px] max-h-[360px] overflow-auto p-4 font-mono text-xs leading-6 text-[#d1d5db]">
+              <div>$ kubectl exec -it {podName || "<pod>"} -c {containerName || "<container>"} -- /bin/sh</div>
+              <div>Connected to workload console.</div>
+              {output && <pre className="whitespace-pre-wrap break-words font-mono">{output}</pre>}
+              <div className="flex items-center gap-1">
+                <span>#</span>
+                {!command && !commandFocused && <span className="inline-block h-4 w-2 bg-[#d1d5db]" aria-hidden="true" />}
+                <input
+                  ref={commandInputRef}
+                  value={command}
+                  onChange={(event) => setCommand(event.target.value)}
+                  onFocus={() => setCommandFocused(true)}
+                  onBlur={() => setCommandFocused(false)}
+                  onKeyDown={(event) => { if (event.key === "Enter") void execute(); }}
+                  disabled={executing || !podName || !containerName}
+                  aria-label="控制台命令"
+                  className="h-6 min-w-0 flex-1 border-0 bg-transparent p-0 font-mono text-xs text-[#d1d5db] shadow-none outline-none focus:ring-0 disabled:cursor-not-allowed"
+                />
+              </div>
+            </div>
           </div>
         </div>
+        <DialogFooter className="h-[72px] shrink-0 border-t border-[#eef1f5] px-7 py-0">
+          <div className="flex w-full items-center justify-end gap-3">
+            <button type="button" onClick={onClose} className="btn-secondary text-sm">取消</button>
+            <button type="button" onClick={() => command.trim() ? void execute() : commandInputRef.current?.focus()} disabled={executing || !podName || !containerName} className="btn-black text-sm disabled:cursor-not-allowed disabled:opacity-45">{executing ? "执行中" : "打开"}</button>
+          </div>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
@@ -2411,7 +2497,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => nextOpen ? onOpenChange(true) : close()}>
-      <DialogContent className="!flex max-h-[min(800px,calc(100vh-48px))] w-[min(600px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)]" showCloseButton={false}>
+      <DialogContent className="!flex max-h-[min(800px,calc(100vh-48px))] w-[min(600px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)] sm:max-w-[600px]" showCloseButton={false}>
         <DialogHeader className="h-14 shrink-0 border-b border-[#f0f1f3] px-6 py-0">
           <div className="flex h-full items-center justify-between">
             <DialogTitle className="text-base font-semibold text-[#111827]">创建工作负载</DialogTitle>

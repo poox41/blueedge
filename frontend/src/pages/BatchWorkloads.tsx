@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import yaml from "js-yaml";
 import { useNamespace } from "@/contexts/NamespaceContext";
 import type { ReactNode } from "react";
@@ -95,6 +96,9 @@ type BatchContainerForm = {
   cpuLimit: string;
   memoryRequest: string;
   memoryLimit: string;
+  gpuEnabled: boolean;
+  gpuType: string;
+  gpuCount: number;
   lifecyclePostStart: string;
   lifecyclePreStop: string;
   startupProbe: boolean;
@@ -134,14 +138,17 @@ type BatchImageCreateForm = {
 
 const createBatchContainer = (index: number): BatchContainerForm => ({
   id: `batch-container-${Date.now()}-${index}`,
-  name: `container-${index + 1}`,
-  image: index === 0 ? "nginx:1.25-alpine" : "",
+  name: "",
+  image: "",
   pullPolicy: "IfNotPresent",
   privileged: false,
-  cpuRequest: "100m",
-  cpuLimit: "500m",
-  memoryRequest: "128Mi",
-  memoryLimit: "512Mi",
+  cpuRequest: "",
+  cpuLimit: "",
+  memoryRequest: "",
+  memoryLimit: "",
+  gpuEnabled: false,
+  gpuType: "",
+  gpuCount: 1,
   lifecyclePostStart: "",
   lifecyclePreStop: "",
   startupProbe: false,
@@ -149,8 +156,8 @@ const createBatchContainer = (index: number): BatchContainerForm => ({
   livenessProbe: false,
   envs: [{ id: `env-${Date.now()}-${index}`, key: "", value: "" }],
   volumes: [],
-  runAsUser: "1000",
-  runAsGroup: "1000",
+  runAsUser: "",
+  runAsGroup: "",
   readOnlyRootFilesystem: false,
   allowPrivilegeEscalation: false,
 });
@@ -184,14 +191,16 @@ const optionalNumber = (value: string): number | undefined => value.trim() === "
 const compactStringList = (value: string): string[] => value.split(/\s+/).map((item) => item.trim()).filter(Boolean);
 
 function toPlanContainer(container: BatchContainerForm): BatchWorkloadPlanContainer {
+  const gpuResource = container.gpuEnabled ? (container.gpuType.trim() || "nvidia.com/gpu") : "";
+  const gpuCount = String(Math.max(1, Math.floor(Number(container.gpuCount) || 1)));
   return {
     name: container.name.trim(),
     image: container.image.trim(),
     imagePullPolicy: container.pullPolicy,
     env: container.envs.filter((item) => item.key.trim()).map((item) => ({ name: item.key.trim(), value: item.value })),
     resources: {
-      requests: { ...(container.cpuRequest.trim() ? { cpu: container.cpuRequest.trim() } : {}), ...(container.memoryRequest.trim() ? { memory: container.memoryRequest.trim() } : {}) },
-      limits: { ...(container.cpuLimit.trim() ? { cpu: container.cpuLimit.trim() } : {}), ...(container.memoryLimit.trim() ? { memory: container.memoryLimit.trim() } : {}) },
+      requests: { ...(container.cpuRequest.trim() ? { cpu: container.cpuRequest.trim() } : {}), ...(container.memoryRequest.trim() ? { memory: container.memoryRequest.trim() } : {}), ...(gpuResource ? { [gpuResource]: gpuCount } : {}) },
+      limits: { ...(container.cpuLimit.trim() ? { cpu: container.cpuLimit.trim() } : {}), ...(container.memoryLimit.trim() ? { memory: container.memoryLimit.trim() } : {}), ...(gpuResource ? { [gpuResource]: gpuCount } : {}) },
     },
     lifecycle: { ...(container.lifecyclePostStart.trim() ? { postStart: container.lifecyclePostStart.trim() } : {}), ...(container.lifecyclePreStop.trim() ? { preStop: container.lifecyclePreStop.trim() } : {}) },
     healthChecks: { startup: container.startupProbe, readiness: container.readinessProbe, liveness: container.livenessProbe },
@@ -294,6 +303,8 @@ export function BatchWorkloads() {
   const [imageOpen, setImageOpen] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
   const [definitionTarget, setDefinitionTarget] = useState<BatchWorkload | null>(null);
+  const [openDefinitionInitially, setOpenDefinitionInitially] = useState(false);
+  const [editYamlTarget, setEditYamlTarget] = useState<BatchWorkload | null>(null);
   const [deployTarget, setDeployTarget] = useState<BatchWorkload | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BatchWorkload | null>(null);
   const [loading, setLoading] = useState(false);
@@ -406,9 +417,10 @@ export function BatchWorkloads() {
 
   if (definitionTarget) {
     return (
-      <div className="blueedge-page">
+      <div>
         <BatchWorkloadDetailPage
           item={definitionTarget}
+          openDefinitionInitially={openDefinitionInitially}
           onBack={() => setDefinitionTarget(null)}
           onChanged={async () => {
             const detail = await getBatchWorkloadTask(definitionTarget.id);
@@ -428,46 +440,46 @@ export function BatchWorkloads() {
   }
 
   return (
-    <div className="blueedge-page space-y-5">
+    <div className="page-container space-y-5">
       <section>
         <h1 className="mb-1 text-lg font-semibold text-[#111827]">批量工作负载</h1>
-        <p className="text-xs text-[var(--color-text-secondary)]">按 NodeGroup 批量创建并管理真实 Kubernetes Deployment</p>
+        <p className="text-xs text-[var(--color-text-secondary)]">面向多个目标批量部署边缘应用</p>
       </section>
       {error && <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
 
       <section className="page-toolbar">
-        <div className="relative w-[260px]">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+        <div className="toolbar-search relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
           <Input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="搜索批量工作负载名称..."
-            className="h-10 rounded-xl border-[var(--color-input-border)] bg-white pl-9 text-sm shadow-sm"
+            className="h-9 rounded-[10px] pl-9 text-sm"
           />
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => void loadItems()} className="action-button h-10 w-10" title="刷新">
-            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+          <button type="button" onClick={() => void loadItems()} className="action-button" title="刷新">
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
           </button>
-          <Button variant="outline" onClick={() => setYamlOpen(true)} className="h-10 rounded-xl bg-white px-5 text-sm font-semibold">
+          <Button variant="outline" onClick={() => setYamlOpen(true)} className="btn-secondary flex shrink-0 items-center gap-1.5 text-xs">
             YAML 创建
           </Button>
-          <Button onClick={() => setImageOpen(true)} className="h-10 rounded-xl bg-[#0f172a] px-5 text-sm font-semibold text-white hover:bg-[#172033]">
-            <Plus className="h-4 w-4" />
+          <Button onClick={() => setImageOpen(true)} className="btn-black flex shrink-0 items-center gap-1.5 text-xs">
+            <Plus className="h-3.5 w-3.5" />
             镜像创建
           </Button>
         </div>
       </section>
 
-      <section className="table-card overflow-visible">
-        <Table>
+      <section className="table-card overflow-x-auto">
+        <Table className="min-w-[600px] table-fixed border-collapse">
           <TableHeader>
-            <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
-              <TableHead className="w-[24%] px-5 text-xs text-[var(--color-text-tertiary)]">工作负载名称</TableHead>
-              <TableHead className="w-[14%] px-5 text-xs text-[var(--color-text-tertiary)]">命名空间</TableHead>
-              <TableHead className="px-5 text-xs text-[var(--color-text-tertiary)]">镜像</TableHead>
-              <TableHead className="w-[18%] px-5 text-xs text-[var(--color-text-tertiary)]">创建时间</TableHead>
-              <TableHead className="w-[90px] px-5 text-right text-xs text-[var(--color-text-tertiary)]">操作</TableHead>
+            <TableRow className="table-header-row bg-white hover:bg-white">
+              <TableHead className="table-header-cell table-header-name w-[220px]">工作负载名称</TableHead>
+              <TableHead className="table-header-cell w-[120px]">命名空间</TableHead>
+              <TableHead className="table-header-cell w-[40%]">镜像</TableHead>
+              <TableHead className="table-header-cell w-[160px]">创建时间</TableHead>
+              <TableHead className="table-header-cell table-header-action w-[80px]">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -482,23 +494,26 @@ export function BatchWorkloads() {
               </TableRow>
             ) : (
               filtered.map((item) => (
-                <TableRow key={item.id} className="h-[72px] hover:bg-[var(--color-bg-hover)]">
-                  <TableCell className="px-5">
-                    <button type="button" onClick={() => setDefinitionTarget(item)} className="text-left text-sm font-semibold text-[#1e6bff] hover:underline">
-                      {item.name}
-                    </button>
+                <TableRow key={item.id} className="table-row group cursor-pointer" onClick={() => { setOpenDefinitionInitially(false); setDefinitionTarget(item); }}>
+                  <TableCell className="table-name-cell">
+                    <span className="text-sm font-medium text-[#1e6bff]">{item.name}</span>
                   </TableCell>
-                  <TableCell className="px-5 text-sm text-[#111827]">{item.namespace}</TableCell>
-                  <TableCell className="px-5">
-                    <span className="inline-block max-w-[360px] truncate rounded-lg bg-[var(--color-bg-soft)] px-2.5 py-1 font-mono text-sm text-[#111827]">{item.image}</span>
+                  <TableCell className="table-cell text-xs text-[#111827]">{item.namespace}</TableCell>
+                  <TableCell className="table-cell">
+                    <span className="block truncate font-mono text-xs text-[var(--color-text-secondary)]" title={item.image}>{item.image}</span>
                   </TableCell>
-                  <TableCell className="px-5 text-sm text-[var(--color-text-tertiary)]">{item.createTime}</TableCell>
-                  <TableCell className="relative px-5 text-right">
+                  <TableCell className="table-cell text-xs text-[var(--color-text-tertiary)]">{item.createTime}</TableCell>
+                  <TableCell className="table-action-cell" onClick={(event) => event.stopPropagation()}>
                     <BatchWorkloadActions
                       open={menuOpenId === item.id}
                       onOpenChange={(open) => setMenuOpenId(open ? item.id : null)}
                       onView={() => {
+                        setOpenDefinitionInitially(true);
                         setDefinitionTarget(item);
+                        setMenuOpenId(null);
+                      }}
+                      onEditYaml={() => {
+                        setEditYamlTarget(item);
                         setMenuOpenId(null);
                       }}
                       onDeploy={() => {
@@ -519,6 +534,22 @@ export function BatchWorkloads() {
       </section>
 
       <BatchYamlEditor open={yamlOpen} title="YAML 批量创建工作负载" defaultValue={defaultBatchYaml} onSubmit={createFromYaml} onCancel={() => setYamlOpen(false)} />
+      <BatchYamlEditor
+        open={!!editYamlTarget}
+        title="编辑 YAML"
+        defaultValue={editYamlTarget?.raw?.yaml || "# 暂无 Deployment YAML"}
+        onSubmit={async (value) => {
+          if (!editYamlTarget) return;
+          try {
+            await updateBatchWorkloadYaml(editYamlTarget.id, value);
+            setEditYamlTarget(null);
+            await loadItems();
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "YAML 更新失败");
+          }
+        }}
+        onCancel={() => setEditYamlTarget(null)}
+      />
       <ImageCreateDialog open={imageOpen} onOpenChange={setImageOpen} onCreate={createFromImage} />
       <DeployDialog
         item={deployTarget}
@@ -549,10 +580,11 @@ export function BatchWorkloads() {
   );
 }
 
-function BatchWorkloadActions({ open, onOpenChange, onView, onDeploy, onDelete }: {
+function BatchWorkloadActions({ open, onOpenChange, onView, onEditYaml, onDeploy, onDelete }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onView: () => void;
+  onEditYaml: () => void;
   onDeploy: () => void;
   onDelete: () => void;
 }) {
@@ -562,8 +594,8 @@ function BatchWorkloadActions({ open, onOpenChange, onView, onDeploy, onDelete }
   const toggleMenu = () => {
     if (!open && buttonRef.current) {
       const rect = buttonRef.current.getBoundingClientRect();
-      const menuWidth = 164;
-      const menuHeight = 178;
+      const menuWidth = 148;
+      const menuHeight = 151;
       const viewportPadding = 12;
       const gap = 8;
       const canOpenDown = rect.bottom + gap + menuHeight <= window.innerHeight - viewportPadding;
@@ -577,20 +609,23 @@ function BatchWorkloadActions({ open, onOpenChange, onView, onDeploy, onDelete }
 
   return (
     <div className="inline-block text-left align-middle">
-      <button ref={buttonRef} type="button" className="action-button h-10 w-10" onClick={toggleMenu} title="更多操作">
-        <MoreHorizontal className="h-4 w-4" />
+      <button ref={buttonRef} type="button" className="action-button" onClick={toggleMenu} title="更多">
+        <MoreHorizontal className="h-3.5 w-3.5" />
       </button>
-      {open && (
+      {open && createPortal(
         <>
-          <button type="button" className="fixed inset-0 z-30 cursor-default" onClick={() => onOpenChange(false)} aria-label="关闭菜单" />
-          <div className="fixed z-40 w-[164px] overflow-hidden rounded-2xl border border-[#e5e7eb] bg-white py-2 text-left shadow-[0_18px_45px_rgba(15,23,42,0.18)]" style={{ top: menuPosition.top, left: menuPosition.left }}>
-            <BatchActionMenuItem icon={<Eye className="h-4 w-4" />} label="查看定义" onClick={onView} />
-            <BatchActionMenuItem icon={<Pencil className="h-4 w-4" />} label="查看和编辑 YAML" onClick={onView} />
-            <BatchActionMenuItem icon={<Upload className="h-4 w-4" />} label="新增部署" onClick={onDeploy} />
-            <div className="my-2 border-t border-[#eef2f7]" />
-            <BatchActionMenuItem danger icon={<Trash2 className="h-4 w-4" />} label="删除" onClick={onDelete} />
+          <button type="button" className="fixed inset-0 z-[70] cursor-default" onClick={() => onOpenChange(false)} aria-label="关闭菜单" />
+          <div className="fixed z-[90] w-[148px] overflow-hidden rounded-2xl border border-[#eef2f7] bg-white py-1.5 text-left shadow-[0_18px_45px_rgba(15,23,42,0.14)]" style={{ top: menuPosition.top, left: menuPosition.left }}>
+            <div className="px-1.5">
+              <BatchActionMenuItem icon={<Eye className="h-3.5 w-3.5" />} label="查看定义" onClick={onView} />
+              <BatchActionMenuItem icon={<Pencil className="h-3.5 w-3.5" />} label="编辑 YAML" onClick={onEditYaml} />
+              <BatchActionMenuItem icon={<Upload className="h-3.5 w-3.5" />} label="部署" onClick={onDeploy} />
+            </div>
+            <div className="my-1.5 border-t border-[#eef2f7]" />
+            <div className="px-1.5"><BatchActionMenuItem danger icon={<Trash2 className="h-3.5 w-3.5" />} label="删除" onClick={onDelete} /></div>
           </div>
-        </>
+        </>,
+        document.body,
       )}
     </div>
   );
@@ -604,7 +639,7 @@ function BatchActionMenuItem({ icon, label, onClick, danger = false, disabled = 
       disabled={disabled}
       title={disabled ? "当前版本暂不支持编辑已创建计划" : undefined}
       className={cn(
-        "flex h-10 w-full items-center gap-3 px-5 text-sm font-medium hover:bg-[#f8fafc]",
+        "flex h-8 w-full items-center gap-2 rounded-lg px-2 text-xs font-medium hover:bg-[#f8fafc]",
         danger ? "text-[#ff4d4f]" : "text-[#374151]",
         disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
       )}
@@ -729,8 +764,6 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
   const [namespaceOptions, setNamespaceOptions] = useState<Array<{ value: string; label: string }>>([{ value: "default", label: "default" }]);
   const [refreshingNamespaces, setRefreshingNamespaces] = useState(false);
   const [namespaceError, setNamespaceError] = useState("");
-  const [nodeGroupOptions, setNodeGroupOptions] = useState<Array<{ name: string; nodes: string[] }>>([]);
-  const [nodeGroupError, setNodeGroupError] = useState("");
 
   const refreshNamespaces = async () => {
     setRefreshingNamespaces(true);
@@ -750,19 +783,6 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
     }
   };
 
-  const refreshNodeGroups = async () => {
-    setNodeGroupError("");
-    try {
-      const groups = await listNodeGroups();
-      setNodeGroupOptions(groups.map((group: any) => ({
-        name: String(group?.metadata?.name || group?.name || ""),
-        nodes: Array.isArray(group?.spec?.nodes) ? group.spec.nodes.map(String) : [],
-      })).filter((group) => group.name));
-    } catch (err) {
-      setNodeGroupError(err instanceof Error ? err.message : "节点组加载失败");
-    }
-  };
-
   useEffect(() => {
     if (!open) return;
     setStep(0);
@@ -770,12 +790,11 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
     setActiveContainerIndex(0);
     setForm(defaultBatchImageForm());
     void refreshNamespaces();
-    void refreshNodeGroups();
   }, [open]);
 
   const close = () => onOpenChange(false);
   const activeContainer = form.containers[activeContainerIndex] || form.containers[0];
-  const isBasicValid = form.name.trim() !== "" && form.namespace.trim() !== "" && form.targetGroups.length > 0 && Number(form.replicas) > 0;
+  const isBasicValid = form.name.trim() !== "" && form.namespace.trim() !== "" && Number(form.replicas) > 0;
   const isContainerValid = form.containers.length > 0 && form.containers.every((container) => container.name.trim() && container.image.trim());
   const canGoNext = step === 0 ? isBasicValid : step === 1 ? isContainerValid : true;
 
@@ -810,12 +829,12 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => nextOpen ? onOpenChange(true) : close()}>
-      <DialogContent className="!flex max-h-[min(800px,calc(100vh-48px))] w-[min(600px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)]" showCloseButton={false}>
+      <DialogContent className="!flex h-[min(720px,calc(100vh-48px))] max-h-[min(720px,calc(100vh-48px))] w-[min(600px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)] sm:max-w-none" showCloseButton={false}>
         <DialogHeader className="h-14 shrink-0 border-b border-[#f0f1f3] px-6 py-0">
           <div className="flex h-full items-center justify-between">
             <DialogTitle className="text-base font-semibold text-[#111827]">创建批量工作负载</DialogTitle>
-            <button type="button" onClick={close} className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#e5e7eb] text-[#64748b] hover:bg-[#f8fafc]">
-              <X className="h-[18px] w-[18px]" />
+            <button type="button" onClick={close} className="action-button h-8 w-8 rounded-[10px]">
+              <X className="h-4 w-4" />
             </button>
           </div>
         </DialogHeader>
@@ -826,38 +845,25 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
           {step === 0 && (
             <div className="space-y-4">
               <CreateField label="名称" required>
-                <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="batch-nginx" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="batch-nginx" className="h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0" />
                 <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">最长 63 个字符，必须由小写字母、数字字符、"-"或"."组成，且以字母或数字开头及结尾。</p>
               </CreateField>
               <CreateField label="命名空间" required>
                 <div className="flex gap-2">
-                  <select value={form.namespace} onChange={(event) => setForm({ ...form, namespace: event.target.value })} className="blueedge-native-select h-10 flex-1 rounded-[10px] border-2 text-sm">
+                  <select value={form.namespace} onChange={(event) => setForm({ ...form, namespace: event.target.value })} className="blueedge-native-select h-9 flex-1 rounded-[10px] border text-sm">
                     <option value="">请选择命名空间</option>
                     {namespaceOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                   </select>
-                  <button type="button" onClick={() => void refreshNamespaces()} disabled={refreshingNamespaces} className="action-button h-10 w-10" title="刷新命名空间"><RefreshCw className={cn("h-[15px] w-[15px]", refreshingNamespaces && "animate-spin")} /></button>
+                  <button type="button" onClick={() => void refreshNamespaces()} disabled={refreshingNamespaces} className="action-button h-9 w-9" title="刷新命名空间"><RefreshCw className={cn("h-[15px] w-[15px]", refreshingNamespaces && "animate-spin")} /></button>
                 </div>
                 {namespaceError && <p className="mt-2 text-xs text-[var(--color-danger)]">{namespaceError}</p>}
               </CreateField>
               <CreateField label="实例" required>
-                <Input type="number" min={1} value={form.replicas} onChange={(event) => setForm({ ...form, replicas: event.target.value })} className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                <Input type="number" min={1} value={form.replicas} onChange={(event) => setForm({ ...form, replicas: event.target.value })} className="h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0" />
                 <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">任务完成可以容忍拉取镜像失败的节点数量占比</p>
               </CreateField>
-              <CreateField label="目标节点组" required>
-                <div className="space-y-2 rounded-xl border border-[#e2e8f0] bg-[#f8fafc] p-3">
-                  {nodeGroupOptions.length === 0 ? (
-                    <p className="text-xs text-[var(--color-text-tertiary)]">暂无可用 NodeGroup</p>
-                  ) : nodeGroupOptions.map((group) => (
-                    <label key={group.name} className="flex cursor-pointer items-center justify-between rounded-lg bg-white px-3 py-2 text-sm">
-                      <span><span className="font-semibold text-[#111827]">{group.name}</span><span className="ml-2 text-xs text-[var(--color-text-tertiary)]">{group.nodes.length ? `${group.nodes.length} 个指定节点` : "标签匹配"}</span></span>
-                      <input type="checkbox" checked={form.targetGroups.includes(group.name)} onChange={() => setForm((current) => ({ ...current, targetGroups: current.targetGroups.includes(group.name) ? current.targetGroups.filter((name) => name !== group.name) : [...current.targetGroups, group.name] }))} className="h-4 w-4" />
-                    </label>
-                  ))}
-                </div>
-                {nodeGroupError && <p className="mt-2 text-xs text-[var(--color-danger)]">{nodeGroupError}</p>}
-              </CreateField>
               <CreateField label="描述">
-                <Textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="批量工作负载用途描述（可选）" className="h-[120px] min-h-[120px] rounded-[10px] border-2 border-[#e2e8f0] px-3 py-2 text-sm shadow-sm focus-visible:ring-0" />
+                <Textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="批量工作负载用途描述（可选）" className="h-[120px] min-h-[120px] rounded-[10px] border border-[#dfe5ee] px-3 py-2 text-sm shadow-sm focus-visible:ring-0" />
               </CreateField>
             </div>
           )}
@@ -915,19 +921,37 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
               </BatchAccordion>
 
               <BatchAccordion title="资源配置">
-                <div className="grid grid-cols-2 gap-3">
-                  <CreateField label="CPU 请求 (request)" compact>
-                    <Input value={activeContainer.cpuRequest} onChange={(event) => updateContainer({ cpuRequest: event.target.value })} placeholder="500m 或 0.5" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
-                  </CreateField>
-                  <CreateField label="CPU 限制 (limit)" compact>
-                    <Input value={activeContainer.cpuLimit} onChange={(event) => updateContainer({ cpuLimit: event.target.value })} placeholder="1000m 或 1" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
-                  </CreateField>
-                  <CreateField label="内存请求 (request)" compact>
-                    <Input value={activeContainer.memoryRequest} onChange={(event) => updateContainer({ memoryRequest: event.target.value })} placeholder="256Mi" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
-                  </CreateField>
-                  <CreateField label="内存限制 (limit)" compact>
-                    <Input value={activeContainer.memoryLimit} onChange={(event) => updateContainer({ memoryLimit: event.target.value })} placeholder="512Mi" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
-                  </CreateField>
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <CreateField label="CPU 请求 (request)" compact>
+                      <Input value={activeContainer.cpuRequest} onChange={(event) => updateContainer({ cpuRequest: event.target.value })} placeholder="500m 或 0.5" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                    </CreateField>
+                    <CreateField label="CPU 限制 (limit)" compact>
+                      <Input value={activeContainer.cpuLimit} onChange={(event) => updateContainer({ cpuLimit: event.target.value })} placeholder="1000m 或 1" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                    </CreateField>
+                    <CreateField label="内存请求 (request)" compact>
+                      <Input value={activeContainer.memoryRequest} onChange={(event) => updateContainer({ memoryRequest: event.target.value })} placeholder="256Mi" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                    </CreateField>
+                    <CreateField label="内存限制 (limit)" compact>
+                      <Input value={activeContainer.memoryLimit} onChange={(event) => updateContainer({ memoryLimit: event.target.value })} placeholder="512Mi" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                    </CreateField>
+                  </div>
+                  <div>
+                    <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-[#1e6bff]">
+                      <input type="checkbox" checked={activeContainer.gpuEnabled} onChange={(event) => updateContainer({ gpuEnabled: event.target.checked })} className="h-4 w-4 rounded border-[#9ca3af] accent-[#1a73e8]" />
+                      启用 GPU
+                    </label>
+                    {activeContainer.gpuEnabled && (
+                      <div className="mt-3 grid grid-cols-2 gap-3 pl-5">
+                        <CreateField label="GPU 类型" compact>
+                          <Input value={activeContainer.gpuType} onChange={(event) => updateContainer({ gpuType: event.target.value })} placeholder="nvidia.com/gpu" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                        </CreateField>
+                        <CreateField label="GPU 数量" compact>
+                          <Input type="number" min={1} value={activeContainer.gpuCount} onChange={(event) => updateContainer({ gpuCount: Math.max(1, Number(event.target.value) || 1) })} className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                        </CreateField>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </BatchAccordion>
 
@@ -1134,14 +1158,14 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
         <DialogFooter className="h-16 shrink-0 border-t border-[#f0f1f3] bg-white px-6 py-0">
           <div className="flex w-full items-center justify-between">
             <div>
-              {step > 0 && <button type="button" onClick={() => setStep((current) => current - 1)} className="h-10 rounded-xl border border-[#dfe5ee] bg-white px-5 text-sm font-semibold text-[#111827] hover:bg-[#f8fafc]">上一步</button>}
+              {step > 0 && <button type="button" onClick={() => setStep((current) => current - 1)} className="btn-secondary text-sm">上一步</button>}
             </div>
             <div className="flex items-center gap-3">
-              <button type="button" onClick={close} className="h-10 rounded-xl border border-[#dfe5ee] bg-white px-5 text-sm font-semibold text-[#111827] hover:bg-[#f8fafc]">取消</button>
+              <button type="button" onClick={close} className="btn-secondary text-sm">取消</button>
               {step < 2 ? (
-                <button type="button" onClick={() => canGoNext && setStep((current) => current + 1)} disabled={!canGoNext} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033] disabled:cursor-not-allowed disabled:bg-[#9ca3af]">下一步</button>
+                <button type="button" onClick={() => canGoNext && setStep((current) => current + 1)} disabled={!canGoNext} className="btn-black text-sm disabled:cursor-not-allowed disabled:opacity-45">下一步</button>
               ) : (
-                <button type="button" onClick={() => onCreate(form)} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">创建</button>
+                <button type="button" onClick={() => onCreate(form)} className="btn-black text-sm">创建</button>
               )}
             </div>
           </div>
@@ -1317,8 +1341,9 @@ function displayTime(value?: string) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("zh-CN", { hour12: false });
 }
 
-function BatchWorkloadDetailPage({ item, onBack, onChanged, onDelete }: {
+function BatchWorkloadDetailPage({ item, openDefinitionInitially, onBack, onChanged, onDelete }: {
   item: BatchWorkload;
+  openDefinitionInitially?: boolean;
   onBack: () => void;
   onChanged: () => Promise<void>;
   onDelete: () => Promise<void>;
@@ -1332,7 +1357,7 @@ function BatchWorkloadDetailPage({ item, onBack, onChanged, onDelete }: {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [definitionOpen, setDefinitionOpen] = useState(false);
+  const [definitionOpen, setDefinitionOpen] = useState(Boolean(openDefinitionInitially));
   const [deployOpen, setDeployOpen] = useState(false);
   const [yamlEditorOpen, setYamlEditorOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -1370,18 +1395,18 @@ function BatchWorkloadDetailPage({ item, onBack, onChanged, onDelete }: {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="page-container space-y-5">
       <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
-          <button type="button" onClick={onBack} className="action-button h-12 w-12 rounded-2xl"><ArrowLeft className="h-5 w-5" /></button>
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={onBack} className="action-button"><ArrowLeft className="h-4 w-4" /></button>
           <div>
-            <div className="flex items-center gap-3"><h1 className="text-xl font-semibold text-[#111827]">{detail.name}</h1><LiveStatusBadge status={raw?.status || "pending"} /></div>
-            <p className="mt-1 text-sm text-[var(--color-text-secondary)]">{detail.namespace} · {detail.image || "-"}</p>
+            <div className="flex items-center gap-3"><h1 className="text-lg font-semibold text-[#111827]">{detail.name}</h1><LiveStatusBadge status={raw?.status || "pending"} /></div>
+            <p className="mt-0.5 text-xs text-[var(--color-text-secondary)]">{detail.namespace} · {detail.image || "-"}</p>
           </div>
         </div>
-        <div className="flex items-center gap-3">
-          <button type="button" onClick={() => setDefinitionOpen(true)} className="inline-flex h-11 items-center gap-2 rounded-xl bg-[#0f172a] px-5 text-sm font-semibold text-white hover:bg-[#172033]"><Eye className="h-4 w-4" />查看定义</button>
-          <button type="button" onClick={() => setDeleteOpen(true)} className="inline-flex h-11 items-center gap-2 rounded-xl border border-[#e2e8f0] bg-white px-5 text-sm font-semibold text-[#ef4444] hover:bg-[#fff7f7]"><Trash2 className="h-4 w-4" />删除</button>
+        <div className="flex items-center gap-2">
+          <button type="button" onClick={() => setDefinitionOpen(true)} className="btn-black flex items-center gap-1.5 text-xs"><Eye className="h-[13px] w-[13px]" />查看定义</button>
+          <button type="button" onClick={() => setDeleteOpen(true)} className="btn-danger-outline flex items-center gap-1.5 text-xs"><Trash2 className="h-[13px] w-[13px]" />删除</button>
         </div>
       </div>
 
@@ -1405,9 +1430,9 @@ function BatchWorkloadDetailPage({ item, onBack, onChanged, onDelete }: {
 
       {activeTab === "instances" && (
         <DefinitionSection title="工作负载实例">
-          <div className="mb-4 flex items-center justify-between gap-4">
-            <div className="relative w-[320px]"><Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索工作负载实例" className="h-11 rounded-xl pl-11" /></div>
-            <div className="flex gap-2"><button type="button" onClick={() => void loadDetail()} className="action-button h-11 w-11"><RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /></button><button type="button" onClick={() => setDeployOpen(true)} className="inline-flex h-11 items-center gap-2 rounded-xl bg-[#0f172a] px-5 text-sm font-semibold text-white"><Plus className="h-4 w-4" />新增部署</button></div>
+          <div className="page-toolbar mb-4">
+            <div className="toolbar-search relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索工作负载实例" className="h-9 rounded-[10px] pl-9 text-sm" /></div>
+            <div className="flex gap-2"><button type="button" onClick={() => void loadDetail()} className="action-button" title="刷新"><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /></button><button type="button" onClick={() => setDeployOpen(true)} className="btn-black flex items-center gap-1.5 text-xs"><Plus className="h-3.5 w-3.5" />新增部署</button></div>
           </div>
           <div className="overflow-hidden rounded-2xl border border-[#e8ebf0]">
             <Table><TableHeader><TableRow className="bg-[#fafbfc]"><TableHead className="px-5">工作负载名称</TableHead><TableHead>节点组名称</TableHead><TableHead>实例</TableHead><TableHead>状态</TableHead><TableHead>镜像</TableHead><TableHead className="w-[88px] text-right">操作</TableHead></TableRow></TableHeader>
@@ -1439,7 +1464,7 @@ function BatchWorkloadDetailPage({ item, onBack, onChanged, onDelete }: {
       )}
 
       <DeployDialog item={deployOpen ? detail : null} onOpenChange={setDeployOpen} onCreatePlan={async (plan) => { await addBatchWorkloadDeployments(item.id, plan); setDeployOpen(false); await loadDetail(); await onChanged(); }} />
-      <BatchYamlEditor open={yamlEditorOpen} title="编辑真实 Deployment YAML" defaultValue={raw?.yaml || ""} onSubmit={async (value) => { try { await updateBatchWorkloadYaml(item.id, value); setYamlEditorOpen(false); await loadDetail(); await onChanged(); } catch (err) { setError(err instanceof Error ? err.message : "YAML 更新失败"); } }} onCancel={() => setYamlEditorOpen(false)} />
+      <BatchYamlEditor open={yamlEditorOpen} title="编辑 YAML" defaultValue={raw?.yaml || ""} onSubmit={async (value) => { try { await updateBatchWorkloadYaml(item.id, value); setYamlEditorOpen(false); await loadDetail(); await onChanged(); } catch (err) { setError(err instanceof Error ? err.message : "YAML 更新失败"); } }} onCancel={() => setYamlEditorOpen(false)} />
       <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>确认删除批量工作负载？</AlertDialogTitle><AlertDialogDescription>将删除该批次下所有真实 Deployment 和平台控制记录，操作不可恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction className="bg-[#ef4444] hover:bg-[#dc2626]" onClick={() => void onDelete()}>确认删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
       <AlertDialog open={!!deploymentToDelete} onOpenChange={(open) => !open && setDeploymentToDelete(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>确认删除 Deployment？</AlertDialogTitle><AlertDialogDescription>将从 Kubernetes 删除真实资源 <span className="font-semibold text-[#111827]">{deploymentToDelete}</span>，对应节点组之后可以重新新增部署。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction className="bg-[#ef4444] hover:bg-[#dc2626]" onClick={async () => { if (!deploymentToDelete) return; try { await deleteBatchWorkloadDeployment(item.id, deploymentToDelete); setDeploymentToDelete(null); await loadDetail(); await onChanged(); } catch (err) { setError(err instanceof Error ? err.message : "Deployment 删除失败"); } }}>确认删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </div>
@@ -1531,18 +1556,18 @@ function BatchWorkloadDefinitionPage({ item, onBack, onEditYaml, onChanged }: { 
   };
 
   return (
-    <div className="space-y-5">
+    <div className="page-container space-y-5">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <button type="button" onClick={onBack} className="action-button h-12 w-12 rounded-2xl"><ArrowLeft className="h-5 w-5" /></button>
+          <button type="button" onClick={onBack} className="action-button"><ArrowLeft className="h-4 w-4" /></button>
           <div>
             <h1 className="text-lg font-semibold text-[#111827]">查看定义</h1>
             <p className="mt-1 text-xs text-[var(--color-text-secondary)]">{item.name}</p>
           </div>
         </div>
-        <button type="button" onClick={onEditYaml} className="inline-flex h-12 items-center gap-2 rounded-2xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">
-          <Pencil className="h-4 w-4" />
-          编辑 YAML
+        <button type="button" onClick={onEditYaml} className="btn-black flex items-center gap-1.5 text-xs">
+          <Pencil className="h-[13px] w-[13px]" />
+          编辑YAML
         </button>
       </div>
 
@@ -1570,7 +1595,7 @@ function BatchWorkloadDefinitionPage({ item, onBack, onEditYaml, onChanged }: { 
                 key={tab.id}
                 type="button"
                 onClick={() => setContainerTab(tab.id)}
-                className={cn("h-10 rounded-xl border px-4 text-sm font-semibold", containerTab === tab.id ? "border-[#0f172a] bg-[#0f172a] text-white" : "border-[#e2e8f0] bg-white text-[#64748b]")}
+                className={containerTab === tab.id ? "btn-tab-active" : "btn-tab"}
               >
                 {tab.label}
               </button>
@@ -1587,7 +1612,7 @@ function BatchWorkloadDefinitionPage({ item, onBack, onEditYaml, onChanged }: { 
       )}
 
       {activeTab === "labels" && (
-        <DefinitionSection title="标签与注解">
+        <DefinitionSection title="标签与注解" onEdit={onEditYaml}>
           <div className="grid grid-cols-2 gap-4">
             {[["工作负载标签", workloadLabels], ["容器组标签", podLabels], ["工作负载注释", workloadAnnotations], ["容器组注释", podAnnotations]].map(([label, values]) => (
               <div key={String(label)} className="rounded-2xl border border-[#f0f1f3] bg-[#f8f9fb] p-4">
@@ -1602,7 +1627,7 @@ function BatchWorkloadDefinitionPage({ item, onBack, onEditYaml, onChanged }: { 
       )}
 
       {activeTab === "access" && (
-        <DefinitionSection title="访问配置">
+        <DefinitionSection title="访问配置" onEdit={onEditYaml}>
           <div className="grid grid-cols-2 gap-4">
             <InfoField label="网络模式" value={podSpec.hostNetwork ? "HostNetwork" : "Pod 网络"} />
             <InfoField label="DNS 策略" value={planValue(podSpec.dnsPolicy)} />
@@ -1631,10 +1656,10 @@ function BatchWorkloadDefinitionPage({ item, onBack, onEditYaml, onChanged }: { 
 
 function DefinitionSection({ title, children, onEdit }: { title: string; children: ReactNode; onEdit?: () => void }) {
   return (
-    <section className="rounded-3xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-      <div className="mb-5 flex items-center justify-between">
-        <h3 className="text-base font-semibold text-[#111827]">{title}</h3>
-        {onEdit && <button type="button" onClick={onEdit} className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#dfe5ee] bg-white px-4 text-sm font-semibold text-[#111827] hover:bg-[#f8fafc]"><Pencil className="h-4 w-4" />编辑</button>}
+    <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-[#111827]">{title}</h3>
+        {onEdit && <button type="button" onClick={onEdit} className="btn-secondary flex items-center gap-1.5 text-xs"><Pencil className="h-3 w-3" />编辑</button>}
       </div>
       {children}
     </section>
@@ -1643,7 +1668,7 @@ function DefinitionSection({ title, children, onEdit }: { title: string; childre
 
 function DefinitionTab({ active, icon, label, onClick }: { active: boolean; icon: ReactNode; label: string; onClick: () => void }) {
   return (
-    <button type="button" onClick={onClick} className={cn("inline-flex h-12 items-center gap-2 rounded-xl border px-5 text-sm font-semibold", active ? "border-[#0f172a] bg-[#0f172a] text-white" : "border-[#e2e8f0] bg-white text-[#64748b]")}>
+    <button type="button" onClick={onClick} className={active ? "btn-tab-active" : "btn-tab"}>
       {icon}
       {label}
     </button>
@@ -1654,7 +1679,7 @@ function InfoField({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="min-w-0">
       <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">{label}</p>
-      <div className="break-all text-sm font-semibold text-[#111827]">{value}</div>
+      <div className="break-all text-sm font-medium text-[#111827]">{value}</div>
     </div>
   );
 }
@@ -1667,9 +1692,9 @@ function DefinitionGrid({ items }: { items: [string, ReactNode][] }) {
   return (
     <div className="grid grid-cols-2 gap-3">
       {items.map(([label, value]) => (
-        <div key={label} className="rounded-xl border border-[#eef1f5] bg-white px-4 py-3">
+        <div key={label} className="rounded-lg border border-[#eef1f5] bg-white px-3 py-2">
           <p className="mb-1 text-xs text-[var(--color-text-tertiary)]">{label}</p>
-          <div className="text-sm font-semibold text-[#111827]">{value}</div>
+          <div className="text-xs font-medium text-[#111827]">{value}</div>
         </div>
       ))}
     </div>
@@ -1836,7 +1861,7 @@ spec:
   return (
     <>
       <Dialog open={!!item} onOpenChange={onOpenChange}>
-        <DialogContent className="!flex max-h-[min(800px,calc(100vh-48px))] w-[min(600px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.14)]" showCloseButton={false}>
+        <DialogContent className="!flex max-h-[min(800px,calc(100vh-48px))] w-[min(600px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.14)] sm:max-w-none" showCloseButton={false}>
           <DialogHeader className="h-[68px] shrink-0 border-b border-[#eef1f5] px-6 py-0">
             <div className="flex h-full items-center justify-between">
               <div className="min-w-0">
@@ -1907,9 +1932,9 @@ spec:
                   <button type="button" onClick={() => setReplicaEditable(true)} className="text-xs font-semibold text-[#1e6bff]">修改</button>
                 </div>
                 <div className="flex items-start gap-2">
-                  <button type="button" disabled={!replicaEditable} onClick={() => setReplicas(String(Math.max(1, Number(replicas || 1) - 1)))} className="h-10 w-10 rounded-xl border border-[#e2e8f0] bg-white text-sm disabled:opacity-50">-</button>
-                  <Input type="number" min={1} disabled={!replicaEditable} value={replicas} onChange={(event) => setReplicas(event.target.value)} className="h-10 flex-1 rounded-xl border-2 border-[#e2e8f0] bg-white px-3 text-sm disabled:bg-[#f8fafc]" />
-                  <button type="button" disabled={!replicaEditable} onClick={() => setReplicas(String(Math.max(1, Number(replicas || 0) + 1)))} className="h-10 w-10 rounded-xl border border-[#e2e8f0] bg-white text-sm disabled:opacity-50">+</button>
+                  <button type="button" disabled={!replicaEditable} onClick={() => setReplicas(String(Math.max(1, Number(replicas || 1) - 1)))} className="h-[38px] w-[38px] rounded-[10px] border border-[#e2e8f0] bg-white text-sm disabled:opacity-55">-</button>
+                  <Input type="number" min={1} disabled={!replicaEditable} value={replicas} onChange={(event) => setReplicas(event.target.value)} className="h-[38px] flex-1 rounded-[10px] border border-[#e2e8f0] bg-white px-3 text-sm disabled:bg-[#f8fafc]" />
+                  <button type="button" disabled={!replicaEditable} onClick={() => setReplicas(String(Math.max(1, Number(replicas || 0) + 1)))} className="h-[38px] w-[38px] rounded-[10px] border border-[#e2e8f0] bg-white text-sm disabled:opacity-55">+</button>
                 </div>
                 {showErrors && (!replicas.trim() || Number(replicas) <= 0) && <p className="mt-1 text-xs text-[#ef4444]">实例数必须为正整数</p>}
               </div>
@@ -1931,66 +1956,66 @@ spec:
               </div>
 
               <DeployDiffModule title="容器镜像" defaultOpen error={showErrors && !activeContainer?.image ? "值不能为空" : undefined} onViewYaml={() => setYamlPreview({ title: "容器镜像 YAML", yaml: buildDeployPatchYaml("容器镜像") })}>
-                <div className="space-y-5">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div><DeployFieldLabel label="容器名称" /><Input value={activeContainer?.name || ""} onChange={(event) => updateActiveContainer({ name: event.target.value })} className="h-12 rounded-xl border-2" /></div>
-                    <div><DeployFieldLabel label="拉取策略" /><select value={activeContainer?.imagePullPolicy || "IfNotPresent"} onChange={(event) => updateActiveContainer({ imagePullPolicy: event.target.value as DeployContainerForm["imagePullPolicy"] })} className="blueedge-native-select h-12 w-full rounded-xl border-2"><option value="IfNotPresent">IfNotPresent</option><option value="Always">Always</option><option value="Never">Never</option></select></div>
+                <div className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div><DeployFieldLabel label="容器名称" /><Input value={activeContainer?.name || ""} onChange={(event) => updateActiveContainer({ name: event.target.value })} className="h-[38px] rounded-[10px] border border-[#e2e8f0] text-sm" /></div>
+                    <div><DeployFieldLabel label="拉取策略" /><select value={activeContainer?.imagePullPolicy || "IfNotPresent"} onChange={(event) => updateActiveContainer({ imagePullPolicy: event.target.value as DeployContainerForm["imagePullPolicy"] })} className="blueedge-native-select h-[38px] w-full rounded-[10px] border border-[#e2e8f0] px-3 text-sm"><option value="IfNotPresent">IfNotPresent</option><option value="Always">Always</option><option value="Never">Never</option></select></div>
                   </div>
                   <div>
                     <DeployFieldLabel label="期望镜像" />
-                    <Input value={activeContainer?.image || ""} onChange={(event) => updateActiveContainer({ image: event.target.value })} placeholder="请输入镜像，例如 nginx:1.25" className={cn("h-12 rounded-xl border-2", showErrors && !activeContainer?.image && "border-[#ef4444]")} />
+                    <Input value={activeContainer?.image || ""} onChange={(event) => updateActiveContainer({ image: event.target.value })} placeholder="请输入镜像，例如 nginx:1.25" className={cn("h-[38px] rounded-[10px] border border-[#e2e8f0] text-sm", showErrors && !activeContainer?.image && "border-[#ef4444]")} />
                   </div>
                 </div>
               </DeployDiffModule>
 
               <DeployDiffModule title="资源配额" onViewYaml={() => setYamlPreview({ title: "资源配额 YAML", yaml: buildDeployPatchYaml("资源配额") })}>
-                <div className="space-y-5">
-                  <div className="rounded-xl border border-[#e5e7eb] bg-[#f8fafc] px-4 py-3">
-                    <p className="text-sm font-semibold text-[#111827]">CPU / 内存配置说明</p>
-                    <p className="mt-2 text-sm leading-7 text-[var(--color-text-secondary)]">建议根据实际使用情况设置请求值和限制值，防止因计算或内存资源不足导致应用不可用或无法调度。</p>
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-[#e5e7eb] bg-[#f8fafc] px-3 py-2">
+                    <p className="mb-1 text-xs font-medium text-[#111827]">CPU / 内存配置说明</p>
+                    <p className="text-[11px] leading-5 text-[var(--color-text-secondary)]">建议根据实际使用情况设置请求值和限制值，防止因计算或内存资源不足导致应用不可用或无法调度。</p>
                   </div>
                   <div>
-                    <h4 className="mb-3 text-sm font-semibold text-[#111827]">CPU 配额</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div><DeployFieldLabel label="请求值" /><Input value={activeContainer?.cpuRequest || ""} onChange={(event) => updateActiveContainer({ cpuRequest: event.target.value })} placeholder="100m" className="h-12 rounded-xl border-2" /></div>
-                      <div><DeployFieldLabel label="限制值" /><Input value={activeContainer?.cpuLimit || ""} onChange={(event) => updateActiveContainer({ cpuLimit: event.target.value })} placeholder="500m" className="h-12 rounded-xl border-2" /></div>
+                    <h4 className="mb-2 text-xs font-medium text-[#111827]">CPU 配额</h4>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div><DeployFieldLabel label="请求值" /><Input value={activeContainer?.cpuRequest || ""} onChange={(event) => updateActiveContainer({ cpuRequest: event.target.value })} placeholder="100m" className="h-[38px] rounded-[10px] border border-[#e2e8f0] text-sm" /></div>
+                      <div><DeployFieldLabel label="限制值" /><Input value={activeContainer?.cpuLimit || ""} onChange={(event) => updateActiveContainer({ cpuLimit: event.target.value })} placeholder="500m" className="h-[38px] rounded-[10px] border border-[#e2e8f0] text-sm" /></div>
                     </div>
                   </div>
                   <div>
-                    <h4 className="mb-3 text-sm font-semibold text-[#111827]">内存配额</h4>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div><DeployFieldLabel label="请求值" /><Input value={activeContainer?.memoryRequest || ""} onChange={(event) => updateActiveContainer({ memoryRequest: event.target.value })} placeholder="128Mi" className="h-12 rounded-xl border-2" /></div>
-                      <div><DeployFieldLabel label="限制值" /><Input value={activeContainer?.memoryLimit || ""} onChange={(event) => updateActiveContainer({ memoryLimit: event.target.value })} placeholder="256Mi" className="h-12 rounded-xl border-2" /></div>
+                    <h4 className="mb-2 text-xs font-medium text-[#111827]">内存配额</h4>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div><DeployFieldLabel label="请求值" /><Input value={activeContainer?.memoryRequest || ""} onChange={(event) => updateActiveContainer({ memoryRequest: event.target.value })} placeholder="128Mi" className="h-[38px] rounded-[10px] border border-[#e2e8f0] text-sm" /></div>
+                      <div><DeployFieldLabel label="限制值" /><Input value={activeContainer?.memoryLimit || ""} onChange={(event) => updateActiveContainer({ memoryLimit: event.target.value })} placeholder="256Mi" className="h-[38px] rounded-[10px] border border-[#e2e8f0] text-sm" /></div>
                     </div>
                   </div>
-                  <div className="rounded-xl border border-[#fde68a] bg-[#fffbeb] px-4 py-3">
-                    <div className="flex items-center justify-between gap-4">
+                  <div className="rounded-lg border border-[#fde68a] bg-[#fffbeb] px-3 py-2">
+                    <div className="flex items-center justify-between gap-3">
                       <div>
-                        <p className="text-sm font-semibold text-[#92400e]">GPU 配额</p>
-                        <p className="mt-2 text-sm leading-7 text-[#92400e]">集群未启用 GPU 卡，如需使用 GPU 算力，请前往集群启用 GPU。</p>
+                        <p className="text-xs font-medium text-[#92400e]">GPU 配额</p>
+                        <p className="mt-1 text-[11px] leading-5 text-[#92400e]">集群未启用 GPU 卡，如需使用 GPU 算力，请前往集群启用 GPU。</p>
                       </div>
-                      <button type="button" disabled className="shrink-0 cursor-not-allowed text-sm font-semibold text-[#92400e] opacity-70" title="当前版本暂未支持 GPU 计划字段">暂未支持</button>
+                      <button type="button" disabled className="shrink-0 cursor-not-allowed text-xs font-medium text-[#92400e] opacity-70" title="当前版本暂未支持 GPU 计划字段">暂未支持</button>
                     </div>
                   </div>
                 </div>
               </DeployDiffModule>
 
               <DeployDiffModule title="环境变量" onViewYaml={() => setYamlPreview({ title: "环境变量 YAML", yaml: buildDeployPatchYaml("环境变量") })}>
-                <div className="space-y-5">
-                  {(activeContainer?.envs || []).map((env) => <div key={env.id} className="grid grid-cols-[1fr_1fr_48px] gap-3"><Input value={env.key} onChange={(event) => updateActiveContainer({ envs: activeContainer.envs.map((item) => item.id === env.id ? { ...item, key: event.target.value } : item) })} placeholder="变量名" className="h-12 rounded-xl border-2" /><Input value={env.value} onChange={(event) => updateActiveContainer({ envs: activeContainer.envs.map((item) => item.id === env.id ? { ...item, value: event.target.value } : item) })} placeholder="值" className="h-12 rounded-xl border-2" /><button type="button" onClick={() => updateActiveContainer({ envs: activeContainer.envs.filter((item) => item.id !== env.id) })} className="action-button h-12 w-12 rounded-xl"><Trash2 className="h-4 w-4" /></button></div>)}
-                  <button type="button" onClick={() => updateActiveContainer({ envs: [...(activeContainer?.envs || []), { id: `env-${Date.now()}`, key: "", value: "" }] })} className="inline-flex h-10 items-center gap-2 rounded-xl border px-4 text-sm font-semibold"><Plus className="h-4 w-4" />新增环境变量</button>
+                <div className="space-y-3">
+                  {(activeContainer?.envs || []).map((env) => <div key={env.id} className="grid grid-cols-[1fr_1fr_36px] gap-2"><Input value={env.key} onChange={(event) => updateActiveContainer({ envs: activeContainer.envs.map((item) => item.id === env.id ? { ...item, key: event.target.value } : item) })} placeholder="变量名" className="h-[38px] rounded-[10px] border border-[#e2e8f0] text-sm" /><Input value={env.value} onChange={(event) => updateActiveContainer({ envs: activeContainer.envs.map((item) => item.id === env.id ? { ...item, value: event.target.value } : item) })} placeholder="值" className="h-[38px] rounded-[10px] border border-[#e2e8f0] text-sm" /><button type="button" onClick={() => updateActiveContainer({ envs: activeContainer.envs.filter((item) => item.id !== env.id) })} className="action-button h-9 w-9"><Trash2 className="h-3.5 w-3.5" /></button></div>)}
+                  <button type="button" onClick={() => updateActiveContainer({ envs: [...(activeContainer?.envs || []), { id: `env-${Date.now()}`, key: "", value: "" }] })} className="btn-secondary inline-flex items-center gap-1.5 text-xs"><Plus className="h-3.5 w-3.5" />新增环境变量</button>
                 </div>
               </DeployDiffModule>
 
               <DeployDiffModule title="启动命令" onViewYaml={() => setYamlPreview({ title: "启动命令 YAML", yaml: buildDeployPatchYaml("启动命令") })}>
-                <div className="space-y-6">
+                <div className="space-y-4">
                   <div>
-                    <h4 className="mb-3 text-sm font-semibold text-[#111827]">运行命令</h4>
-                    <Input value={activeContainer?.command || ""} onChange={(event) => updateActiveContainer({ command: event.target.value })} placeholder="例如 /bin/sh -c" className="h-12 rounded-xl border-2" />
+                    <h4 className="mb-2 text-xs font-medium text-[#111827]">运行命令</h4>
+                    <Input value={activeContainer?.command || ""} onChange={(event) => updateActiveContainer({ command: event.target.value })} placeholder="例如 /bin/sh -c" className="h-[38px] rounded-[10px] border border-[#e2e8f0] text-sm" />
                   </div>
                   <div>
-                    <h4 className="mb-3 text-sm font-semibold text-[#111827]">运行参数</h4>
-                    <Input value={activeContainer?.args || ""} onChange={(event) => updateActiveContainer({ args: event.target.value })} placeholder="例如 echo start" className="h-12 rounded-xl border-2" />
+                    <h4 className="mb-2 text-xs font-medium text-[#111827]">运行参数</h4>
+                    <Input value={activeContainer?.args || ""} onChange={(event) => updateActiveContainer({ args: event.target.value })} placeholder="例如 echo start" className="h-[38px] rounded-[10px] border border-[#e2e8f0] text-sm" />
                   </div>
                 </div>
               </DeployDiffModule>
@@ -2007,7 +2032,7 @@ spec:
       </Dialog>
 
       <Dialog open={groupPickerOpen} onOpenChange={setGroupPickerOpen}>
-        <DialogContent className="!flex max-h-[min(720px,calc(100vh-64px))] w-[min(600px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-[20px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)]" showCloseButton={false}>
+        <DialogContent className="!flex max-h-[min(720px,calc(100vh-64px))] w-[min(600px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-[20px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)] sm:max-w-none" showCloseButton={false}>
           <DialogHeader className="h-16 shrink-0 border-b border-[#eef1f5] px-6 py-0">
             <div className="flex h-full items-center justify-between">
               <DialogTitle className="text-base font-semibold text-[#111827]">选择边缘节点组</DialogTitle>
@@ -2069,27 +2094,34 @@ spec:
 function DeployDiffModule({ title, children, error, defaultOpen = false, onViewYaml }: { title: string; children: ReactNode; error?: string; defaultOpen?: boolean; onViewYaml?: () => void }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <div className={cn("overflow-hidden rounded-2xl border bg-white", error ? "border-[#ef4444]" : "border-[#e5e7eb]")}>
-      <div className="flex min-h-[72px] items-center justify-between gap-4 border-b border-[#eef1f5] px-5 py-4">
-        <button type="button" onClick={() => setOpen((current) => !current)} className="flex min-w-0 items-center gap-4 text-left">
-          <ChevronDown className={cn("h-4 w-4 shrink-0 text-[#64748b] transition-transform", open && "rotate-180")} />
-          <span className="truncate text-lg font-semibold text-[#111827]">{title}</span>
+    <div className={cn("overflow-hidden rounded-xl border bg-white", error ? "border-[#ef4444]" : "border-[#e5e7eb]")}>
+      <div className={cn("flex items-center justify-between gap-3 px-4 py-3", open && "border-b border-[#f1f5f9]")}>
+        <button type="button" onClick={() => setOpen((current) => !current)} className="flex min-w-0 items-center gap-2 text-left">
+          <ChevronDown className={cn("h-[15px] w-[15px] shrink-0 text-[#64748b] transition-transform", open && "rotate-180")} />
+          <span className="truncate text-sm font-semibold text-[#111827]">{title}</span>
         </button>
         {onViewYaml && (
-          <button type="button" onClick={onViewYaml} className="inline-flex h-12 shrink-0 items-center gap-2 rounded-xl border border-[#dfe5ee] bg-white px-5 text-sm font-semibold text-[#111827] hover:bg-[#f8fafc]">
-            <FileCode2 className="h-4 w-4" />
+          <button type="button" onClick={onViewYaml} className="btn-secondary inline-flex shrink-0 items-center gap-1.5 text-xs">
+            <FileCode2 className="h-3 w-3" />
             查看 YAML
           </button>
         )}
       </div>
       {error && <p className="-mt-1 px-4 pb-2 text-xs text-[#ef4444]">{error}</p>}
-      {open && <div className="px-5 pb-8 pt-4">{children}</div>}
+      {open && (
+        <div className="px-4 pb-4 pt-3">
+          {children}
+          <div className="mt-4 flex items-center justify-end">
+            <button type="button" onClick={() => setOpen(false)} className="btn-black text-xs" style={{ height: 32, padding: "0 14px" }}>确认</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 function DeployFieldLabel({ label }: { label: string }) {
-  return <Label className="mb-2 block text-sm font-medium text-[#4b5563]">{label}</Label>;
+  return <Label className="mb-1.5 block text-xs font-normal text-[var(--color-text-secondary)]">{label}</Label>;
 }
 
 function CreateField({ label, required, children, compact = false }: { label: string; required?: boolean; children: ReactNode; compact?: boolean }) {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowRight,
@@ -194,16 +194,26 @@ function Capability({ label, enabled }: { label: string; enabled: boolean }) {
 function CreateStepper({ step }: { step: number }) {
   const labels = ["选择类型", "基本信息", "高级设置"];
   return (
-    <div className="flex items-center justify-center px-6 py-1">
+    <div className="flex items-center justify-center">
       {labels.map((label, index) => {
         const current = step === index + 1;
         const active = step >= index + 1;
         return (
           <div key={label} className="flex items-center">
-            {index > 0 && <div className={cn("mx-2 h-0.5 w-10 rounded-full", step > index ? "bg-[var(--color-text-primary)]" : "bg-[var(--color-border-strong)]")} />}
-            <div className="flex items-center gap-2">
-              <span className={cn("flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold", active ? "bg-[var(--color-text-primary)] text-white" : "bg-[var(--color-bg-soft)] text-[var(--color-text-tertiary)]", current && "ring-2 ring-[var(--color-brand)] ring-offset-2")}>{index + 1}</span>
-              <span className={cn("text-sm font-semibold", current || active ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-tertiary)]")}>{label}</span>
+            {index > 0 && <div className={cn("mx-1 h-0.5 w-8", step > index ? "bg-[var(--color-text-primary)]" : "bg-[var(--color-border-strong)]")} />}
+            <div className="flex items-center gap-1.5">
+              <span
+                className={cn(
+                  "flex h-6 w-6 items-center justify-center rounded-full border-2 text-xs font-semibold",
+                  active
+                    ? "border-[var(--color-text-primary)] bg-[var(--color-text-primary)] text-white"
+                    : "border-[var(--color-bg-soft)] bg-[var(--color-bg-soft)] text-[var(--color-text-tertiary)]",
+                  current && "border-[var(--color-brand)]"
+                )}
+              >
+                {index + 1}
+              </span>
+              <span className={cn("text-sm font-medium", active ? "text-[var(--color-text-primary)]" : "text-[var(--color-text-tertiary)]")}>{label}</span>
             </div>
           </div>
         );
@@ -238,8 +248,8 @@ function TypeOption({
         <Icon className="h-7 w-7" />
       </div>
       <div className="pr-6">
-        <div className="text-sm font-bold text-[var(--color-text-primary)]">{title}</div>
-        <p className="mt-1 text-xs leading-5 text-[var(--color-text-secondary)]">{desc}</p>
+        <div className="text-sm font-semibold text-[var(--color-text-primary)]">{title}</div>
+        <p className="mt-1 text-xs leading-relaxed text-[var(--color-text-secondary)]">{desc}</p>
       </div>
       <span className={cn("absolute right-4 top-4 flex h-4 w-4 items-center justify-center rounded-full border-2", selected ? "border-[var(--color-text-primary)]" : "border-[var(--color-border-strong)]")}>
         {selected && <span className="h-2 w-2 rounded-full bg-[var(--color-text-primary)]" />}
@@ -263,7 +273,7 @@ function FormField({
 }) {
   return (
     <div>
-      <label className="mb-1.5 flex items-center gap-1 text-sm font-semibold text-[var(--color-text-primary)]">
+      <label className="mb-1.5 flex items-center gap-1 text-sm font-medium text-[var(--color-text-primary)]">
         {label}
         {required && <span className="text-[var(--color-danger)]">*</span>}
       </label>
@@ -274,17 +284,17 @@ function FormField({
   );
 }
 
-function SegmentButton({ selected, children, onClick }: { selected: boolean; children: React.ReactNode; onClick: () => void }) {
+function SegmentButton({ selected, children, onClick, showCheck = false }: { selected: boolean; children: React.ReactNode; onClick: () => void; showCheck?: boolean }) {
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        "flex h-10 flex-1 items-center justify-center gap-2 rounded-[10px] border-2 px-4 text-sm font-semibold transition-all",
+        "flex h-9 flex-1 items-center justify-center gap-2 rounded-[10px] border-2 px-4 text-sm font-medium transition-all",
         selected ? "border-[var(--color-text-primary)] bg-[var(--color-text-primary)] text-white" : "border-[var(--color-input-border)] bg-white text-[var(--color-text-primary)] hover:border-[var(--color-input-border-hover)]"
       )}
     >
-      {selected && <CheckCircle2 className="h-3.5 w-3.5" />}
+      {selected && showCheck && <CheckCircle2 className="h-3.5 w-3.5" />}
       {children}
     </button>
   );
@@ -309,6 +319,12 @@ function CreateEdgeUnitDialog({
   const [form, setForm] = useState<CreateForm>(defaultCreateForm);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showScaleTip, setShowScaleTip] = useState(false);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    bodyRef.current?.scrollTo({ top: 0 });
+  }, [open, step]);
 
   const updateForm = <K extends keyof CreateForm>(key: K, value: CreateForm[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -367,17 +383,17 @@ function CreateEdgeUnitDialog({
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (nextOpen ? onOpenChange(true) : resetAndClose())}>
-      <DialogContent className="!flex h-[860px] max-h-[92vh] max-w-[600px] flex-col gap-0 overflow-hidden p-0" showCloseButton>
-        <DialogHeader className="border-b border-[var(--color-border)] px-6 py-4">
-          <DialogTitle>创建边缘单元</DialogTitle>
+      <DialogContent className="!flex max-h-[92vh] w-[calc(100%-2rem)] max-w-[600px] flex-col gap-0 overflow-hidden rounded-2xl p-0" showCloseButton>
+        <DialogHeader className="shrink-0 border-b border-[var(--color-border)] px-6 py-4">
+          <DialogTitle className="text-base font-semibold">创建边缘单元</DialogTitle>
         </DialogHeader>
-        <div className="px-6 py-4">
+        <div className="shrink-0 px-6 py-4">
           <CreateStepper step={step} />
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-6">
+        <div ref={bodyRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-2">
           {step === 1 && (
-            <div className="space-y-5">
+            <div className="space-y-5 pb-2">
               <p className="text-center text-sm text-[var(--color-text-secondary)]">请选择要创建的边缘单元类型</p>
               <div className="grid grid-cols-2 gap-3">
                 <TypeOption selected={form.unitType === "专有"} onClick={() => updateForm("unitType", "专有")} icon={Server} title="专有边缘单元" desc="在指定集群上部署完整的 KubeEdge 云端组件，适用于需要独立控制的场景。" />
@@ -411,15 +427,15 @@ function CreateEdgeUnitDialog({
                 </FormField>
               </div>
               <FormField label="边缘节点规模">
+                <button type="button" className="mb-2 inline-flex items-center gap-1 text-xs font-medium text-[var(--color-text-tertiary)]" onClick={() => setShowScaleTip(!showScaleTip)}>
+                  <HelpCircle className="h-3.5 w-3.5" />
+                  {showScaleTip ? scaleTips[form.nodeScale] : "查看规模说明"}
+                </button>
                 <div className="flex gap-3">
                   {(["小型", "中型", "大型"] as const).map((scale) => (
                     <SegmentButton key={scale} selected={form.nodeScale === scale} onClick={() => updateForm("nodeScale", scale)}>{scale}</SegmentButton>
                   ))}
                 </div>
-                <button type="button" className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-[var(--color-text-tertiary)]" onClick={() => setShowScaleTip(!showScaleTip)}>
-                  <HelpCircle className="h-3.5 w-3.5" />
-                  {showScaleTip ? scaleTips[form.nodeScale] : "查看规模说明"}
-                </button>
               </FormField>
               <FormField label="MQTT 服务">
                 <div className="flex items-center gap-3">
@@ -440,7 +456,7 @@ function CreateEdgeUnitDialog({
               <FormField label="组件通信协议" remark="云边信令通道通信协议，云边网络经常不稳定时，推荐使用 QUIC 协议">
                 <div className="grid grid-cols-2 gap-3">
                   {["WebSocket", "QUIC"].map((protocol) => (
-                    <SegmentButton key={protocol} selected={form.protocols.includes(protocol)} onClick={() => toggleProtocol(protocol)}>{protocol}</SegmentButton>
+                    <SegmentButton key={protocol} selected={form.protocols.includes(protocol)} onClick={() => toggleProtocol(protocol)} showCheck>{protocol}</SegmentButton>
                   ))}
                 </div>
               </FormField>
@@ -472,8 +488,8 @@ function CreateEdgeUnitDialog({
                     ["tunnel", "Tunnel"],
                   ] as const).map(([key, label]) => (
                     <div key={key}>
-                      <label className="mb-1.5 block text-sm font-medium text-[var(--color-text-secondary)]">{label}</label>
-                      <Input className="h-10 text-center text-base" value={form.ports[key]} onChange={(event) => updateForm("ports", { ...form.ports, [key]: event.target.value })} />
+                      <label className="mb-1.5 block text-xs font-medium text-[var(--color-text-secondary)]">{label}</label>
+                      <Input type="number" min="0" max="65535" className="text-center" value={form.ports[key]} onChange={(event) => updateForm("ports", { ...form.ports, [key]: event.target.value })} />
                     </div>
                   ))}
                 </div>
@@ -490,22 +506,6 @@ function CreateEdgeUnitDialog({
                   ))}
                 </div>
               </FormField>
-              <div className="grid grid-cols-2 gap-4">
-                <FormField label="Insight 状态">
-                  <select className="blueedge-native-select" value={form.insightStatus} onChange={(event) => updateForm("insightStatus", event.target.value as CreateForm["insightStatus"])}>
-                    <option value="unknown">未配置</option>
-                    <option value="installed">已安装</option>
-                    <option value="notInstalled">未安装</option>
-                  </select>
-                </FormField>
-                <FormField label="Monitor 状态">
-                  <select className="blueedge-native-select" value={form.monitorStatus} onChange={(event) => updateForm("monitorStatus", event.target.value as CreateForm["monitorStatus"])}>
-                    <option value="unknown">未配置</option>
-                    <option value="installed">已安装</option>
-                    <option value="notInstalled">未安装</option>
-                  </select>
-                </FormField>
-              </div>
               {errors.submit && <p className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-3 py-2 text-xs text-[#c2410c]">{errors.submit}</p>}
             </div>
           )}

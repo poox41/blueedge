@@ -17,7 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toAccessConfigUiModel, type AccessConfigInstallCommandResponse, type AccessConfigUiModel } from "@/api/adapters/access-config.adapter";
-import { getAccessConfigInstallCommand, listAccessConfigs, updateAccessConfig } from "@/api/services/product";
+import { getAccessConfigInstallCommand, listAccessConfigs } from "@/api/services/product";
 import { cn } from "@/lib/utils";
 
 export function AccessNodePage() {
@@ -45,7 +45,6 @@ export function AccessNodePage() {
       setConfigs(nextConfigs);
       setSelectedConfigId((current) => {
         const nextSelectedConfig = nextConfigs.find((config) => config.name === current) || nextConfigs[0];
-        setNodeName(nextSelectedConfig?.nodeName || "");
         return nextSelectedConfig?.name || "";
       });
     } catch (err) {
@@ -66,24 +65,7 @@ export function AccessNodePage() {
     setError("");
     try {
       const nextNodeName = nodeName.trim();
-      if (nextNodeName && nextNodeName !== selectedConfig.nodeName) {
-        await updateAccessConfig(selectedConfig.name, {
-          edgeUnitRef: selectedConfig.edgeUnitRef,
-          nodeName: nextNodeName,
-          architecture: selectedConfig.architecture,
-          os: selectedConfig.os,
-          kubeEdgeVersion: selectedConfig.kubeEdgeVersion,
-          cloudCoreAddress: selectedConfig.cloudCoreAddress,
-          protocol: selectedConfig.protocol,
-          ...(selectedConfig.driver ? { driver: selectedConfig.driver } : {}),
-          criAddress: selectedConfig.criAddress,
-          registry: selectedConfig.registry,
-          description: selectedConfig.description,
-          labels: selectedConfig.labels,
-        });
-        setConfigs((current) => current.map((config) => config.name === selectedConfig.name ? { ...config, nodeName: nextNodeName } : config));
-      }
-      const result = await getAccessConfigInstallCommand(selectedConfig.name);
+      const result = await getAccessConfigInstallCommand(selectedConfig.name, nextNodeName);
       setInstallCommand(result);
       setStepsOpen(true);
     } catch (err) {
@@ -131,7 +113,7 @@ export function AccessNodePage() {
                 <div className="flex items-center gap-3">
                   <Select value={selectedConfigId} onValueChange={(value) => {
                     setSelectedConfigId(value);
-                    setNodeName(configs.find((config) => config.name === value)?.nodeName || "");
+                    setNodeName("");
                   }}>
                     <SelectTrigger className="h-11 flex-1 rounded-xl">
                       <SelectValue placeholder="请选择接入配置" />
@@ -165,7 +147,7 @@ export function AccessNodePage() {
                 <div>
                   <Label className="mb-2 block text-sm font-semibold text-[var(--color-text-primary)]">节点名称</Label>
                   <Input value={nodeName} onChange={(event) => setNodeName(event.target.value)} placeholder="请输入节点名称" className="h-11 rounded-xl" />
-                  <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">不修改时使用接入配置中的节点名称：{selectedConfig.nodeName}</p>
+                  <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">如果不输入节点名称，将默认使用 hostname 作为节点名称</p>
                 </div>
               )}
               {error && <div className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">{error}</div>}

@@ -56,7 +56,8 @@ export function registerAccessConfigRoutes(app: express.Express) {
   app.get("/blueedge/access-configs/:name/install-command", async (req, res) => {
     try {
       res.setHeader("Cache-Control", "no-store");
-      sendServiceResult(res, await getInstallCommand(req.params.name));
+      const nodeName = typeof req.query.nodeName === "string" ? req.query.nodeName : null;
+      sendServiceResult(res, await getInstallCommand(req.params.name, nodeName));
     } catch (error) {
       res.status(500).json({ message: error instanceof Error ? error.message : "install command API is unavailable" });
     }

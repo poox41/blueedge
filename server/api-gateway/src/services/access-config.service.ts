@@ -248,7 +248,7 @@ function buildPrepareCommand(version: string, architecture: string): string {
   ].join("\n");
 }
 
-function buildJoinCommand(item: ReturnType<typeof buildAccessConfigView>, token: string): string {
+function buildJoinCommand(item: ReturnType<typeof buildAccessConfigView>, token: string, nodeName = item.nodeName): string {
   const runtimeEndpoint = item.criAddress
     ? item.criAddress.includes("://") ? item.criAddress : `unix://${item.criAddress}`
     : "";
@@ -257,7 +257,7 @@ function buildJoinCommand(item: ReturnType<typeof buildAccessConfigView>, token:
     `  --cloudcore-ipport=${item.cloudCoreAddress}`,
     `  --token=${token}`,
     `  --kubeedge-version=${normalizeVersion(item.kubeEdgeVersion)}`,
-    `  --edgenode-name=${item.nodeName}`,
+    ...(nodeName ? [`  --edgenode-name=${nodeName}`] : []),
     ...(item.protocol === "websocket" || item.protocol === "quic" ? [`  --hub-protocol=${item.protocol}`] : []),
     ...(runtimeEndpoint ? [`  --remote-runtime-endpoint=${runtimeEndpoint}`] : []),
     ...(item.driver ? [`  --cgroupdriver=${item.driver === "cgroups" ? "cgroupfs" : "systemd"}`] : []),
@@ -376,7 +376,7 @@ export async function deleteAccessConfig(name: string) {
   };
 }
 
-export async function getInstallCommand(name: string) {
+export async function getInstallCommand(name: string, nodeNameOverride: string | null = null) {
   const warnings: EdgeUnitWarning[] = [];
   const { configMaps, nodes } = await collectAccessConfigSources(warnings);
   const configMap = configMaps.find((item) => accessConfigMatches(item, name));
@@ -384,7 +384,11 @@ export async function getInstallCommand(name: string) {
     return { status: 404, body: { message: `AccessConfig ${name} not found`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
   const item = buildAccessConfigView(configMap, nodes);
-  const commandTemplate = buildJoinCommand(item, "<short-lived-token>");
+  const nodeName = nodeNameOverride === null ? item.nodeName : nodeNameOverride.trim();
+  if (nodeName && !isValidKubernetesName(nodeName)) {
+    return { status: 400, body: { message: "nodeName must be a valid Kubernetes resource name" } };
+  }
+  const commandTemplate = buildJoinCommand(item, "<short-lived-token>", nodeName);
   const prepareCommand = buildPrepareCommand(item.kubeEdgeVersion, item.architecture);
   try {
     const { token, expiresAt } = await getKubeEdgeJoinToken();
@@ -394,7 +398,7 @@ export async function getInstallCommand(name: string) {
         name: item.name,
         ready: true,
         prepareCommand,
-        command: buildJoinCommand(item, token),
+        command: buildJoinCommand(item, token, nodeName),
         commandTemplate,
         missingRequirements: [],
         expiresAt,
