@@ -8,12 +8,13 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { AlertTriangle, Check, Copy, Trash2, ChevronLeft, ChevronRight, Plus, RefreshCw, Search, ArrowLeft, Edit3, Server, X } from "lucide-react";
+import { AlertTriangle, Check, Copy, Trash2, ChevronLeft, ChevronRight, Plus, RefreshCw, Search, ArrowLeft, Edit3, Server, X, Info } from "lucide-react";
 import { createNodeGroupResource, deleteNodeGroupResource, getNodeGroup, listNodeGroups, listNodes, updateNodeGroupResource } from "@/api/services/resources";
 import { getNodeGroupSummary } from "@/api/services/product";
 import type { EdgeNodeView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 import { useNavigate, useParams } from "react-router-dom";
+import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 
 interface NodeGroup {
   name: string; namespace: string; nodes: string[];
@@ -146,11 +147,13 @@ function buildNodeGroupResource(form: NodeGroupForm, base?: KubeResource): KubeR
 }
 
 export function NodeGroups() {
+  const formValidation = useRequiredFieldValidation<"name" | "selector" | "labels" | "nodes">();
   const navigate = useNavigate();
   const { name: detailNameParam } = useParams<{ name?: string }>();
   const detailName = detailNameParam ? decodeURIComponent(detailNameParam) : "";
   const [data, setData] = useState<NodeGroup[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -158,6 +161,9 @@ export function NodeGroups() {
   const [nodeOptions, setNodeOptions] = useState<EdgeNodeView[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [nodePickerOpen, setNodePickerOpen] = useState(false);
+  const [nodePickerSearch, setNodePickerSearch] = useState("");
+  const [nodePickerRefreshing, setNodePickerRefreshing] = useState(false);
+  const [nodePickerDraftNodes, setNodePickerDraftNodes] = useState<string[]>([]);
   const [editingGroup, setEditingGroup] = useState<NodeGroup | null>(null);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<NodeGroup | null>(null);
@@ -166,8 +172,9 @@ export function NodeGroups() {
   const [form, setForm] = useState<NodeGroupForm>({ name: "", nodes: [], matchLabels: [{ ...emptyLabelRow }], selectorType: "", description: "" });
   const pageSize = 10;
 
-  const loadData = useCallback(async () => {
-    setIsLoading(true);
+  const loadData = useCallback(async (preserveCurrentRows = false) => {
+    if (preserveCurrentRows) setIsRefreshing(true);
+    else setIsLoading(true);
     setError("");
     try {
       const [rows, allNodes] = await Promise.all([listNodeGroups(), listNodes()]);
@@ -189,9 +196,10 @@ export function NodeGroups() {
       setPage(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "节点组数据加载失败");
-      setData([]);
+      if (!preserveCurrentRows) setData([]);
     } finally {
-      setIsLoading(false);
+      if (preserveCurrentRows) setIsRefreshing(false);
+      else setIsLoading(false);
     }
   }, [detailName]);
 
@@ -268,14 +276,20 @@ export function NodeGroups() {
     }
   };
   const handleCreate = async () => {
-    setIsLoading(true);
     setError("");
+    const name = form.name.trim();
+    const labelsActive = form.selectorType === "labels" || form.selectorType === "both";
+    const nodesActive = form.selectorType === "nodes" || form.selectorType === "both";
+    const labelsValid = !labelsActive || Object.keys(rowsToLabels(form.matchLabels)).length > 0;
+    const nodesValid = !nodesActive || form.nodes.length > 0;
+    if (!formValidation.validate([
+      { field: "name", valid: Boolean(name) && name.length <= 253 && /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(name), message: name ? "节点组名称格式不正确" : "请输入节点组名称", elementId: "node-group-name" },
+      { field: "selector", valid: Boolean(form.selectorType), message: "请至少启用一种选择方式", elementId: "node-group-selector-labels" },
+      { field: "labels", valid: labelsValid, message: "请至少填写一组完整的标签键值", elementId: "node-group-label-key-0" },
+      { field: "nodes", valid: nodesValid, message: "请至少选择一个边缘节点", elementId: "node-group-select-nodes" },
+    ])) return;
+    setIsLoading(true);
     try {
-      const name = form.name.trim();
-      if (name.length > 253 || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(name)) {
-        setError("节点组名称格式不正确：只能使用小写字母、数字、中划线和点，并且必须以字母或数字开头和结尾。");
-        return;
-      }
       if (!editingGroup && data.some((item) => item.name === name)) {
         setError(`节点组 ${name} 已存在。NodeGroup 是集群级资源，不能通过选择不同命名空间创建同名节点组。`);
         return;
@@ -294,6 +308,7 @@ export function NodeGroups() {
   };
 
   const toggleSelector = (type: "labels" | "nodes") => {
+    formValidation.clearError("selector");
     setForm((current) => {
       const labelsActive = current.selectorType === "labels" || current.selectorType === "both";
       const nodesActive = current.selectorType === "nodes" || current.selectorType === "both";
@@ -304,6 +319,7 @@ export function NodeGroups() {
   };
 
   const openCreate = () => {
+    formValidation.resetErrors();
     setEditingGroup(null);
     setForm({ name: "", nodes: [], matchLabels: [{ ...emptyLabelRow }], selectorType: "", description: "" });
     setCreateOpen(true);
@@ -326,6 +342,35 @@ export function NodeGroups() {
   };
   const labelsActive = form.selectorType === "labels" || form.selectorType === "both";
   const nodesActive = form.selectorType === "nodes" || form.selectorType === "both";
+  const filteredNodeOptions = nodeOptions.filter((node) => node.name.toLowerCase().includes(nodePickerSearch.trim().toLowerCase()));
+  const allVisibleNodesSelected = filteredNodeOptions.length > 0 && filteredNodeOptions.every((node) => nodePickerDraftNodes.includes(node.name));
+  const toggleAllVisibleNodes = () => {
+    const visibleNames = filteredNodeOptions.map((node) => node.name);
+    setNodePickerDraftNodes((current) => allVisibleNodesSelected
+      ? current.filter((name) => !visibleNames.includes(name))
+      : Array.from(new Set([...current, ...visibleNames])));
+  };
+  const openNodePicker = () => {
+    setNodePickerSearch("");
+    setNodePickerDraftNodes(form.nodes);
+    setNodePickerOpen(true);
+  };
+  const confirmNodePicker = () => {
+    setForm((current) => ({ ...current, nodes: nodePickerDraftNodes }));
+    formValidation.clearError("nodes");
+    setNodePickerOpen(false);
+    setNodePickerSearch("");
+  };
+  const refreshNodePicker = async () => {
+    setNodePickerRefreshing(true);
+    try {
+      setNodeOptions(await listNodes());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "边缘节点刷新失败");
+    } finally {
+      setNodePickerRefreshing(false);
+    }
+  };
 
   if (detailName && !selected) {
     return <div className="blueedge-page"><div className="blueedge-empty-state min-h-[320px]"><RefreshCw className="h-5 w-5 animate-spin" /><span className="text-sm">正在加载节点组详情...</span></div></div>;
@@ -363,8 +408,8 @@ export function NodeGroups() {
           />
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => void loadData()} className="blueedge-muted-button h-10 w-10 rounded-xl border-[var(--color-border-strong)] p-0" title="刷新">
-            <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
+          <Button variant="outline" size="sm" onClick={() => void loadData(true)} disabled={isLoading || isRefreshing} className="blueedge-muted-button h-10 w-10 rounded-xl border-[var(--color-border-strong)] p-0" title="刷新">
+            <RefreshCw className={cn("h-4 w-4", (isLoading || isRefreshing) && "animate-spin")} />
           </Button>
           <Button onClick={openCreate} className="blueedge-primary-button h-10 rounded-xl px-4 text-sm">
             <Plus className="h-4 w-4" />
@@ -389,14 +434,18 @@ export function NodeGroups() {
                       节点组名称 <span className="text-[var(--color-danger)]">*</span>
                     </Label>
                     <Input
+                      id="node-group-name"
                       placeholder="production-nodes"
                       value={form.name}
-                      onChange={e => setForm({ ...form, name: e.target.value })}
+                      onChange={e => { setForm({ ...form, name: e.target.value }); formValidation.clearError("name"); }}
+                      aria-invalid={Boolean(formValidation.errors.name)}
+                      aria-describedby={formValidation.errors.name ? "node-group-name-error" : undefined}
                       className="h-10 rounded-xl text-sm"
                     />
                     <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">
                       最长 253 字符，仅支持小写字母、数字、中划线(-)、点(.)
                     </p>
+                    <RequiredFieldError id="node-group-name-error" message={formValidation.errors.name} />
                   </div>
 
                   <div>
@@ -406,6 +455,7 @@ export function NodeGroups() {
                     <div className="space-y-4">
                       <div className={cn("overflow-hidden rounded-xl border-[1.5px] transition-colors", labelsActive ? "border-[#0f172a] bg-[#fafbfc]" : "border-[#e2e8f0] bg-white")}>
                         <SelectorOption
+                          id="node-group-selector-labels"
                           active={labelsActive}
                           title="标签匹配"
                           description="通过标签选择器自动匹配节点"
@@ -415,17 +465,19 @@ export function NodeGroups() {
                           <Label className="text-sm font-semibold text-[#111827]">标签选择器 <span className="text-[var(--color-danger)]">*</span></Label>
                           {form.matchLabels.map((row, index) => (
                             <div key={index} className="grid grid-cols-[1fr_20px_1fr_36px] items-center gap-2">
-                              <Input value={row.key} onChange={(event) => setForm({ ...form, matchLabels: form.matchLabels.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item) })} placeholder="键" className="h-10 rounded-xl text-sm" />
+                              <Input id={`node-group-label-key-${index}`} value={row.key} onChange={(event) => { setForm({ ...form, matchLabels: form.matchLabels.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item) }); formValidation.clearError("labels"); }} placeholder="键" aria-invalid={index === 0 && Boolean(formValidation.errors.labels)} className="h-10 rounded-xl text-sm" />
                               <span className="text-center text-[var(--color-text-tertiary)]">=</span>
                               <Input value={row.value} onChange={(event) => setForm({ ...form, matchLabels: form.matchLabels.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item) })} placeholder="值" className="h-10 rounded-xl text-sm" />
                               <button type="button" onClick={() => setForm({ ...form, matchLabels: form.matchLabels.length > 1 ? form.matchLabels.filter((_, itemIndex) => itemIndex !== index) : [{ ...emptyLabelRow }] })} className="action-button is-danger h-9 w-9" aria-label="删除标签"><Trash2 className="h-3.5 w-3.5" /></button>
                             </div>
                           ))}
                           <button type="button" onClick={() => setForm({ ...form, matchLabels: [...form.matchLabels, { ...emptyLabelRow }] })} className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-brand)]"><Plus className="h-3.5 w-3.5" />添加标签</button>
+                          <RequiredFieldError id="node-group-labels-error" message={formValidation.errors.labels} />
                         </div>}
                       </div>
                       <div className={cn("overflow-hidden rounded-xl border-[1.5px] transition-colors", nodesActive ? "border-[#0f172a] bg-[#fafbfc]" : "border-[#e2e8f0] bg-white")}>
                         <SelectorOption
+                          id="node-group-selector-nodes"
                           active={nodesActive}
                           title="指定节点"
                           description="手动选择特定节点"
@@ -435,14 +487,14 @@ export function NodeGroups() {
                         {nodesActive && <div className="border-t border-[#f0f1f3] px-4 pb-4 pt-3">
                           <div className="mb-3 flex items-center justify-between">
                             <p className="text-sm font-semibold text-[#111827]">已选节点</p>
-                            <Button type="button" onClick={() => setNodePickerOpen(true)} className="h-7 rounded-lg bg-[#0f172a] px-2.5 text-xs text-white"><ChevronRight className="mr-1 h-3 w-3" />选择边缘节点</Button>
+                            <Button id="node-group-select-nodes" type="button" onClick={openNodePicker} className="h-7 rounded-lg bg-[#0f172a] px-2.5 text-xs text-white"><ChevronRight className="mr-1 h-3 w-3" />选择边缘节点</Button>
                           </div>
                           {form.nodes.length === 0 ? (
                             <div className="flex min-h-[88px] flex-col items-center justify-center rounded-xl border border-dashed border-[#d8e1ec] bg-white text-[var(--color-text-tertiary)]"><Server className="mb-2 h-5 w-5" /><span className="text-xs">暂无数据</span></div>
                           ) : (
                             <div className="table-card overflow-x-auto">
                               <Table className="min-w-[500px] table-fixed">
-                                <TableHeader><TableRow className="h-10 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]"><TableHead className="w-[130px] px-3 text-xs">名称</TableHead><TableHead className="w-[76px] px-3 text-xs">状态</TableHead><TableHead className="w-[70px] px-3 text-xs">架构</TableHead><TableHead className="w-[160px] px-3 text-xs">标签</TableHead><TableHead className="w-[52px] px-2 text-right text-xs">操作</TableHead></TableRow></TableHeader>
+                                <TableHeader><TableRow className="h-10 bg-white hover:bg-white"><TableHead className="w-[130px] px-3 text-xs">名称</TableHead><TableHead className="w-[76px] px-3 text-xs">状态</TableHead><TableHead className="w-[70px] px-3 text-xs">架构</TableHead><TableHead className="w-[160px] px-3 text-xs">标签</TableHead><TableHead className="w-[52px] px-2 text-right text-xs">操作</TableHead></TableRow></TableHeader>
                                 <TableBody>{form.nodes.map((nodeName) => {
                                   const node = nodeOptions.find((item) => item.name === nodeName);
                                   const labels = Object.entries(node?.raw.metadata?.labels || {});
@@ -453,8 +505,10 @@ export function NodeGroups() {
                               </Table>
                             </div>
                           )}
+                          <RequiredFieldError id="node-group-nodes-error" message={formValidation.errors.nodes} />
                         </div>}
                       </div>
+                      <RequiredFieldError id="node-group-selector-error" message={formValidation.errors.selector} />
                     </div>
                   </div>
 
@@ -471,31 +525,49 @@ export function NodeGroups() {
               </div>
               <DialogFooter className="h-[72px] shrink-0 items-center border-t border-[#eef1f5] px-7 py-0">
                 <Button variant="outline" onClick={() => setCreateOpen(false)} className="h-9 rounded-[10px] px-4 text-sm">取消</Button>
-                <Button onClick={handleCreate} disabled={!form.name.trim() || !form.selectorType || (labelsActive && Object.keys(rowsToLabels(form.matchLabels)).length === 0) || (nodesActive && form.nodes.length === 0)} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">{editingGroup ? "保存" : "确定"}</Button>
+                <Button onClick={handleCreate} disabled={isLoading} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">{editingGroup ? "保存" : "确定"}</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
-          <Dialog open={nodePickerOpen} onOpenChange={setNodePickerOpen}>
-            <DialogContent className="!flex max-h-[78vh] max-w-[720px] flex-col gap-0 overflow-hidden rounded-[24px] p-0" showCloseButton>
-              <DialogHeader className="shrink-0 border-b border-[#eef1f5] px-7 py-6">
+          <Dialog open={nodePickerOpen} onOpenChange={(open) => { setNodePickerOpen(open); if (!open) setNodePickerSearch(""); }}>
+            <DialogContent onOpenAutoFocus={(event) => event.preventDefault()} className="!flex max-h-[92vh] w-[calc(100%-2rem)] max-w-[600px] flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)]" showCloseButton>
+              <DialogHeader className="h-[68px] shrink-0 justify-center border-b border-[#eef1f5] px-7 py-0">
                 <DialogTitle className="text-base font-bold">选择边缘节点</DialogTitle>
               </DialogHeader>
-              <div className="min-h-0 flex-1 overflow-y-auto px-7 py-6">
+              <div className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
+                <div className="mb-4 flex min-h-10 items-center gap-2 rounded-xl border border-[#b8d5ff] bg-[#eef5ff] px-4 py-2.5 text-sm text-[#2367d1]">
+                  <Info className="h-4 w-4 shrink-0" />
+                  <span>你可以自由选择边缘节点，也可以前往边缘节点注册新节点。</span>
+                </div>
+                <div className="mb-3 flex items-center gap-2">
+                  <div className="relative min-w-0 flex-1">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+                    <Input value={nodePickerSearch} onChange={(event) => setNodePickerSearch(event.target.value)} placeholder="输入节点名称搜索" className="h-10 rounded-xl pl-10 text-sm" />
+                  </div>
+                  <Button type="button" variant="outline" onClick={() => void refreshNodePicker()} disabled={nodePickerRefreshing} className="h-10 w-10 shrink-0 rounded-xl p-0" aria-label="刷新边缘节点">
+                    <RefreshCw className={cn("h-4 w-4", nodePickerRefreshing && "animate-spin")} />
+                  </Button>
+                </div>
+                <p className="mb-2 text-xs text-[var(--color-text-tertiary)]">共 {filteredNodeOptions.length} 个节点，已选 {nodePickerDraftNodes.length} 个</p>
                 <div className="overflow-hidden rounded-xl border border-[var(--color-border)]">
-                  <Table>
-                    <TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)]"><TableHead className="w-[70px] px-4">选择</TableHead><TableHead className="px-4">节点名称</TableHead><TableHead className="px-4">状态</TableHead><TableHead className="px-4">架构</TableHead></TableRow></TableHeader>
+                  <Table className="table-fixed">
+                    <TableHeader><TableRow className="h-11 bg-white hover:bg-white"><TableHead className="w-[52px] bg-white px-4"><input type="checkbox" checked={allVisibleNodesSelected} onChange={toggleAllVisibleNodes} aria-label="全选当前节点" className="h-4 w-4 rounded accent-[var(--color-brand)]" /></TableHead><TableHead className="w-[150px] bg-white px-3 text-xs">名称</TableHead><TableHead className="w-[92px] bg-white px-3 text-xs">状态</TableHead><TableHead className="w-[82px] bg-white px-3 text-xs">架构</TableHead><TableHead className="bg-white px-3 text-xs">标签</TableHead></TableRow></TableHeader>
                     <TableBody>
-                      {nodeOptions.length === 0 ? <TableRow><TableCell colSpan={4} className="py-12 text-center text-sm text-[var(--color-text-tertiary)]">暂无可选边缘节点</TableCell></TableRow> : nodeOptions.map((node) => {
-                        const checked = form.nodes.includes(node.name);
-                        return <TableRow key={node.name} className="h-14"><TableCell className="px-4"><input type="checkbox" checked={checked} onChange={() => setForm({ ...form, nodes: checked ? form.nodes.filter((item) => item !== node.name) : [...form.nodes, node.name] })} className="h-4 w-4 accent-[#0f172a]" /></TableCell><TableCell className="px-4 text-sm font-semibold text-[var(--color-brand)]">{node.name}</TableCell><TableCell className="px-4 text-sm text-[var(--color-text-secondary)]">{node.status === "Ready" ? "健康" : "异常"}</TableCell><TableCell className="px-4 text-sm text-[var(--color-text-secondary)]">{(node.raw as Record<string, any>)?.status?.nodeInfo?.architecture || "-"}</TableCell></TableRow>;
+                      {filteredNodeOptions.length === 0 ? <TableRow><TableCell colSpan={5} className="py-12 text-center text-sm text-[var(--color-text-tertiary)]">暂无可选边缘节点</TableCell></TableRow> : filteredNodeOptions.map((node) => {
+                        const checked = nodePickerDraftNodes.includes(node.name);
+                        const nodeInfo = node.raw.status?.nodeInfo as Record<string, unknown> | undefined;
+                        const arch = String(node.raw.metadata?.labels?.["kubernetes.io/arch"] || nodeInfo?.architecture || "-");
+                        const labels = Object.entries(node.raw.metadata?.labels || {});
+                        return <TableRow key={node.name} className="h-14"><TableCell className="px-4"><input type="checkbox" checked={checked} onChange={() => setNodePickerDraftNodes((current) => checked ? current.filter((item) => item !== node.name) : [...current, node.name])} className="h-4 w-4 rounded accent-[var(--color-brand)]" /></TableCell><TableCell className="truncate px-3 text-sm font-semibold text-[var(--color-brand)]" title={node.name}>{node.name}</TableCell><TableCell className="px-3"><span className={cn("inline-flex items-center gap-1 text-sm", node.status === "Ready" ? "text-[var(--color-success)]" : node.status === "Unknown" ? "text-[var(--color-warning)]" : "text-[var(--color-danger)]")}><span className="h-1.5 w-1.5 rounded-full bg-current" />{node.status === "Ready" ? "健康" : node.status === "Unknown" ? "未知" : "异常"}</span></TableCell><TableCell className="px-3 text-sm text-[var(--color-text-secondary)]">{arch}</TableCell><TableCell className="px-3">{labels.length > 0 ? <div className="flex min-w-0 items-center gap-1"><span className="max-w-[128px] truncate rounded-md bg-[#f0f1f3] px-1.5 py-0.5 text-xs text-[#5f6368]" title={`${labels[0][0]}=${String(labels[0][1])}`}>{labels[0][0]}={String(labels[0][1])}</span>{labels.length > 1 && <span className="shrink-0 rounded-md bg-[#eef4ff] px-1.5 py-0.5 text-xs text-[var(--color-brand)]">+{labels.length - 1}</span>}</div> : <span className="text-xs text-[var(--color-text-tertiary)]">-</span>}</TableCell></TableRow>;
                       })}
                     </TableBody>
                   </Table>
                 </div>
               </div>
-              <DialogFooter className="shrink-0 border-t border-[#eef1f5] px-7 py-5">
-                <span className="mr-auto text-xs text-[var(--color-text-tertiary)]">已选择 {form.nodes.length} 个节点</span>
-                <Button onClick={() => setNodePickerOpen(false)} className="h-9 rounded-[10px] bg-[#0f172a] px-5 text-sm text-white">确定</Button>
+              <DialogFooter className="h-[72px] shrink-0 items-center border-t border-[#eef1f5] px-7 py-0">
+                <span className="mr-auto text-xs text-[var(--color-text-tertiary)]">已选择 {nodePickerDraftNodes.length} 个节点</span>
+                <Button variant="outline" onClick={() => setNodePickerOpen(false)} className="h-9 rounded-[10px] px-4 text-sm">取消</Button>
+                <Button onClick={confirmNodePicker} className="h-9 rounded-[10px] bg-[#0f172a] px-5 text-sm text-white">确定（{nodePickerDraftNodes.length}）</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
@@ -503,7 +575,7 @@ export function NodeGroups() {
       </div>
       {error && <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
       <div className="table-card overflow-x-auto">
-        <Table className="min-w-[700px] table-fixed"><TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+        <Table className="min-w-[700px] table-fixed"><TableHeader><TableRow className="h-12 bg-white hover:bg-white">
           <TableHead className="w-[200px] px-4 text-left text-xs font-medium text-[var(--color-text-tertiary)]">节点组名称</TableHead>
           <TableHead className="w-[120px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">选择方式</TableHead>
           <TableHead className="w-[80px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">节点数</TableHead>
@@ -640,7 +712,7 @@ function NodeGroupDetailPage({ group, nodeOptions, onBack, onEdit }: { group: No
           <div className="flex items-center gap-4 text-xs text-[var(--color-text-tertiary)]"><span className="text-[var(--color-success)]">● 健康 {healthyCount}</span><span className="text-[var(--color-danger)]">● 异常 {abnormalCount}</span></div>
         </div>
         <div className="table-card overflow-x-auto">
-          <Table className="min-w-[500px] table-fixed"><TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)]"><TableHead className="w-[200px] px-4 text-xs">节点名称</TableHead><TableHead className="w-[100px] px-4 text-xs">状态</TableHead><TableHead className="w-[120px] px-4 text-xs">接入状态</TableHead></TableRow></TableHeader>
+          <Table className="min-w-[500px] table-fixed"><TableHeader><TableRow className="h-12 bg-white hover:bg-white"><TableHead className="w-[200px] px-4 text-xs">节点名称</TableHead><TableHead className="w-[100px] px-4 text-xs">状态</TableHead><TableHead className="w-[120px] px-4 text-xs">接入状态</TableHead></TableRow></TableHeader>
             <TableBody>{group.nodes.length === 0 ? <TableRow><TableCell colSpan={3} className="py-12 text-center"><Server className="mx-auto mb-2 h-6 w-6 text-[var(--color-text-tertiary)]" /><span className="text-sm text-[var(--color-text-secondary)]">暂无成员节点</span></TableCell></TableRow> : group.nodes.map((name) => {
               const node = nodeByName.get(name);
               const ready = node?.status === "Ready";
@@ -663,12 +735,14 @@ function SelectorTag({ type }: { type: NodeGroup["selectorType"] }) {
 }
 
 function SelectorOption({
+  id,
   active,
   title,
   description,
   badge,
   onClick,
 }: {
+  id?: string;
   active: boolean;
   title: string;
   description: string;
@@ -677,6 +751,7 @@ function SelectorOption({
 }) {
   return (
     <button
+      id={id}
       type="button"
       onClick={onClick}
       className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors"

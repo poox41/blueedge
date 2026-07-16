@@ -15,6 +15,7 @@ import { formatLabels, getResourceCreatedAt, getResourceName } from "@/api/adapt
 import { createClusterRoleResource, deleteClusterRoleResource, listClusterRoles, updateClusterRoleResource } from "@/api/services/resources";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { validateRequiredDomFields } from "@/lib/form-validation";
 
 interface CR { name: string; labels: string; createdAt: string; rules?: Array<{ apiGroups: string[]; resources: string[]; verbs: string[] }>; raw: KubeResource; }
 
@@ -132,6 +133,9 @@ export function ClusterRoles() {
     }
   };
   const handleCreate = async () => {
+    if (!validateRequiredDomFields([
+      { elementId: "cluster-role-create-name", valid: Boolean(form.name.trim()), message: "请输入集群角色名称" },
+    ])) return;
     setIsLoading(true);
     setError("");
     try {
@@ -147,6 +151,10 @@ export function ClusterRoles() {
   };
   const handleUpdate = async () => {
     if (!editItem) return;
+    if (!validateRequiredDomFields([
+      { elementId: "cluster-role-edit-resources", valid: Boolean(editForm.resources.trim()), message: "请输入资源规则" },
+      { elementId: "cluster-role-edit-verbs", valid: Boolean(editForm.verbs.trim()), message: "请输入操作动词" },
+    ])) return;
     setIsLoading(true);
     setError("");
     try {
@@ -172,11 +180,11 @@ export function ClusterRoles() {
             <DialogContent className="max-w-lg">
               <DialogHeader><DialogTitle className="text-base">创建集群角色</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
-                <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input placeholder="如 cluster-reader" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input id="cluster-role-create-name" placeholder="如 cluster-reader" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
                 <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">资源（每行一条规则，逗号分隔）</Label><Textarea value={form.resources} onChange={e => setForm({ ...form, resources: e.target.value })} className="min-h-20 text-sm" /></div>
                 <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">动词（每行对应一条规则，逗号分隔）</Label><Textarea value={form.verbs} onChange={e => setForm({ ...form, verbs: e.target.value })} className="min-h-20 text-sm" /></div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm"  onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" onClick={handleCreate} disabled={isLoading}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
           <Dialog open={editOpen} onOpenChange={setEditOpen}>
@@ -184,10 +192,10 @@ export function ClusterRoles() {
               <DialogHeader><DialogTitle className="text-base">编辑集群角色</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
                 <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input value={editForm.name} disabled className="h-9 text-sm bg-[var(--color-bg-soft)]" /></div>
-                <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">资源（每行一条规则，逗号分隔）</Label><Textarea value={editForm.resources} onChange={e => setEditForm({ ...editForm, resources: e.target.value })} className="min-h-20 text-sm" /></div>
-                <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">动词（每行对应一条规则，逗号分隔）</Label><Textarea value={editForm.verbs} onChange={e => setEditForm({ ...editForm, verbs: e.target.value })} className="min-h-20 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">资源（每行一条规则，逗号分隔）</Label><Textarea id="cluster-role-edit-resources" value={editForm.resources} onChange={e => setEditForm({ ...editForm, resources: e.target.value })} className="min-h-20 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">动词（每行对应一条规则，逗号分隔）</Label><Textarea id="cluster-role-edit-verbs" value={editForm.verbs} onChange={e => setEditForm({ ...editForm, verbs: e.target.value })} className="min-h-20 text-sm" /></div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm"  onClick={handleUpdate} disabled={!editForm.resources || !editForm.verbs}>保存</Button></DialogFooter>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" onClick={handleUpdate} disabled={isLoading}>保存</Button></DialogFooter>
             </DialogContent>
           </Dialog>
         </div>

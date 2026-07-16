@@ -21,6 +21,7 @@ import type { KubeResource, RuleEndpointView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 import { useNamespace } from "@/contexts/NamespaceContext";
 import { Activity, AlertTriangle, ArrowLeft, Bug, ChevronDown, ClipboardList, Copy, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Terminal, Trash2, Wifi, X } from "lucide-react";
+import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 
 type EndpointType = "rest" | "eventbus" | "servicebus";
 
@@ -235,6 +236,7 @@ export function RuleEndpoints() {
   );
   const [data, setData] = useState<MessageEndpointRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -251,7 +253,8 @@ export function RuleEndpoints() {
   const [editTarget, setEditTarget] = useState<MessageEndpointRow | null>(null);
 
   const loadData = useCallback(async (preserveData = false) => {
-    setIsLoading(true);
+    if (preserveData) setIsRefreshing(true);
+    else setIsLoading(true);
     setError("");
     try {
       const rows = await listRuleEndpoints();
@@ -260,7 +263,8 @@ export function RuleEndpoints() {
       setError(err instanceof Error ? err.message : "消息端点数据加载失败");
       if (!preserveData) setData([]);
     } finally {
-      setIsLoading(false);
+      if (preserveData) setIsRefreshing(false);
+      else setIsLoading(false);
     }
   }, []);
 
@@ -398,8 +402,6 @@ export function RuleEndpoints() {
     }
   };
 
-  const canCreate = validEndpointName(form.name.trim()) && Boolean(form.namespace);
-
   if (isDetailRoute) {
     return (
       <>
@@ -434,7 +436,7 @@ export function RuleEndpoints() {
             <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索消息端点名称..." className="h-9 rounded-[10px] pl-9 text-sm" />
           </div>
           <div className="flex items-center gap-2">
-            <button type="button" onClick={() => void loadData(true)} className="action-button" title="刷新" disabled={isLoading}><RefreshCw className={cn("h-3.5 w-3.5", isLoading && "animate-spin")} /></button>
+            <button type="button" onClick={() => void loadData(true)} className="action-button" title="刷新" disabled={isLoading || isRefreshing}><RefreshCw className={cn("h-3.5 w-3.5", (isLoading || isRefreshing) && "animate-spin")} /></button>
             <button type="button" onClick={() => setCreateOpen(true)} className="btn-black text-xs"><Plus className="h-3.5 w-3.5" />创建消息端点</button>
           </div>
         </div>
@@ -524,7 +526,6 @@ export function RuleEndpoints() {
         form={form}
         namespaceItems={namespaceItems}
         refreshingNamespaces={refreshingNamespaces}
-        canCreate={canCreate}
         isLoading={isLoading}
         onOpenChange={setCreateOpen}
         onChange={setForm}
@@ -557,7 +558,6 @@ function CreateEndpointDialog({
   form,
   namespaceItems,
   refreshingNamespaces,
-  canCreate,
   isLoading,
   onOpenChange,
   onChange,
@@ -568,13 +568,21 @@ function CreateEndpointDialog({
   form: CreateForm;
   namespaceItems: Array<{ value: string; label: string }>;
   refreshingNamespaces: boolean;
-  canCreate: boolean;
   isLoading: boolean;
   onOpenChange: (open: boolean) => void;
   onChange: (form: CreateForm) => void;
   onRefreshNamespaces: () => Promise<void>;
   onCreate: () => void;
 }) {
+  const formValidation = useRequiredFieldValidation<"namespace" | "name">();
+  const submit = () => {
+    const name = form.name.trim();
+    if (!formValidation.validate([
+      { field: "namespace", valid: Boolean(form.namespace), message: "请选择命名空间", elementId: "rule-endpoint-namespace" },
+      { field: "name", valid: validEndpointName(name), message: name ? "名称格式不正确，仅支持小写字母、数字和中划线" : "请输入消息端点名称", elementId: "rule-endpoint-name" },
+    ])) return;
+    onCreate();
+  };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[min(720px,calc(100vh-48px))] w-[calc(100vw-48px)] max-w-[600px] gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[600px]" showCloseButton={false}>
@@ -619,8 +627,11 @@ function CreateEndpointDialog({
               <div className="flex items-center gap-3">
                 <div className="relative min-w-0 flex-1">
                   <select
+                    id="rule-endpoint-namespace"
                     value={form.namespace}
-                    onChange={(event) => onChange({ ...form, namespace: event.target.value })}
+                    onChange={(event) => { onChange({ ...form, namespace: event.target.value }); formValidation.clearError("namespace"); }}
+                    aria-invalid={Boolean(formValidation.errors.namespace)}
+                    aria-describedby={formValidation.errors.namespace ? "rule-endpoint-namespace-error" : undefined}
                     className="h-9 w-full appearance-none rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-3 pr-9 text-sm text-[var(--color-text-primary)] outline-none transition-colors focus:border-[var(--color-text-primary)]"
                   >
                     {namespaceItems.length === 0 && <option value="default">default</option>}
@@ -637,6 +648,7 @@ function CreateEndpointDialog({
                 </button>
                 <a href="https://183.95.195.121:31417/kpanda/clusters/ali-139-131/namespaces" target="_blank" rel="noreferrer" className="shrink-0 text-xs text-[#1a73e8]">创建命名空间</a>
               </div>
+              <RequiredFieldError id="rule-endpoint-namespace-error" message={formValidation.errors.namespace} />
             </div>
 
             <div>
@@ -644,14 +656,18 @@ function CreateEndpointDialog({
                 消息端点名称 <span className="text-[var(--color-danger)]">*</span>
               </Label>
               <Input
+                id="rule-endpoint-name"
                 value={form.name}
-                onChange={(event) => onChange({ ...form, name: event.target.value })}
+                onChange={(event) => { onChange({ ...form, name: event.target.value }); formValidation.clearError("name"); }}
+                aria-invalid={Boolean(formValidation.errors.name)}
+                aria-describedby={formValidation.errors.name ? "rule-endpoint-name-error" : undefined}
                 placeholder="mqtt-internal"
                 className="h-9 rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-3 text-sm"
               />
               <p className={cn("mt-1.5 text-xs", form.name && !validEndpointName(form.name) ? "text-[var(--color-danger)]" : "text-[var(--color-text-tertiary)]")}>
                 支持小写字母、数字、"-"，长度1~253
               </p>
+              <RequiredFieldError id="rule-endpoint-name-error" message={formValidation.errors.name} />
             </div>
           </div>
         </div>
@@ -662,8 +678,8 @@ function CreateEndpointDialog({
           </button>
           <button
             type="button"
-            onClick={onCreate}
-            disabled={!canCreate || isLoading}
+            onClick={submit}
+            disabled={isLoading}
             className="blueedge-primary-button h-9 rounded-[10px] px-4 text-sm disabled:cursor-not-allowed disabled:bg-[#9ca3af] disabled:opacity-70"
           >
             创建
@@ -819,7 +835,7 @@ function EditEndpointDialog({ open, row, isLoading, onOpenChange, onSave, onDele
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="!flex max-h-[calc(100vh-48px)] w-[calc(100vw-48px)] max-w-[600px] flex-col gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[600px]" showCloseButton={false}>
-        <DialogHeader className="flex h-14 shrink-0 flex-row items-center justify-between border-b border-[#f0f1f3] px-6"><DialogTitle className="text-base">编辑消息端点</DialogTitle><div className="flex gap-2"><button type="button" onClick={onDelete} className="action-button h-8 w-8 rounded-[10px]" style={{ color: "var(--color-danger)" }} title="删除"><Trash2 className="h-4 w-4" /></button><button type="button" onClick={() => onOpenChange(false)} className="action-button h-8 w-8 rounded-[10px]"><X className="h-4 w-4" /></button></div></DialogHeader>
+        <DialogHeader className="flex h-14 shrink-0 flex-row items-center justify-between border-b border-[#f0f1f3] px-6"><DialogTitle className="text-base">编辑消息端点</DialogTitle><div className="flex gap-2"><button type="button" onClick={onDelete} className="action-button h-8 w-8 rounded-[10px]" title="删除"><Trash2 className="h-4 w-4" /></button><button type="button" onClick={() => onOpenChange(false)} className="action-button h-8 w-8 rounded-[10px]"><X className="h-4 w-4" /></button></div></DialogHeader>
         <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-6 py-5">
           <div><Label className="mb-2 block text-sm font-medium">消息端点类型 <span className="text-[#ff4d4f]">*</span></Label><div className="space-y-3">{endpointTypeOptions.map((option) => <button key={option.key} type="button" onClick={() => setForm({ ...form, type: option.key, propertyKey: propertyKeyForType(option.key), propertyValue: option.key === form.type ? form.propertyValue : "" })} className={cn("w-full rounded-xl border p-3.5 text-left transition-all", form.type === option.key ? "border-[1.5px] border-[#1e6bff] bg-[#eff6ff]" : "border-[#e5e7eb] bg-white hover:border-[#d8dee8]")}><span className={cn("block text-sm font-semibold", form.type === option.key && "text-[#1e6bff]")}>{option.label}</span><span className="mt-1 block text-xs leading-5 text-[#64748b]">备注:{option.desc}</span></button>)}</div></div>
           <div className="space-y-5 border-t border-[#f0f1f3] pt-5">

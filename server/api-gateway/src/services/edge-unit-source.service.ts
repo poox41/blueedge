@@ -1,6 +1,7 @@
 import { getJson } from "../clients/bff-client.js";
 import { getK8sJson } from "../clients/k8s-client.js";
 import {
+  accessConfigResourceValue,
   edgeUnitResourceValue,
   listByResourceLabel,
 } from "../repositories/blueedge-configmap.repository.js";
@@ -88,14 +89,20 @@ export async function collectNodeGroupDetails(warnings: EdgeUnitWarning[]): Prom
 }
 
 export async function collectEdgeUnitAuxSources(warnings: EdgeUnitWarning[]) {
-  const [nodes, deploymentsRaw, edgeApplicationsRaw] = await Promise.all([
+  const [nodes, deploymentsRaw, edgeApplicationsRaw, accessConfigs, k8sDeploymentsRaw, k8sEdgeApplicationsRaw] = await Promise.all([
     getEdgeUnitNodes(warnings),
     getJson("/deployment").then((data) => ({ status: "fulfilled" as const, value: data })).catch((reason) => ({ status: "rejected" as const, reason })),
     getJson("/edgeapplication").then((data) => ({ status: "fulfilled" as const, value: data })).catch((reason) => ({ status: "rejected" as const, reason })),
+    listByResourceLabel(accessConfigResourceValue).catch((error) => {
+      warnings.push({ source: "access-config.configmap", message: error instanceof Error ? error.message : "AccessConfig ConfigMap list unavailable" });
+      return [];
+    }),
+    getK8sJson("/apis/apps/v1/deployments").catch(() => null),
+    getK8sJson("/apis/apps.kubeedge.io/v1alpha1/edgeapplications").catch(() => null),
   ]);
 
-  const deployments = deploymentsRaw.status === "fulfilled" ? itemsOf(deploymentsRaw.value) : [];
-  const edgeApplications = edgeApplicationsRaw.status === "fulfilled" ? itemsOf(edgeApplicationsRaw.value) : [];
+  const deploymentSummaries = deploymentsRaw.status === "fulfilled" ? itemsOf(deploymentsRaw.value) : [];
+  const edgeApplicationSummaries = edgeApplicationsRaw.status === "fulfilled" ? itemsOf(edgeApplicationsRaw.value) : [];
 
   if (deploymentsRaw.status === "rejected") {
     warnings.push({ source: "deployment", message: deploymentsRaw.reason instanceof Error ? deploymentsRaw.reason.message : "Deployment list unavailable" });
@@ -104,7 +111,30 @@ export async function collectEdgeUnitAuxSources(warnings: EdgeUnitWarning[]) {
     warnings.push({ source: "edgeapplication", message: edgeApplicationsRaw.reason instanceof Error ? edgeApplicationsRaw.reason.message : "EdgeApplication list unavailable" });
   }
 
-  return { nodes, deployments, edgeApplications };
+  const mergeResourceDetails = (items: any[], detailsRaw: any, source: string) => {
+    const details = itemsOf(detailsRaw);
+    if (items.length > 0 && details.length === 0) {
+      warnings.push({ source, message: "Kubernetes resource details unavailable; summary data was used instead" });
+      return items;
+    }
+    const detailByRef = new Map(details.map((item) => {
+      const metadata = metadataOf(item);
+      const namespace = String(metadata.namespace || item?.namespace || "default");
+      const name = String(metadata.name || item?.name || "");
+      return [`${namespace}/${name}`, item];
+    }));
+    return items.map((item) => {
+      const metadata = metadataOf(item);
+      const namespace = String(metadata.namespace || item?.namespace || "default");
+      const name = String(metadata.name || item?.name || "");
+      return detailByRef.get(`${namespace}/${name}`) || item;
+    });
+  };
+
+  const deployments = mergeResourceDetails(deploymentSummaries, k8sDeploymentsRaw, "deployment.detail");
+  const edgeApplications = mergeResourceDetails(edgeApplicationSummaries, k8sEdgeApplicationsRaw, "edgeapplication.detail");
+
+  return { nodes, deployments, edgeApplications, accessConfigs };
 }
 
 export function edgeUnitConfigMapName(configMap: any): string {
@@ -122,10 +152,10 @@ export function edgeUnitConfigMapMatches(configMap: any, name: string): boolean 
 
 export function isValidEdgeUnitConfigMap(configMap: any, warnings: EdgeUnitWarning[]): boolean {
   const data = dataOf(configMap);
-  if (data.name && data.nodeGroupRef) return true;
+  if (data.name) return true;
   warnings.push({
     source: "edgeunit.configmap",
-    message: `Invalid EdgeUnit ConfigMap ${metadataOf(configMap).namespace || "blueedge-system"}/${metadataOf(configMap).name || "-"}: missing data.name or data.nodeGroupRef`,
+    message: `Invalid EdgeUnit ConfigMap ${metadataOf(configMap).namespace || "blueedge-system"}/${metadataOf(configMap).name || "-"}: missing data.name`,
   });
   return false;
 }
@@ -159,12 +189,17 @@ export async function getNodeGroupByName(name: string): Promise<any | null> {
 }
 
 export async function resolveEdgeUnitNodeGroupRef(edgeUnitRef: string, warnings: EdgeUnitWarning[]): Promise<string | null> {
+  const resolved = await resolveEdgeUnitReference(edgeUnitRef, warnings);
+  return resolved?.nodeGroupRef || null;
+}
+
+export async function resolveEdgeUnitReference(edgeUnitRef: string, warnings: EdgeUnitWarning[]): Promise<{ nodeGroupRef: string } | null> {
   const { edgeUnitConfigMaps, nodeGroupByName } = await collectEdgeUnitSources(warnings, { includeNodeGroups: true });
   const matchedConfigMap = edgeUnitConfigMaps.find((configMap) => edgeUnitConfigMapMatches(configMap, edgeUnitRef));
   if (matchedConfigMap && isValidEdgeUnitConfigMap(matchedConfigMap, warnings)) {
-    return dataOf(matchedConfigMap).nodeGroupRef || null;
+    return { nodeGroupRef: dataOf(matchedConfigMap).nodeGroupRef || "" };
   }
-  if (nodeGroupByName.has(edgeUnitRef)) return edgeUnitRef;
+  if (nodeGroupByName.has(edgeUnitRef)) return { nodeGroupRef: edgeUnitRef };
   return null;
 }
 

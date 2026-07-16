@@ -378,7 +378,7 @@ export function ConfigMaps() {
   }, [currentType, items, search, selectedNamespace]);
 
   const loadData = useCallback(async (preserveData = false) => {
-    setIsLoading(true);
+    if (!preserveData) setIsLoading(true);
     setError("");
     try {
       const [namespaceItems, configMaps, secrets] = await Promise.all([listNamespaces(), listConfigMaps(), listSecrets()]);
@@ -392,7 +392,7 @@ export function ConfigMaps() {
       setError(err instanceof Error ? err.message : "加载配置项与密钥失败");
       if (!preserveData) setItems([]);
     } finally {
-      setIsLoading(false);
+      if (!preserveData) setIsLoading(false);
     }
   }, []);
 
@@ -1031,8 +1031,8 @@ function ConfigItemDetailPage({
   );
 }
 
-function DetailActionButton({ icon: Icon, label, danger, onClick }: { icon: typeof Pencil; label: string; danger?: boolean; onClick: () => void }) {
-  return <button type="button" onClick={onClick} className={cn(danger ? "btn-danger-outline" : "btn-secondary", "text-xs")}><Icon className="h-[13px] w-[13px]" />{label}</button>;
+function DetailActionButton({ icon: Icon, label, danger: _danger, onClick }: { icon: typeof Pencil; label: string; danger?: boolean; onClick: () => void }) {
+  return <button type="button" onClick={onClick} className="btn-secondary text-xs"><Icon className="h-[13px] w-[13px]" />{label}</button>;
 }
 
 function DetailField({ label, value }: { label: string; value: string }) {
@@ -1120,7 +1120,7 @@ function ConfigActionMenu({ top, left, type, onEditYaml, onUpdate, onExport, onD
       <div className="mx-2 my-1 border-t border-[#f0f1f3]" />
       <button type="button" onClick={onExport} className="mx-1 flex h-9 w-[calc(100%-8px)] items-center gap-2 rounded-lg px-3 text-xs font-medium text-[#111827] hover:bg-[#f6f8fb]"><Download className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />导出{type}</button>
       <div className="mx-2 my-1 border-t border-[#f0f1f3]" />
-      <button type="button" onClick={onDelete} className="mx-1 flex h-9 w-[calc(100%-8px)] items-center gap-2 rounded-lg px-3 text-xs font-medium text-[#ef4444] hover:bg-[#fdecec]"><Trash2 className="h-3.5 w-3.5 shrink-0" />删除</button>
+      <button type="button" onClick={onDelete} className="mx-1 flex h-9 w-[calc(100%-8px)] items-center gap-2 rounded-lg px-3 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"><Trash2 className="h-3.5 w-3.5 shrink-0 text-[var(--color-text-tertiary)]" />删除</button>
     </div>
   );
 }
@@ -1197,7 +1197,19 @@ function CreateConfigItemDialog({
 
   const handleSubmit = () => {
     setSubmitted(true);
-    if (!canSubmit) return;
+    if (!canSubmit) {
+      const targetId = nameError
+        ? "config-item-name"
+        : !form.namespace
+          ? "config-item-namespace"
+          : "config-item-data";
+      window.requestAnimationFrame(() => {
+        const target = document.getElementById(targetId);
+        target?.scrollIntoView({ behavior: "smooth", block: "center" });
+        target?.focus({ preventScroll: true });
+      });
+      return;
+    }
     onSubmit(form);
   };
 
@@ -1243,7 +1255,7 @@ function CreateConfigItemDialog({
           <div className="space-y-5">
             <div>
               <CreateLabel label="名称" required />
-              <Input value={form.name} onChange={(event) => update({ name: event.target.value })} disabled={mode === "update"} placeholder="请输入名称" className={cn("h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0", submitted && nameError && "border-[#ef4444]")} />
+              <Input id="config-item-name" value={form.name} onChange={(event) => update({ name: event.target.value })} disabled={mode === "update"} placeholder="请输入名称" aria-invalid={Boolean(submitted && nameError)} className={cn("h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0", submitted && nameError && "border-[#ef4444]")} />
               <p className="mt-1.5 text-[11px] leading-5 text-[var(--color-text-tertiary)]">名称最长 63 个字符；必须由小写字母、数字字符、“-” 或 “.” 组成；必须以小写字母或数字字符开头及结尾。</p>
               {submitted && nameError && <p className="mt-1 text-xs text-[#ef4444]">{nameError}</p>}
             </div>
@@ -1256,13 +1268,14 @@ function CreateConfigItemDialog({
               <div>
                 <CreateLabel label="命名空间" required />
                 <div className="flex gap-2">
-                  <select value={form.namespace} onChange={(event) => update({ namespace: event.target.value })} disabled={mode === "update"} className="blueedge-native-select h-9 flex-1 rounded-[10px] border px-3 text-sm">
+                  <select id="config-item-namespace" value={form.namespace} onChange={(event) => update({ namespace: event.target.value })} disabled={mode === "update"} aria-invalid={Boolean(submitted && !form.namespace)} className={cn("blueedge-native-select h-9 flex-1 rounded-[10px] border px-3 text-sm", submitted && !form.namespace && "border-[#ef4444]")}>
                     {namespaces.map((namespace) => <option key={namespace} value={namespace}>{namespace}</option>)}
                   </select>
                   <button type="button" onClick={() => void onRefreshNamespaces()} disabled={refreshingNamespaces} className="action-button h-9 w-9 rounded-[10px]" title="刷新命名空间">
                     <RefreshCw className={cn("h-4 w-4", refreshingNamespaces && "animate-spin")} />
                   </button>
                 </div>
+                {submitted && !form.namespace && <p className="mt-1 text-xs text-[#ef4444]">请选择命名空间</p>}
               </div>
             </div>
 
@@ -1296,7 +1309,9 @@ function CreateConfigItemDialog({
                 </>
               )}
             >
-              <KvEditor pairs={form.dataPairs} onChange={(pairs) => update({ dataPairs: pairs })} />
+              <div id="config-item-data" tabIndex={-1} aria-invalid={Boolean(submitted && !dataValid)}>
+                <KvEditor pairs={form.dataPairs} onChange={(pairs) => update({ dataPairs: pairs })} />
+              </div>
               {submitted && !dataValid && <p className="mt-2 text-xs text-[#ef4444]">{isConfig ? "存在未填写完整的数据，且 key 不允许重复" : "密钥数据至少需要一条有效数据，且键和值均不能为空、key 不允许重复"}</p>}
             </ConfigSection>
 
@@ -1313,7 +1328,7 @@ function CreateConfigItemDialog({
         <DialogFooter className="h-[60px] shrink-0 border-t border-[#f0f1f3] bg-white px-6 py-0">
           <div className="flex w-full justify-end gap-3">
             <button type="button" onClick={close} className="btn-secondary">取消</button>
-            <button type="button" onClick={handleSubmit} className="btn-black text-sm disabled:cursor-not-allowed disabled:opacity-45" disabled={!canSubmit}>{mode === "update" ? "更新" : "创建"}</button>
+            <button type="button" onClick={handleSubmit} className="btn-black text-sm">{mode === "update" ? "更新" : "创建"}</button>
           </div>
         </DialogFooter>
       </DialogContent>

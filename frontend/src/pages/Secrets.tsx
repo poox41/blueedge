@@ -24,6 +24,7 @@ import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/a
 import { createSecretResource, deleteSecretResource, getSecret, listSecrets, updateSecretResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import { cn } from "@/lib/utils";
+import { validateRequiredDomFields } from "@/lib/form-validation";
 import type { KubeResource } from "@/types/kubeedge";
 import { useNamespace } from "@/contexts/NamespaceContext";
 
@@ -222,6 +223,7 @@ export function Secrets() {
   const namespaces = useNamespaceOptions();
   const [data, setData] = useState<SecretRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const { selectedNamespace: namespace } = useNamespace();
@@ -237,8 +239,9 @@ export function Secrets() {
   const [editForm, setEditForm] = useState<SecretFormState>(emptySecretForm());
   const pageSize = 10;
 
-  const loadData = useCallback(async () => {
-    setIsLoading(true);
+  const loadData = useCallback(async (preserveCurrentRows = false) => {
+    if (preserveCurrentRows) setIsRefreshing(true);
+    else setIsLoading(true);
     setError("");
     try {
       const items = await listSecrets(namespace === "all" ? undefined : namespace);
@@ -247,7 +250,8 @@ export function Secrets() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载 Secret 失败");
     } finally {
-      setIsLoading(false);
+      if (preserveCurrentRows) setIsRefreshing(false);
+      else setIsLoading(false);
     }
   }, [namespace]);
 
@@ -304,6 +308,9 @@ export function Secrets() {
   };
 
   const handleCreate = async () => {
+    if (!validateRequiredDomFields([
+      { elementId: "secret-create-name", valid: Boolean(form.name.trim()), message: "请输入 Secret 名称" },
+    ])) return;
     setIsLoading(true);
     setError("");
     try {
@@ -355,8 +362,8 @@ export function Secrets() {
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-[var(--color-text-primary)]">Secrets</h1>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" className="blueedge-muted-button h-9 px-3 text-sm" onClick={loadData} disabled={isLoading}>
-            <RefreshCw className={cn("w-3.5 h-3.5 mr-1", isLoading && "animate-spin")} />
+          <Button variant="outline" size="sm" className="blueedge-muted-button h-9 px-3 text-sm" onClick={() => void loadData(true)} disabled={isLoading || isRefreshing}>
+            <RefreshCw className={cn("w-3.5 h-3.5 mr-1", (isLoading || isRefreshing) && "animate-spin")} />
             刷新
           </Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -366,7 +373,7 @@ export function Secrets() {
             <DialogContent className="max-w-lg">
               <DialogHeader><DialogTitle className="text-base">创建 Secret</DialogTitle></DialogHeader>
               <SecretForm form={form} setForm={setForm} namespaces={namespaces} />
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm"  onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" onClick={handleCreate} disabled={isLoading}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
           <Dialog open={editOpen} onOpenChange={setEditOpen}>
@@ -426,7 +433,7 @@ function SecretForm({ form, setForm, namespaces, readonly = false }: { form: Sec
   return (
     <div className="space-y-4 py-2">
       <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input placeholder="如 app-secret" value={form.name} disabled={readonly} onChange={(e) => setForm({ ...form, name: e.target.value })} className={cn("h-9 text-sm", readonly && "bg-[var(--color-bg-soft)]")} /></div>
+        <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input id={readonly ? undefined : "secret-create-name"} placeholder="如 app-secret" value={form.name} disabled={readonly} onChange={(e) => setForm({ ...form, name: e.target.value })} className={cn("h-9 text-sm", readonly && "bg-[var(--color-bg-soft)]")} /></div>
         <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">命名空间</Label><select value={form.namespace} disabled={readonly} onChange={(e) => setForm({ ...form, namespace: e.target.value })} className="blueedge-native-select">{namespaces.filter((item) => item.value !== "all").map((item) => (<option key={item.value} value={item.value}>{item.label}</option>))}</select></div>
       </div>
       <div className="space-y-1.5">

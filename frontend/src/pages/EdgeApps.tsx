@@ -78,7 +78,7 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
 import { edgeAppSummaryStatusText } from "@/api/adapters/edgeapp-summary.adapter";
 import { createEdgeApplicationResource, deleteEdgeApplicationResource, getDeployment, getEdgeApplication, listEdgeApplications, listNodeGroups, updateEdgeApplicationResource } from "@/api/services/resources";
-import { getEdgeAppSummary, getResourceLogs } from "@/api/services/product";
+import { getEdgeAppSummary, getEdgeUnitResources, getResourceLogs } from "@/api/services/product";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
@@ -88,6 +88,7 @@ import { VolumeEditor } from "@/components/edge-app/VolumeEditor";
 import { EdgeAppCreateWizard } from "@/components/edge-app/EdgeAppCreateWizard";
 import { buildEdgeApplicationResource, emptyContainer } from "@/components/edge-app/container-model";
 import type { ContainerForm, EdgeApplicationForm, VolumeForm } from "@/components/edge-app/container-model";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 
 interface EdgeApp {
   namespace: string;
@@ -119,6 +120,30 @@ interface EdgeApp {
   ready?: number;
   ip?: string;
   raw: KubeResource;
+}
+
+function assignEdgeApplicationToEdgeUnit(resource: KubeResource, edgeUnitName: string): KubeResource {
+  const next = JSON.parse(JSON.stringify(resource)) as KubeResource;
+  next.metadata = {
+    ...next.metadata,
+    labels: { ...(next.metadata?.labels || {}), "blueedge.io/edge-unit": edgeUnitName },
+  };
+  const manifests = (next.spec as any)?.workloadTemplate?.manifests;
+  if (Array.isArray(manifests)) {
+    manifests.forEach((manifest: any) => {
+      manifest.metadata = {
+        ...(manifest.metadata || {}),
+        labels: { ...(manifest.metadata?.labels || {}), "blueedge.io/edge-unit": edgeUnitName },
+      };
+      if (manifest.spec?.template) {
+        manifest.spec.template.metadata = {
+          ...(manifest.spec.template.metadata || {}),
+          labels: { ...(manifest.spec.template.metadata?.labels || {}), "blueedge.io/edge-unit": edgeUnitName },
+        };
+      }
+    });
+  }
+  return next;
 }
 
 const typeColors: Record<string, string> = {
@@ -427,9 +452,11 @@ function exportableEdgeApplicationYaml(a: EdgeApp): string {
 }
 
 export function EdgeApps() {
+  const { selectedEdgeUnitName } = useEdgeUnits();
   const namespaces = useNamespaceOptions();
   const [data, setData] = useState<EdgeApp[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
   const { selectedNamespace: namespace } = useNamespace();
@@ -445,6 +472,7 @@ export function EdgeApps() {
   const [detailLogs, setDetailLogs] = useState("打开日志页后加载关联 Pod 日志");
   const [detailLogWarning, setDetailLogWarning] = useState("");
   const [editForm, setEditForm] = useState({ image: "", cpuLimit: "", memoryLimit: "", replicas: 1 });
+  const [editImageError, setEditImageError] = useState("");
   const [nodeGroupOptions, setNodeGroupOptions] = useState<string[]>([defaultTargetNodeGroupName]);
   const [createMode, setCreateMode] = useState("form");
   const [yamlText, setYamlText] = useState(`apiVersion: apps.kubeedge.io/v1alpha1
@@ -522,11 +550,21 @@ spec:
 
   const pageSize = 10;
 
-  const loadData = useCallback(async () => {
-    setIsLoading(true);
+  const loadData = useCallback(async (preserveCurrentRows = false) => {
+    if (preserveCurrentRows) setIsRefreshing(true);
+    else setIsLoading(true);
     setError("");
     try {
-      const items = await listEdgeApplications(namespace === "all" ? undefined : namespace);
+      if (!selectedEdgeUnitName) {
+        setData([]);
+        return;
+      }
+      const [allItems, scope] = await Promise.all([
+        listEdgeApplications(namespace === "all" ? undefined : namespace),
+        getEdgeUnitResources(selectedEdgeUnitName).catch(() => null),
+      ]);
+      const allowed = scope ? new Set(scope.item.edgeApplications.map((item) => `${item.namespace}/${item.name}`)) : null;
+      const items = allowed ? allItems.filter((item) => allowed.has(`${getResourceNamespace(item)}/${getResourceName(item)}`)) : allItems;
       const rows = items.map(toEdgeApp);
       const detailedRows = await Promise.all(
         rows.map(async (row) => {
@@ -543,9 +581,10 @@ spec:
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载边缘应用失败");
     } finally {
-      setIsLoading(false);
+      if (preserveCurrentRows) setIsRefreshing(false);
+      else setIsLoading(false);
     }
-  }, [namespace]);
+  }, [namespace, selectedEdgeUnitName]);
 
   useEffect(() => {
     void loadData();
@@ -594,7 +633,6 @@ spec:
   const start = (currentPage - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
   const createName = form.name.trim();
-  const createContainersValid = form.containers.length > 0 && form.containers.every((container) => container.name.trim() && container.image.trim());
   const generatedFormYaml = useMemo(() => yaml.dump(buildEdgeApplicationResource({ ...form, name: createName || "edge-app" }), { noRefs: true, noCompatMode: true, lineWidth: 120 }), [form, createName]);
   const createNameError = createName && !isValidK8sName(createName)
     ? "名称只能包含小写字母、数字和中划线，且首尾必须是字母或数字"
@@ -712,7 +750,8 @@ spec:
       setIsLoading(true);
       setError("");
       try {
-        await createEdgeApplicationResource(validateEdgeApplicationResource(parseSimpleYaml(yamlText)));
+        if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
+        await createEdgeApplicationResource(assignEdgeApplicationToEdgeUnit(validateEdgeApplicationResource(parseSimpleYaml(yamlText)), selectedEdgeUnitName));
         setCreateOpen(false);
         await loadData();
       } catch (err) {
@@ -868,7 +907,8 @@ spec:
     setIsLoading(true);
     setError("");
     try {
-      await createEdgeApplicationResource(buildEdgeApplicationResource(normalizedForm));
+      if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
+      await createEdgeApplicationResource(assignEdgeApplicationToEdgeUnit(buildEdgeApplicationResource(normalizedForm), selectedEdgeUnitName));
       setCreateOpen(false);
       setForm({
         name: "",
@@ -913,6 +953,14 @@ spec:
 
   const handleEdit = async () => {
     if (!editItem) return;
+    if (!editForm.image.trim()) {
+      setEditImageError("请输入容器镜像");
+      window.requestAnimationFrame(() => {
+        document.getElementById("edge-app-edit-image")?.scrollIntoView({ behavior: "smooth", block: "center" });
+        document.getElementById("edge-app-edit-image")?.focus({ preventScroll: true });
+      });
+      return;
+    }
     setIsLoading(true);
     setError("");
     try {
@@ -977,10 +1025,10 @@ spec:
             variant="outline"
             size="sm"
             className="blueedge-muted-button h-9 px-3 text-sm"
-            onClick={loadData}
-            disabled={isLoading}
+            onClick={() => void loadData(true)}
+            disabled={isLoading || isRefreshing}
           >
-            <RefreshCw className="w-3.5 h-3.5 mr-1" />
+            <RefreshCw className={cn("w-3.5 h-3.5 mr-1", (isLoading || isRefreshing) && "animate-spin")} />
             刷新
           </Button>
           <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -1003,7 +1051,6 @@ spec:
                 generatedYaml={generatedFormYaml}
                 error={error}
                 submitting={isLoading}
-                canSubmit={Boolean(createName && !createNameError && createContainersValid)}
                 onCancel={() => setCreateOpen(false)}
                 onSubmit={handleCreate}
               />
@@ -1101,7 +1148,7 @@ spec:
               </Tabs>
               <DialogFooter className="border-t border-[var(--color-border-strong)] px-6 py-4">
                 <Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button>
-                <Button size="sm"  onClick={handleCreate} disabled={createMode === "yaml" ? !yamlText.trim() : (!createName || !!createNameError || !createContainersValid)}>创建</Button>
+                <Button size="sm" onClick={handleCreate}>创建</Button>
               </DialogFooter>
               </div>
             </DialogContent>
@@ -1124,7 +1171,8 @@ spec:
                 )}
                 <div className="space-y-1.5">
                   <Label className="text-xs text-[var(--color-text-secondary)]">镜像</Label>
-                  <Input value={editForm.image} onChange={(e) => setEditForm({ ...editForm, image: e.target.value })} className="h-9 text-sm" />
+                  <Input id="edge-app-edit-image" value={editForm.image} onChange={(e) => { setEditForm({ ...editForm, image: e.target.value }); setEditImageError(""); }} aria-invalid={Boolean(editImageError)} className="h-9 text-sm" />
+                  {editImageError && <p className="mt-1 text-xs text-[var(--color-danger)]">{editImageError}</p>}
                 </div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">CPU 限制</Label><Input value={editForm.cpuLimit} onChange={(e) => setEditForm({ ...editForm, cpuLimit: e.target.value })} className="h-9 text-sm" /></div>
@@ -1133,7 +1181,7 @@ spec:
               </div>
               <DialogFooter>
                 <Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button>
-                <Button size="sm"  onClick={handleEdit} disabled={!editItem || !editForm.image}>保存</Button>
+                <Button size="sm" onClick={handleEdit}>保存</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
@@ -1365,9 +1413,9 @@ spec:
                     {selected.status === "已暂停" ? <Play className="w-3.5 h-3.5 mr-1" /> : <Pause className="w-3.5 h-3.5 mr-1" />}
                     {selected.status === "已暂停" ? "恢复" : "暂停"}
                   </Button>
-                  <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => { setDetailOpen(false); openDelete(selected); }}>
-                    <Trash2 className="w-3.5 h-3.5 mr-1 text-[var(--color-danger)]" />
-                    <span className="text-[var(--color-danger)]">删除</span>
+                  <Button size="sm" variant="outline" className="h-8 text-xs text-[var(--color-text-secondary)]" onClick={() => { setDetailOpen(false); openDelete(selected); }}>
+                    <Trash2 className="mr-1 h-3.5 w-3.5" />
+                    <span>删除</span>
                   </Button>
                 </div>
               </TabsContent>

@@ -26,7 +26,7 @@ import {
 } from "../utils/validation.js";
 import {
   getEdgeUnitNodes,
-  resolveEdgeUnitNodeGroupRef,
+  resolveEdgeUnitReference,
 } from "./edge-unit-source.service.js";
 
 const accessConfigNameLabel = "blueedge.io/access-config";
@@ -136,7 +136,7 @@ function accessConfigMatches(configMap: any, name: string): boolean {
 
 function isValidAccessConfigMap(configMap: any, warnings: EdgeUnitWarning[]): boolean {
   const data = dataOf(configMap);
-  if (data.name && data.edgeUnitRef && data.nodeGroupRef && data.nodeName && data.architecture && data.kubeEdgeVersion) return true;
+  if (data.name && data.edgeUnitRef && data.nodeName && data.architecture && data.kubeEdgeVersion) return true;
   warnings.push({
     source: "access-config.configmap",
     message: `Invalid AccessConfig ConfigMap ${metadataOf(configMap).namespace || blueedgeNamespace()}/${metadataOf(configMap).name || "-"}: missing required data fields`,
@@ -295,14 +295,14 @@ export async function createAccessConfig(body: any) {
   if (existing) {
     return { status: 409, body: { message: `AccessConfig ${name} already exists`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
-  const nodeGroupRef = await resolveEdgeUnitNodeGroupRef(edgeUnitRef, warnings);
-  if (!nodeGroupRef) {
-    return { status: 400, body: { message: `EdgeUnit ${edgeUnitRef} does not exist or has no valid nodeGroupRef`, ...(warnings.length > 0 ? { warnings } : {}) } };
+  const edgeUnit = await resolveEdgeUnitReference(edgeUnitRef, warnings);
+  if (!edgeUnit) {
+    return { status: 400, body: { message: `EdgeUnit ${edgeUnitRef} does not exist`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
 
   let configMap;
   try {
-    configMap = buildAccessConfigMap(body, nodeGroupRef);
+    configMap = buildAccessConfigMap(body, edgeUnit.nodeGroupRef);
   } catch (error) {
     return validationError(error, "Invalid EdgeUnit payload");
   }
@@ -335,14 +335,14 @@ export async function updateAccessConfig(name: string, body: any) {
   }
 
   const nextEdgeUnitRef = readStringField(body, "edgeUnitRef") || dataOf(existing).edgeUnitRef;
-  const nodeGroupRef = await resolveEdgeUnitNodeGroupRef(nextEdgeUnitRef, warnings);
-  if (!nodeGroupRef) {
-    return { status: 400, body: { message: `EdgeUnit ${nextEdgeUnitRef} does not exist or has no valid nodeGroupRef`, ...(warnings.length > 0 ? { warnings } : {}) } };
+  const edgeUnit = await resolveEdgeUnitReference(nextEdgeUnitRef, warnings);
+  if (!edgeUnit) {
+    return { status: 400, body: { message: `EdgeUnit ${nextEdgeUnitRef} does not exist`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
 
   let configMap;
   try {
-    configMap = buildAccessConfigMap(body, nodeGroupRef, existing, { allowNodeName: !existingView.registered });
+    configMap = buildAccessConfigMap(body, edgeUnit.nodeGroupRef, existing, { allowNodeName: !existingView.registered });
   } catch (error) {
     return validationError(error, "Invalid EdgeUnit payload");
   }

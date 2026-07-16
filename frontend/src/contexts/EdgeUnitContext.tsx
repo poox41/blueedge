@@ -61,12 +61,9 @@ export function EdgeUnitProvider({ children }: { children: React.ReactNode }) {
   }, [refreshEdgeUnits]);
 
   const selectEdgeUnit = useCallback((name: string) => {
-    setSelectedEdgeUnitName((current) => {
-      if (!edgeUnits.some((item) => item.name === name)) return current;
-      window.localStorage.setItem(STORAGE_KEY, name);
-      return name;
-    });
-  }, [edgeUnits]);
+    window.localStorage.setItem(STORAGE_KEY, name);
+    setSelectedEdgeUnitName(name);
+  }, []);
 
   const selectedEdgeUnit = useMemo(
     () => edgeUnits.find((item) => item.name === selectedEdgeUnitName) || null,

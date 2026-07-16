@@ -18,6 +18,7 @@ import { getPersistentVolumeClaimSummary, listPersistentVolumeClaimSummaries, li
 import type { StorageClassSummary } from "@/api/adapters/storage-class.adapter";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { validateRequiredDomFields } from "@/lib/form-validation";
 import { useNamespace } from "@/contexts/NamespaceContext";
 
 interface PVC {
@@ -174,6 +175,9 @@ export function PersistentVolumeClaims() {
     }
   };
   const handleCreate = async () => {
+    if (!validateRequiredDomFields([
+      { elementId: "persistent-volume-claim-create-name", valid: Boolean(form.name.trim()), message: "请输入持久卷声明名称" },
+    ])) return;
     setIsLoading(true);
     setError("");
     try {
@@ -200,7 +204,7 @@ export function PersistentVolumeClaims() {
               <DialogHeader><DialogTitle className="text-base">创建持久卷声明</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input placeholder="如 my-pvc" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input id="persistent-volume-claim-create-name" placeholder="如 my-pvc" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">命名空间</Label>
                     <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value })} className="blueedge-native-select">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
                   </div>
@@ -213,7 +217,7 @@ export function PersistentVolumeClaims() {
                   <select value={form.accessMode} onChange={e => setForm({ ...form, accessMode: e.target.value })} className="blueedge-native-select"><option>ReadWriteOnce</option><option>ReadOnlyMany</option><option>ReadWriteMany</option></select>
                 </div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm"  onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" onClick={handleCreate} disabled={isLoading}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
         </div>

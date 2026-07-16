@@ -4,6 +4,7 @@ export interface EdgeUnitAuxSources {
   nodes: any[];
   deployments: any[];
   edgeApplications: any[];
+  accessConfigs: any[];
 }
 
 export interface NodeGroupDetails {

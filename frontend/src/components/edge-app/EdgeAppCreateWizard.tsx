@@ -10,6 +10,7 @@ import { ContainerEditor } from "./ContainerEditor";
 import { VolumeEditor } from "./VolumeEditor";
 import { emptyContainer } from "./container-model";
 import type { EdgeApplicationForm } from "./container-model";
+import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 
 interface Props {
   form: EdgeApplicationForm;
@@ -23,7 +24,6 @@ interface Props {
   generatedYaml: string;
   error: string;
   submitting: boolean;
-  canSubmit: boolean;
   onCancel: () => void;
   onSubmit: () => void;
 }
@@ -49,7 +49,7 @@ function PairEditor({ title, value, onChange }: { title: string; value: string; 
           <div key={index} className="grid grid-cols-[1fr_1fr_36px] gap-2">
             <Input value={row.key} placeholder="键" onChange={(event) => commit(rows.map((item, i) => i === index ? { key: event.target.value, value: item.value } : item))} />
             <Input value={row.value} placeholder="值" onChange={(event) => commit(rows.map((item, i) => i === index ? { key: item.key, value: event.target.value } : item))} />
-            <Button type="button" variant="ghost" size="icon" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-danger)]" onClick={() => commit(rows.filter((_, i) => i !== index))}><Trash2 className="h-4 w-4" /></Button>
+            <Button type="button" variant="ghost" size="icon" className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]" onClick={() => commit(rows.filter((_, i) => i !== index))}><Trash2 className="h-4 w-4" /></Button>
           </div>
         ))}
         <Button type="button" variant="ghost" size="sm" className="h-8 px-1 text-[var(--color-brand)] hover:bg-transparent hover:text-[var(--color-brand)]" onClick={() => commit([...rows, { key: `key-${rows.length + 1}`, value: "value" }])}><Plus className="mr-1 h-4 w-4" />添加</Button>
@@ -92,15 +92,40 @@ function UpgradeRow({ label, required = false, help, children }: { label: string
 
 export function EdgeAppCreateWizard(props: Props) {
   const [step, setStep] = useState(0);
+  const validation = useRequiredFieldValidation<"yaml" | "name" | "namespace" | "nodeGroup" | "replicas" | "containerName" | "containerImage">();
   const { form, onFormChange: change } = props;
   const patch = <K extends keyof EdgeApplicationForm>(key: K, value: EdgeApplicationForm[K]) => change({ ...form, [key]: value });
+
+  const goNext = () => {
+    const validWorkloadName = /^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(form.name.trim());
+    if (step === 0 && !validation.validate([
+      { field: "name", valid: validWorkloadName, message: form.name.trim() ? "名称仅支持小写字母、数字和中横线，且须以字母或数字开头结尾" : "请输入负载名称", elementId: "edge-app-name" },
+      { field: "namespace", valid: Boolean(form.namespace.trim()), message: "请选择命名空间", elementId: "edge-app-namespace" },
+      { field: "nodeGroup", valid: Boolean(form.targetNodeGroup.trim()), message: "请选择目标节点组", elementId: "edge-app-node-group" },
+      { field: "replicas", valid: form.type !== "Deployment" || Number(form.replicas) > 0, message: "实例数必须大于 0", elementId: "edge-app-replicas" },
+    ])) return;
+    if (step === 1) {
+      const invalidIndex = form.containers.findIndex((item) => !item.name.trim() || !item.image.trim());
+      const invalid = invalidIndex >= 0 ? form.containers[invalidIndex] : undefined;
+      if (!validation.validate([
+        { field: "containerName", valid: Boolean(invalid?.name.trim() ?? form.containers.length), message: "请输入容器名称", elementId: `edge-app-container-name-${Math.max(0, invalidIndex)}` },
+        { field: "containerImage", valid: Boolean(invalid?.image.trim() ?? form.containers.length), message: "请输入容器镜像", elementId: `edge-app-container-image-${Math.max(0, invalidIndex)}` },
+      ])) return;
+    }
+    setStep((current) => current + 1);
+  };
+
+  const submitYaml = () => {
+    if (!validation.validate([{ field: "yaml", valid: Boolean(props.yamlText.trim()), message: "请输入 YAML 内容", elementId: "edge-app-yaml" }])) return;
+    props.onSubmit();
+  };
 
   if (props.mode === "yaml") {
     return (
       <div className="flex h-full min-h-0 flex-col bg-[var(--color-bg-soft)]">
         <header className="flex h-14 shrink-0 items-center justify-between border-b bg-white px-6"><div className="flex items-center gap-3"><Button variant="ghost" size="icon" onClick={props.onCancel}><ArrowLeft className="h-5 w-5" /></Button><h2 className="text-lg font-semibold">YAML 创建边缘应用</h2></div><Button variant="outline" size="sm" onClick={() => props.onModeChange("form")}>切换到表单创建</Button></header>
-        <main className="min-h-0 flex-1 p-6"><Textarea value={props.yamlText} onChange={(event) => props.onYamlChange(event.target.value)} className="h-full min-h-[600px] resize-none bg-white font-mono text-xs" /></main>
-        <footer className="flex h-16 shrink-0 items-center justify-end gap-3 border-t bg-white px-6"><Button variant="ghost" onClick={props.onCancel}>取消</Button><Button onClick={props.onSubmit} disabled={!props.yamlText.trim() || props.submitting}>确认创建</Button></footer>
+        <main className="min-h-0 flex-1 p-6"><Textarea id="edge-app-yaml" value={props.yamlText} onChange={(event) => { props.onYamlChange(event.target.value); validation.clearError("yaml"); }} aria-invalid={Boolean(validation.errors.yaml)} className="h-full min-h-[600px] resize-none bg-white font-mono text-xs" /><RequiredFieldError id="edge-app-yaml-error" message={validation.errors.yaml} /></main>
+        <footer className="flex h-16 shrink-0 items-center justify-end gap-3 border-t bg-white px-6"><Button variant="ghost" onClick={props.onCancel}>取消</Button><Button onClick={submitYaml} disabled={props.submitting}>确认创建</Button></footer>
       </div>
     );
   }
@@ -124,12 +149,12 @@ export function EdgeAppCreateWizard(props: Props) {
         {step === 0 && (
           <section className="mx-auto max-w-3xl rounded-lg bg-white p-8 shadow-sm">
             <div className="grid grid-cols-[140px_1fr] gap-x-5 gap-y-5">
-              <Label className="pt-2 text-right">负载名称 *</Label><div><Input value={form.name} onChange={(event) => patch("name", event.target.value)} placeholder="最长 63 个字符，小写字母、数字或中划线" /><p className="mt-1 text-xs text-[var(--color-text-tertiary)]">用于 EdgeApplication 和内部工作负载 metadata.name。</p></div>
+              <Label className="pt-2 text-right">负载名称 *</Label><div><Input id="edge-app-name" value={form.name} onChange={(event) => { patch("name", event.target.value); validation.clearError("name"); }} aria-invalid={Boolean(validation.errors.name)} placeholder="最长 63 个字符，小写字母、数字或中划线" /><p className="mt-1 text-xs text-[var(--color-text-tertiary)]">用于 EdgeApplication 和内部工作负载 metadata.name。</p><RequiredFieldError id="edge-app-name-error" message={validation.errors.name} /></div>
               <Label className="pt-2 text-right">负载别名<OptionalBadge /></Label><Input value={form.alias} onChange={(event) => patch("alias", event.target.value)} />
               <Label className="pt-2 text-right">工作负载类型 *</Label><Select value={form.type} onValueChange={(value) => patch("type", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="Deployment">Deployment</SelectItem><SelectItem value="DaemonSet">DaemonSet</SelectItem><SelectItem value="Job">Job</SelectItem><SelectItem value="Pod">Pod</SelectItem></SelectContent></Select>
-              <Label className="pt-2 text-right">命名空间 *</Label><Select value={form.namespace} onValueChange={(value) => patch("namespace", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{props.namespaces.filter((item) => item.value !== "all").map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select>
-              {form.type === "Deployment" && <><Label className="pt-2 text-right">实例数 *</Label><Input type="number" min={1} value={form.replicas} onChange={(event) => patch("replicas", Number(event.target.value))} /></>}
-              <Label className="pt-2 text-right">目标节点组 *</Label><Select value={form.targetNodeGroup} onValueChange={(value) => patch("targetNodeGroup", value)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent>{props.nodeGroups.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select>
+              <Label className="pt-2 text-right">命名空间 *</Label><div><Select value={form.namespace} onValueChange={(value) => { patch("namespace", value); validation.clearError("namespace"); }}><SelectTrigger id="edge-app-namespace" aria-invalid={Boolean(validation.errors.namespace)}><SelectValue /></SelectTrigger><SelectContent>{props.namespaces.filter((item) => item.value !== "all").map((item) => <SelectItem key={item.value} value={item.value}>{item.label}</SelectItem>)}</SelectContent></Select><RequiredFieldError id="edge-app-namespace-error" message={validation.errors.namespace} /></div>
+              {form.type === "Deployment" && <><Label className="pt-2 text-right">实例数 *</Label><div><Input id="edge-app-replicas" type="number" min={1} value={form.replicas} onChange={(event) => { patch("replicas", Number(event.target.value)); validation.clearError("replicas"); }} aria-invalid={Boolean(validation.errors.replicas)} /><RequiredFieldError id="edge-app-replicas-error" message={validation.errors.replicas} /></div></>}
+              <Label className="pt-2 text-right">目标节点组 *</Label><div><Select value={form.targetNodeGroup} onValueChange={(value) => { patch("targetNodeGroup", value); validation.clearError("nodeGroup"); }}><SelectTrigger id="edge-app-node-group" aria-invalid={Boolean(validation.errors.nodeGroup)}><SelectValue /></SelectTrigger><SelectContent>{props.nodeGroups.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select><RequiredFieldError id="edge-app-node-group-error" message={validation.errors.nodeGroup} /></div>
               <Label className="pt-2 text-right">描述<OptionalBadge /></Label><Textarea value={form.description} onChange={(event) => patch("description", event.target.value)} className="min-h-28" />
             </div>
           </section>
@@ -139,7 +164,7 @@ export function EdgeAppCreateWizard(props: Props) {
           <section className="mx-auto max-w-6xl space-y-5">
             <div className="flex items-center justify-between rounded-lg bg-white p-4 shadow-sm"><div><h3 className="font-medium">容器配置</h3><p className="mt-1 text-xs text-[var(--color-text-tertiary)]">工作容器与初始化容器复用同一套资源、命令、环境变量、挂载和安全配置。</p></div><div className="flex gap-2"><Button variant="outline" onClick={() => patch("initContainers", [...form.initContainers, emptyContainer(`init-${form.initContainers.length + 1}`, "busybox:latest")])}><Plus className="mr-1 h-4 w-4" />初始化容器</Button><Button onClick={() => patch("containers", [...form.containers, emptyContainer(`container-${form.containers.length + 1}`, "")])}><Plus className="mr-1 h-4 w-4" />工作容器</Button></div></div>
             <div className="rounded-lg bg-white p-4 shadow-sm"><Label>镜像仓库密钥</Label><Input className="mt-2 max-w-xl" value={form.imagePullSecrets} onChange={(event) => patch("imagePullSecrets", event.target.value)} placeholder="多个 Secret 使用逗号分隔" /></div>
-            {form.containers.map((container, index) => <ContainerEditor key={container.id} title={`工作容器 ${index + 1}`} value={container} onChange={(next) => patch("containers", form.containers.map((item) => item.id === container.id ? next : item))} onRemove={form.containers.length > 1 ? () => patch("containers", form.containers.filter((item) => item.id !== container.id)) : undefined} />)}
+            {form.containers.map((container, index) => <ContainerEditor key={container.id} title={`工作容器 ${index + 1}`} value={container} nameId={`edge-app-container-name-${index}`} imageId={`edge-app-container-image-${index}`} nameError={!container.name.trim() ? validation.errors.containerName : undefined} imageError={!container.image.trim() ? validation.errors.containerImage : undefined} onChange={(next) => { patch("containers", form.containers.map((item) => item.id === container.id ? next : item)); if (next.name.trim()) validation.clearError("containerName"); if (next.image.trim()) validation.clearError("containerImage"); }} onRemove={form.containers.length > 1 ? () => patch("containers", form.containers.filter((item) => item.id !== container.id)) : undefined} />)}
             {form.initContainers.map((container, index) => <ContainerEditor key={container.id} title={`初始化容器 ${index + 1}`} isInit value={container} onChange={(next) => patch("initContainers", form.initContainers.map((item) => item.id === container.id ? next : item))} onRemove={() => patch("initContainers", form.initContainers.filter((item) => item.id !== container.id))} />)}
             <VolumeEditor values={form.volumes} onChange={(volumes) => patch("volumes", volumes)} />
           </section>
@@ -172,7 +197,7 @@ export function EdgeAppCreateWizard(props: Props) {
           </section>
         )}
       </main>
-      <footer className="flex h-16 shrink-0 items-center justify-end gap-3 border-t bg-white px-6"><Button variant="ghost" onClick={props.onCancel}>取消</Button>{step > 0 && <Button variant="outline" onClick={() => setStep(step - 1)}><ChevronLeft className="mr-1 h-4 w-4" />上一步</Button>}{step < 2 ? <Button onClick={() => setStep(step + 1)} disabled={!props.canSubmit}>下一步<ChevronRight className="ml-1 h-4 w-4" /></Button> : <Button onClick={props.onSubmit} disabled={!props.canSubmit || props.submitting}>确认创建</Button>}</footer>
+      <footer className="flex h-16 shrink-0 items-center justify-end gap-3 border-t bg-white px-6"><Button variant="ghost" onClick={props.onCancel}>取消</Button>{step > 0 && <Button variant="outline" onClick={() => setStep(step - 1)}><ChevronLeft className="mr-1 h-4 w-4" />上一步</Button>}{step < 2 ? <Button onClick={goNext}>下一步<ChevronRight className="ml-1 h-4 w-4" /></Button> : <Button onClick={props.onSubmit} disabled={props.submitting}>确认创建</Button>}</footer>
     </div>
   );
 }

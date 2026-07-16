@@ -31,6 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 import { createRuleResource, deleteRuleResource, getRule, listNamespaces, listRuleEndpoints, listRules, updateRuleResource } from "@/api/services/resources";
 import { getRuleAudit, getRuleDelivery, getRuleEvents } from "@/api/services/product";
 import type { ClusterEvent, RuleAuditResponse, RuleDeliverySummary } from "@/api/services/product";
@@ -282,6 +283,7 @@ export function Rules() {
   const [routes, setRoutes] = useState<MessageRouteRow[]>([]);
   const [endpoints, setEndpoints] = useState<RuleEndpointView[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [search, setSearch] = useState("");
@@ -301,7 +303,8 @@ export function Rules() {
   const [refreshingNamespaces, setRefreshingNamespaces] = useState(false);
 
   const loadData = useCallback(async (preserveData = false) => {
-    setIsLoading(true);
+    if (preserveData) setIsRefreshing(true);
+    else setIsLoading(true);
     setError("");
     try {
       const [ruleItems, endpointItems] = await Promise.all([listRules(), listRuleEndpoints()]);
@@ -314,7 +317,8 @@ export function Rules() {
         setRoutes([]);
       }
     } finally {
-      setIsLoading(false);
+      if (preserveData) setIsRefreshing(false);
+      else setIsLoading(false);
     }
   }, []);
 
@@ -535,7 +539,6 @@ export function Rules() {
           targetOptions={targetOptions}
           sourceEndpoint={sourceEndpoint}
           targetEndpoint={targetEndpoint}
-          canSave={Boolean(canSave)}
           refreshingNamespaces={refreshingNamespaces}
           onOpenChange={(open) => {
             setCreateOpen(open);
@@ -568,8 +571,8 @@ export function Rules() {
           />
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => void loadData(true)} className="action-button h-10 w-10" title="刷新" disabled={isLoading}>
-            <RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} />
+          <button type="button" onClick={() => void loadData(true)} className="action-button h-10 w-10" title="刷新" disabled={isLoading || isRefreshing}>
+            <RefreshCw className={cn("h-4 w-4", (isLoading || isRefreshing) && "animate-spin")} />
           </button>
           <button type="button" onClick={openCreate} className="blueedge-primary-button h-10 rounded-xl px-4">
             <Plus className="h-4 w-4" />
@@ -647,7 +650,7 @@ export function Rules() {
           <div className="fixed z-[90] rounded-xl border border-[#eef2f7] bg-white p-1.5 shadow-[0_18px_45px_rgba(15,23,42,0.14)]" style={{ top: menuPosition.top, left: menuPosition.left, width: 120 }}>
             <button
               type="button"
-              className="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-xs font-medium text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]"
+              className="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-xs font-medium text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
               onClick={() => {
                 setDeleteTarget(menuTarget);
                 setMenuTarget(null);
@@ -669,7 +672,6 @@ export function Rules() {
         targetOptions={targetOptions}
         sourceEndpoint={sourceEndpoint}
         targetEndpoint={targetEndpoint}
-        canSave={Boolean(canSave)}
         refreshingNamespaces={refreshingNamespaces}
         onOpenChange={(open) => {
           setCreateOpen(open);
@@ -730,7 +732,6 @@ function CreateRouteDialog({
   targetOptions,
   sourceEndpoint,
   targetEndpoint,
-  canSave,
   refreshingNamespaces,
   onOpenChange,
   onChange,
@@ -745,7 +746,6 @@ function CreateRouteDialog({
   targetOptions: RuleEndpointView[];
   sourceEndpoint?: RuleEndpointView;
   targetEndpoint?: RuleEndpointView;
-  canSave: boolean;
   refreshingNamespaces: boolean;
   onOpenChange: (open: boolean) => void;
   onChange: (form: RouteForm) => void;
@@ -753,6 +753,19 @@ function CreateRouteDialog({
   onSave: () => void;
 }) {
   const [showHelp, setShowHelp] = useState(true);
+  const validation = useRequiredFieldValidation<"name" | "namespace" | "source" | "sourceResource" | "target" | "targetResource">();
+  const submit = () => {
+    const directionValid = Boolean(sourceEndpoint && targetEndpoint && sourceTargetAllowed(sourceEndpoint.type, targetEndpoint.type));
+    if (!validation.validate([
+      { field: "name", valid: validName(form.name.trim()), message: form.name.trim() ? "名称格式不正确，仅支持小写字母、数字和中划线" : "请输入消息路由名称", elementId: "message-route-name" },
+      { field: "namespace", valid: Boolean(form.namespace), message: "请选择命名空间", elementId: "message-route-namespace" },
+      { field: "source", valid: Boolean(form.source) && directionValid, message: form.source && !directionValid ? "当前源端点与目的端点组合不受支持" : "请选择源端点", elementId: "message-route-source" },
+      { field: "sourceResource", valid: Boolean(editing || form.sourceResource.trim()), message: "请输入源端点资源", elementId: "message-route-source-resource" },
+      { field: "target", valid: Boolean(form.target) && directionValid, message: form.target && !directionValid ? "当前源端点与目的端点组合不受支持" : "请选择目的端点", elementId: "message-route-target" },
+      { field: "targetResource", valid: Boolean(editing || form.targetResource.trim()), message: "请输入目的端点资源", elementId: "message-route-target-resource" },
+    ])) return;
+    onSave();
+  };
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[min(720px,calc(100vh-48px))] w-[calc(100vw-48px)] max-w-[600px] flex-col gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[600px]" showCloseButton={false}>
@@ -784,14 +797,14 @@ function CreateRouteDialog({
 
             <div className="space-y-5">
               <div>
-                <RouteTextField label="消息路由名称" required value={form.name} onChange={(value) => onChange({ ...form, name: value })} placeholder="请输入消息路由名称" />
+                <RouteTextField id="message-route-name" label="消息路由名称" required value={form.name} onChange={(value) => { onChange({ ...form, name: value }); validation.clearError("name"); }} placeholder="请输入消息路由名称" error={validation.errors.name} />
                 <p className="mt-1.5 text-xs leading-5 text-[var(--color-text-tertiary)]">支持小写英文字母、数字和中横线（-）；必须以小写英文字母或数字开头和结尾；长度限制为 1~253 个字符。</p>
               </div>
               <div>
                 <RouteLabel required>命名空间</RouteLabel>
                 <div className="flex items-center gap-2">
                   <div className="relative min-w-0 flex-1">
-                    <select value={form.namespace} onChange={(event) => onChange({ ...form, namespace: event.target.value, source: "", target: "" })} className="h-9 w-full appearance-none rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 pr-9 text-sm outline-none focus:border-[var(--color-brand)]">
+                    <select id="message-route-namespace" value={form.namespace} onChange={(event) => { onChange({ ...form, namespace: event.target.value, source: "", target: "" }); validation.clearError("namespace"); }} aria-invalid={Boolean(validation.errors.namespace)} className="h-9 w-full appearance-none rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 pr-9 text-sm outline-none focus:border-[var(--color-brand)]">
                       {namespaceItems.length === 0 && <option value="default">default</option>}
                       {namespaceItems.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                     </select>
@@ -802,6 +815,7 @@ function CreateRouteDialog({
                   </button>
                   <a href="https://183.95.195.121:31417/kpanda/clusters/ali-139-131/namespaces" target="_blank" rel="noreferrer" className="shrink-0 text-xs text-[#1a73e8]">创建命名空间</a>
                 </div>
+                <RequiredFieldError id="message-route-namespace-error" message={validation.errors.namespace} />
               </div>
 
               <EndpointPicker
@@ -814,9 +828,11 @@ function CreateRouteDialog({
                 selectPlaceholder="请选择源端点"
                 options={sourceOptions}
                 onSearchChange={(value) => onChange({ ...form, sourceSearch: value })}
-                onSelectChange={(value) => onChange({ ...form, source: value, target: "", targetResource: "" })}
+                onSelectChange={(value) => { onChange({ ...form, source: value, target: "", targetResource: "" }); validation.clearError("source"); validation.clearError("target"); }}
+                id="message-route-source"
+                error={validation.errors.source}
               />
-              {!editing && <RouteTextField label="源端点资源" required value={form.sourceResource} onChange={(value) => onChange({ ...form, sourceResource: value })} placeholder={resourcePlaceholder(sourceEndpoint, "source")} />}
+              {!editing && <RouteTextField id="message-route-source-resource" label="源端点资源" required value={form.sourceResource} onChange={(value) => { onChange({ ...form, sourceResource: value }); validation.clearError("sourceResource"); }} placeholder={resourcePlaceholder(sourceEndpoint, "source")} error={validation.errors.sourceResource} />}
 
               <EndpointPicker
                 label="目的端点"
@@ -828,9 +844,11 @@ function CreateRouteDialog({
                 selectPlaceholder="请选择目的端点"
                 options={targetOptions}
                 onSearchChange={(value) => onChange({ ...form, targetSearch: value })}
-                onSelectChange={(value) => onChange({ ...form, target: value })}
+                onSelectChange={(value) => { onChange({ ...form, target: value }); validation.clearError("target"); }}
+                id="message-route-target"
+                error={validation.errors.target}
               />
-              {!editing && <RouteTextField label="目的端点资源" required value={form.targetResource} onChange={(value) => onChange({ ...form, targetResource: value })} placeholder={resourcePlaceholder(targetEndpoint, "target")} />}
+              {!editing && <RouteTextField id="message-route-target-resource" label="目的端点资源" required value={form.targetResource} onChange={(value) => { onChange({ ...form, targetResource: value }); validation.clearError("targetResource"); }} placeholder={resourcePlaceholder(targetEndpoint, "target")} error={validation.errors.targetResource} />}
 
               <div>
                 <RouteLabel>描述</RouteLabel>
@@ -856,7 +874,7 @@ function CreateRouteDialog({
 
         <DialogFooter className="h-16 shrink-0 border-t border-[var(--color-border)] px-6 py-3">
           <button type="button" onClick={() => onOpenChange(false)} className="btn-secondary">取消</button>
-          <button type="button" onClick={onSave} disabled={!canSave} className="btn-black text-sm disabled:cursor-not-allowed disabled:opacity-45">
+          <button type="button" onClick={submit} className="btn-black text-sm">
             {editing ? "保存" : "创建"}
           </button>
         </DialogFooter>
@@ -880,11 +898,12 @@ function RouteLabel({ children, required }: { children: string; required?: boole
   );
 }
 
-function RouteTextField({ label, required, disabled, value, onChange, placeholder }: { label: string; required?: boolean; disabled?: boolean; value: string; onChange: (value: string) => void; placeholder: string }) {
+function RouteTextField({ id, label, required, disabled, value, onChange, placeholder, error }: { id?: string; label: string; required?: boolean; disabled?: boolean; value: string; onChange: (value: string) => void; placeholder: string; error?: string }) {
   return (
     <div>
       <RouteLabel required={required}>{label}</RouteLabel>
-      <Input disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="h-9 rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 text-sm disabled:cursor-not-allowed disabled:bg-[#f3f4f6]" />
+      <Input id={id} disabled={disabled} value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} aria-invalid={Boolean(error)} className="h-9 rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 text-sm disabled:cursor-not-allowed disabled:bg-[#f3f4f6]" />
+      <RequiredFieldError id={id ? `${id}-error` : undefined} message={error} />
     </div>
   );
 }
@@ -900,6 +919,8 @@ function EndpointPicker({
   options,
   onSearchChange,
   onSelectChange,
+  id,
+  error,
 }: {
   label: string;
   required?: boolean;
@@ -911,13 +932,15 @@ function EndpointPicker({
   options: RuleEndpointView[];
   onSearchChange: (value: string) => void;
   onSelectChange: (value: string) => void;
+  id?: string;
+  error?: string;
 }) {
   return (
     <div>
       <RouteLabel required={required}>{label}</RouteLabel>
       {showSearch && <Input value={searchValue} onChange={(event) => onSearchChange(event.target.value)} placeholder={searchPlaceholder} className="mb-2 h-9 rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 text-sm" />}
       <div className="relative">
-        <select value={selectValue} onChange={(event) => onSelectChange(event.target.value)} className="h-9 w-full appearance-none rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 pr-9 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]">
+        <select id={id} value={selectValue} onChange={(event) => onSelectChange(event.target.value)} aria-invalid={Boolean(error)} className="h-9 w-full appearance-none rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 pr-9 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]">
           <option value="">{selectPlaceholder}</option>
           {options.map((endpoint) => (
             <option key={`${endpoint.namespace}-${endpoint.name}`} value={endpoint.name}>
@@ -927,6 +950,7 @@ function EndpointPicker({
         </select>
         <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
       </div>
+      <RequiredFieldError id={id ? `${id}-error` : undefined} message={error} />
     </div>
   );
 }

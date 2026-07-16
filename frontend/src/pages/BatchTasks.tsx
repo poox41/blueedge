@@ -449,7 +449,7 @@ export function BatchTasks() {
 function UpgradeTableHeader() {
   return (
     <TableHeader>
-      <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+      <TableRow className="h-12 bg-white hover:bg-white">
         <TableHead className="w-[20%] px-5 text-xs text-[var(--color-text-tertiary)]">任务名称</TableHead>
         <TableHead className="w-[10%] px-5 text-xs text-[var(--color-text-tertiary)]">升级状态</TableHead>
         <TableHead className="w-[22%] px-5 text-xs text-[var(--color-text-tertiary)]">升级镜像</TableHead>
@@ -465,7 +465,7 @@ function UpgradeTableHeader() {
 function PreheatTableHeader() {
   return (
     <TableHeader>
-      <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+      <TableRow className="h-12 bg-white hover:bg-white">
         <TableHead className="w-[24%] px-5 text-xs text-[var(--color-text-tertiary)]">任务名称</TableHead>
         <TableHead className="w-[12%] px-5 text-xs text-[var(--color-text-tertiary)]">状态</TableHead>
         <TableHead className="w-[30%] px-5 text-xs text-[var(--color-text-tertiary)]">镜像</TableHead>
@@ -1321,7 +1321,7 @@ function BatchTaskDetailPage({ task, onBack, onRefresh, onDelete, onRetry, onRol
                   setMenuOpen(false);
                   setDeleteOpen(true);
                 }}
-                className="flex h-11 w-full items-center gap-3 rounded-xl px-4 text-sm font-semibold text-[var(--color-danger)] hover:bg-red-50"
+                className="flex h-11 w-full items-center gap-3 rounded-xl px-4 text-sm font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
               >
                 <Trash2 className="h-4 w-4" />
                 删除任务
@@ -1432,7 +1432,7 @@ function TaskStatusTable({ task, refreshing, onRefresh }: { task: BatchTask; ref
       <div className="table-card">
         <Table>
           <TableHeader>
-            <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+            <TableRow className="h-12 bg-white hover:bg-white">
               <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">节点名称</TableHead>
               <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">状态</TableHead>
               <TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">当前事件</TableHead>
@@ -1522,7 +1522,7 @@ function TaskEventsPanel({ items, loading }: { items: BatchTaskEvent[]; loading:
   if (loading) return <DataLoading />;
   if (items.length === 0) return <DataEmpty icon={<AlertTriangle className="h-12 w-12" />} title="暂无事件" description="任务执行过程中产生的事件将在这里显示" />;
   return (
-    <div className="table-card overflow-x-auto"><Table className="min-w-[760px] table-fixed"><TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)]"><TableHead className="w-[160px] px-6 text-xs text-[var(--color-text-tertiary)]">时间</TableHead><TableHead className="w-[80px] px-6 text-xs text-[var(--color-text-tertiary)]">类型</TableHead><TableHead className="w-[120px] px-6 text-xs text-[var(--color-text-tertiary)]">原因</TableHead><TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">消息</TableHead></TableRow></TableHeader><TableBody>{items.map((item, index) => <TableRow key={`${item.time}-${index}`} className="h-[69px]"><TableCell className="px-6 text-xs text-[var(--color-text-tertiary)]">{item.time}</TableCell><TableCell className="px-6"><span className={cn("rounded px-1.5 py-0.5 text-xs", item.type === "Warning" ? "bg-[#fff5e5] text-[#ffb020]" : "bg-[#e8fff2] text-[#16c47f]")}>{item.type}</span></TableCell><TableCell className="px-6 text-xs font-medium text-[#111827]">{item.reason}</TableCell><TableCell className="px-6 text-xs text-[var(--color-text-secondary)]">{item.message}</TableCell></TableRow>)}</TableBody></Table></div>
+    <div className="table-card overflow-x-auto"><Table className="min-w-[760px] table-fixed"><TableHeader><TableRow className="h-12 bg-white hover:bg-white"><TableHead className="w-[160px] px-6 text-xs text-[var(--color-text-tertiary)]">时间</TableHead><TableHead className="w-[80px] px-6 text-xs text-[var(--color-text-tertiary)]">类型</TableHead><TableHead className="w-[120px] px-6 text-xs text-[var(--color-text-tertiary)]">原因</TableHead><TableHead className="px-6 text-xs text-[var(--color-text-tertiary)]">消息</TableHead></TableRow></TableHeader><TableBody>{items.map((item, index) => <TableRow key={`${item.time}-${index}`} className="h-[69px]"><TableCell className="px-6 text-xs text-[var(--color-text-tertiary)]">{item.time}</TableCell><TableCell className="px-6"><span className={cn("rounded px-1.5 py-0.5 text-xs", item.type === "Warning" ? "bg-[#fff5e5] text-[#ffb020]" : "bg-[#e8fff2] text-[#16c47f]")}>{item.type}</span></TableCell><TableCell className="px-6 text-xs font-medium text-[#111827]">{item.reason}</TableCell><TableCell className="px-6 text-xs text-[var(--color-text-secondary)]">{item.message}</TableCell></TableRow>)}</TableBody></Table></div>
   );
 }
 
@@ -1530,7 +1530,7 @@ function TaskAuditPanel({ items, loading }: { items: BatchTaskAuditRecord[]; loa
   if (loading) return <DataLoading />;
   if (items.length === 0) return <DataEmpty icon={<ClipboardList className="h-12 w-12" />} title="暂无审计记录" description="任务操作完成后将生成审计日志" />;
   return (
-    <div className="table-card"><Table><TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)]"><TableHead className="px-6">时间</TableHead><TableHead className="px-6">操作者</TableHead><TableHead className="px-6">操作</TableHead><TableHead className="px-6">结果</TableHead><TableHead className="px-6">说明</TableHead></TableRow></TableHeader><TableBody>{items.map((item, index) => <TableRow key={`${item.time}-${index}`} className="h-[76px]"><TableCell className="px-6 text-[var(--color-text-tertiary)]">{item.time}</TableCell><TableCell className="px-6">{item.actor}</TableCell><TableCell className="px-6 font-semibold">{item.action}</TableCell><TableCell className="px-6 text-emerald-500">{item.result === "success" ? "成功" : "失败"}</TableCell><TableCell className="px-6 text-[var(--color-text-secondary)]">{item.message}</TableCell></TableRow>)}</TableBody></Table></div>
+    <div className="table-card"><Table><TableHeader><TableRow className="h-12 bg-white hover:bg-white"><TableHead className="px-6">时间</TableHead><TableHead className="px-6">操作者</TableHead><TableHead className="px-6">操作</TableHead><TableHead className="px-6">结果</TableHead><TableHead className="px-6">说明</TableHead></TableRow></TableHeader><TableBody>{items.map((item, index) => <TableRow key={`${item.time}-${index}`} className="h-[76px]"><TableCell className="px-6 text-[var(--color-text-tertiary)]">{item.time}</TableCell><TableCell className="px-6">{item.actor}</TableCell><TableCell className="px-6 font-semibold">{item.action}</TableCell><TableCell className="px-6 text-emerald-500">{item.result === "success" ? "成功" : "失败"}</TableCell><TableCell className="px-6 text-[var(--color-text-secondary)]">{item.message}</TableCell></TableRow>)}</TableBody></Table></div>
   );
 }
 

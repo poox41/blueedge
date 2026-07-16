@@ -10,7 +10,7 @@ import type { DeviceModelSummaryListResponse, DeviceModelSummaryResponse } from 
 import type { DeviceSummaryListResponse, DeviceSummaryResponse } from "@/api/adapters/device-summary.adapter";
 import type { DeviceConfigPayload } from "@/lib/device-config";
 import type { EdgeAppSummaryResponse } from "@/api/adapters/edgeapp-summary.adapter";
-import type { EdgeUnitDetailResponse, EdgeUnitListResponse, EdgeUnitWarning } from "@/api/adapters/edge-unit.adapter";
+import type { EdgeUnitDetailResponse, EdgeUnitListResponse, EdgeUnitView, EdgeUnitWarning } from "@/api/adapters/edge-unit.adapter";
 import type { NodeGroupSummaryResponse } from "@/api/adapters/nodegroup-summary.adapter";
 import type { NodeSummaryResponse } from "@/api/adapters/node-summary.adapter";
 import type { ObservabilityKind, ObservabilityLogsResponse, ObservabilitySummaryResponse } from "@/api/adapters/observability.adapter";
@@ -21,7 +21,7 @@ import type { StorageClassListResponse } from "@/api/adapters/storage-class.adap
 
 export interface EdgeUnitCreatePayload {
   name: string;
-  nodeGroupRef: string;
+  nodeGroupRef?: string;
   clusterName?: string;
   accessType?: "external" | "dedicated" | "unknown";
   kubeEdgeVersion?: string;
@@ -31,6 +31,24 @@ export interface EdgeUnitCreatePayload {
 }
 
 export type EdgeUnitUpdatePayload = Omit<EdgeUnitCreatePayload, "name" | "nodeGroupRef">;
+
+export interface EdgeUnitResourceRef {
+  namespace: string;
+  name: string;
+}
+
+export interface EdgeUnitResourceScope {
+  edgeUnit: EdgeUnitView;
+  nodeGroupRef: string;
+  nodeNames: string[];
+  deployments: EdgeUnitResourceRef[];
+  edgeApplications: EdgeUnitResourceRef[];
+}
+
+export interface EdgeUnitResourceScopeResponse {
+  item: EdgeUnitResourceScope;
+  warnings?: EdgeUnitWarning[];
+}
 
 export interface AccessConfigPayload {
   name?: string;
@@ -264,6 +282,11 @@ export async function listEdgeUnits(): Promise<EdgeUnitListResponse> {
 
 export async function getEdgeUnit(name: string): Promise<EdgeUnitDetailResponse> {
   const res = await gatewayRequest<EdgeUnitDetailResponse>(`/blueedge/edge-units/${encodeURIComponent(name)}`);
+  return res.data;
+}
+
+export async function getEdgeUnitResources(name: string): Promise<EdgeUnitResourceScopeResponse> {
+  const res = await gatewayRequest<EdgeUnitResourceScopeResponse>(`/blueedge/edge-units/${encodeURIComponent(name)}/resources`);
   return res.data;
 }
 

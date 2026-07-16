@@ -14,6 +14,7 @@ import { createServiceResource, deleteServiceResource, getService, listServices,
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, ServiceView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { validateRequiredDomFields } from "@/lib/form-validation";
 import { useNamespace } from "@/contexts/NamespaceContext";
 
 interface Svc { namespace: string; name: string; type: string; clusterIP: string; externalIP: string; ports: string; createdAt: string; selector?: Record<string, string>; sessionAffinity?: string; raw: KubeResource; }
@@ -176,6 +177,11 @@ export function Services() {
     }
   };
   const handleCreate = async () => {
+    if (!validateRequiredDomFields([
+      { elementId: "service-create-name", valid: Boolean(form.name.trim()), message: "请输入服务名称" },
+      { elementId: "service-create-port", valid: form.port > 0, message: "请输入大于 0 的服务端口" },
+      { elementId: "service-create-target-port", valid: form.targetPort > 0, message: "请输入大于 0 的目标端口" },
+    ])) return;
     setIsLoading(true);
     setError("");
     try {
@@ -191,6 +197,10 @@ export function Services() {
   };
   const handleEdit = async () => {
     if (!editItem) return;
+    if (!validateRequiredDomFields([
+      { elementId: "service-edit-port", valid: editForm.port > 0, message: "请输入大于 0 的服务端口" },
+      { elementId: "service-edit-target-port", valid: editForm.targetPort > 0, message: "请输入大于 0 的目标端口" },
+    ])) return;
     setIsLoading(true);
     setError("");
     try {
@@ -240,7 +250,7 @@ export function Services() {
               <DialogHeader><DialogTitle className="text-base">创建服务</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input placeholder="如 my-service" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input id="service-create-name" placeholder="如 my-service" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">命名空间</Label>
                     <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value })} className="blueedge-native-select">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
                   </div>
@@ -249,11 +259,11 @@ export function Services() {
                   <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">类型</Label>
                     <select value={form.type} onChange={e => setForm({ ...form, type: e.target.value })} className="blueedge-native-select"><option>ClusterIP</option><option>NodePort</option><option>LoadBalancer</option></select>
                   </div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">端口</Label><Input type="number" value={form.port} onChange={e => setForm({ ...form, port: Number(e.target.value) })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">目标端口</Label><Input type="number" value={form.targetPort} onChange={e => setForm({ ...form, targetPort: Number(e.target.value) })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">端口</Label><Input id="service-create-port" type="number" value={form.port} onChange={e => setForm({ ...form, port: Number(e.target.value) })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">目标端口</Label><Input id="service-create-target-port" type="number" value={form.targetPort} onChange={e => setForm({ ...form, targetPort: Number(e.target.value) })} className="h-9 text-sm" /></div>
                 </div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm"  onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" onClick={handleCreate} disabled={isLoading}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
           <Dialog open={editOpen} onOpenChange={setEditOpen}>
@@ -268,11 +278,11 @@ export function Services() {
                   <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">类型</Label>
                     <select value={editForm.type} onChange={e => setEditForm({ ...editForm, type: e.target.value })} className="blueedge-native-select"><option>ClusterIP</option><option>NodePort</option><option>LoadBalancer</option></select>
                   </div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">端口</Label><Input type="number" value={editForm.port} onChange={e => setEditForm({ ...editForm, port: Number(e.target.value) })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">目标端口</Label><Input type="number" value={editForm.targetPort} onChange={e => setEditForm({ ...editForm, targetPort: Number(e.target.value) })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">端口</Label><Input id="service-edit-port" type="number" value={editForm.port} onChange={e => setEditForm({ ...editForm, port: Number(e.target.value) })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">目标端口</Label><Input id="service-edit-target-port" type="number" value={editForm.targetPort} onChange={e => setEditForm({ ...editForm, targetPort: Number(e.target.value) })} className="h-9 text-sm" /></div>
                 </div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm"  onClick={handleEdit} disabled={!editItem || editForm.port <= 0 || editForm.targetPort <= 0}>保存</Button></DialogFooter>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" onClick={handleEdit} disabled={isLoading}>保存</Button></DialogFooter>
             </DialogContent>
           </Dialog>
         </div>

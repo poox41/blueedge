@@ -35,11 +35,20 @@ import {
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toHomeEdgeUnit, type EdgeUnitUiModel, type EdgeUnitWarning } from "@/api/adapters/edge-unit.adapter";
 import { createEdgeUnit, deleteEdgeUnit, listConnectedClusters, listEdgeUnits, updateEdgeUnit, type EdgeUnitCreatePayload, type EdgeUnitUpdatePayload } from "@/api/services/product";
-import { listNodeGroups } from "@/api/services/resources";
 import { useAuth } from "@/contexts/AuthContext";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 import { cn } from "@/lib/utils";
 
 type EdgeUnit = EdgeUnitUiModel;
@@ -47,7 +56,6 @@ type EdgeUnit = EdgeUnitUiModel;
 type CreateForm = {
   unitType: "专有" | "外接";
   name: string;
-  nodeGroupRef: string;
   description: string;
   cluster: string;
   version: string;
@@ -68,11 +76,11 @@ type CreateForm = {
 };
 
 const versions = ["v1.21.0", "v1.20.0", "v1.19.0"];
+const PAAS_CONSOLE_URL = import.meta.env.VITE_PAAS_CONSOLE_URL || "https://183.95.195.121:31417/";
 
 const defaultCreateForm: CreateForm = {
   unitType: "专有",
   name: "",
-  nodeGroupRef: "",
   description: "",
   cluster: "",
   version: "v1.21.0",
@@ -102,10 +110,6 @@ function unitTypeFromAccessType(value: EdgeUnit["accessType"]): CreateForm["unit
 
 function messageOfError(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
-}
-
-function nodeGroupNameOf(item: any): string {
-  return String(item?.metadata?.name || item?.name || item?.data?.name || "").trim();
 }
 
 const scaleTips = {
@@ -304,14 +308,12 @@ function CreateEdgeUnitDialog({
   open,
   onOpenChange,
   clusterOptions,
-  nodeGroupOptions,
   isSubmitting,
   onCreate,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   clusterOptions: string[];
-  nodeGroupOptions: string[];
   isSubmitting: boolean;
   onCreate: (form: CreateForm) => Promise<void>;
 }) {
@@ -320,6 +322,7 @@ function CreateEdgeUnitDialog({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showScaleTip, setShowScaleTip] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const accessAddressListRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -336,6 +339,14 @@ function CreateEdgeUnitDialog({
     });
   };
 
+  const addAccessAddress = () => {
+    updateForm("accessAddresses", [...form.accessAddresses, ""]);
+    window.requestAnimationFrame(() => {
+      const list = accessAddressListRef.current;
+      list?.scrollTo({ top: list.scrollHeight, behavior: "smooth" });
+    });
+  };
+
   const validateBasic = () => {
     const nextErrors: Record<string, string> = {};
     if (!form.name.trim()) {
@@ -344,9 +355,17 @@ function CreateEdgeUnitDialog({
       nextErrors.name = "名称只能包含小写字母、数字、中划线和点，且需以字母或数字开头、结尾";
     }
     if (!form.cluster) nextErrors.cluster = "请选择工作集群";
-    if (!form.nodeGroupRef) nextErrors.nodeGroupRef = "请选择绑定的 NodeGroup";
     setErrors(nextErrors);
-    return Object.keys(nextErrors).length === 0;
+    const firstInvalid = (["name", "cluster"] as const).find((field) => nextErrors[field]);
+    if (firstInvalid) {
+      window.requestAnimationFrame(() => {
+        const target = document.getElementById(`edge-unit-create-${firstInvalid}`);
+        target?.scrollIntoView({ behavior: "smooth", block: "center" });
+        target?.focus({ preventScroll: true });
+      });
+      return false;
+    }
+    return true;
   };
 
   const resetAndClose = () => {
@@ -405,25 +424,29 @@ function CreateEdgeUnitDialog({
           {step === 2 && (
             <div className="space-y-5">
               <FormField label="边缘单元名称" required error={errors.name} remark="最长 253 个字符，只能是小写字母、数字、中划线(-)、点(.)的组合。">
-                <Input value={form.name} onChange={(event) => updateForm("name", event.target.value)} placeholder="请输入边缘单元名称" />
+                <Input id="edge-unit-create-name" value={form.name} onChange={(event) => updateForm("name", event.target.value)} aria-invalid={Boolean(errors.name)} placeholder="请输入边缘单元名称" />
               </FormField>
               <div className="grid grid-cols-2 gap-4">
                 <FormField label="工作集群" required error={errors.cluster}>
-                  <select className="blueedge-native-select" value={form.cluster} onChange={(event) => updateForm("cluster", event.target.value)} disabled={clusterOptions.length === 0}>
-                    <option value="">{clusterOptions.length === 0 ? "未发现已连接集群" : "请选择集群"}</option>
-                    {clusterOptions.map((cluster) => <option key={cluster} value={cluster}>{cluster}</option>)}
-                  </select>
-                </FormField>
-                <FormField label="绑定 NodeGroup" required error={errors.nodeGroupRef}>
-                  <select className="blueedge-native-select" value={form.nodeGroupRef} onChange={(event) => updateForm("nodeGroupRef", event.target.value)}>
-                    <option value="">请选择 NodeGroup</option>
-                    {nodeGroupOptions.map((name) => <option key={name} value={name}>{name}</option>)}
-                  </select>
+                  <Select value={form.cluster || undefined} onValueChange={(value) => updateForm("cluster", value)} disabled={clusterOptions.length === 0}>
+                    <SelectTrigger id="edge-unit-create-cluster" aria-invalid={Boolean(errors.cluster)} className="h-9 w-full rounded-xl px-3 pr-5 text-sm shadow-none">
+                      <SelectValue placeholder={clusterOptions.length === 0 ? "未发现已连接集群" : "请选择集群"} />
+                    </SelectTrigger>
+                    <SelectContent position="popper" align="start" sideOffset={0} viewportClassName="!h-auto p-0" className="w-[var(--radix-select-trigger-width)] rounded-xl p-2 shadow-[0_10px_28px_rgba(15,23,42,0.14)]">
+                      <SelectGroup>
+                        <SelectLabel className="px-3 py-2 text-xs font-medium text-[var(--color-text-tertiary)]">选择集群</SelectLabel>
+                        {clusterOptions.map((cluster) => <SelectItem key={cluster} value={cluster} className="h-9 px-3 pr-8 text-sm">{cluster}</SelectItem>)}
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
                 </FormField>
                 <FormField label="KubeEdge 版本">
-                  <select className="blueedge-native-select" value={form.version} onChange={(event) => updateForm("version", event.target.value)}>
-                    {versions.map((version) => <option key={version} value={version}>{version}</option>)}
-                  </select>
+                  <Select value={form.version} onValueChange={(value) => updateForm("version", value)}>
+                    <SelectTrigger className="h-9 w-full rounded-xl px-3 pr-5 text-sm shadow-none"><SelectValue /></SelectTrigger>
+                    <SelectContent position="popper" align="start" sideOffset={0} viewportClassName="!h-auto p-0" className="w-[var(--radix-select-trigger-width)] rounded-xl p-2 shadow-[0_10px_28px_rgba(15,23,42,0.14)]">
+                      {versions.map((version) => <SelectItem key={version} value={version} className="h-9 px-3 pr-8 text-sm">{version}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
                 </FormField>
               </div>
               <FormField label="边缘节点规模">
@@ -462,17 +485,19 @@ function CreateEdgeUnitDialog({
               </FormField>
               <FormField label="云端节点访问地址" remark="云端 CloudCore 开放给边端访问的 NodePort 端口，如有冲突，请修改。端口范围 0-65535">
                 <div className="space-y-2">
-                  {form.accessAddresses.map((address, index) => (
-                    <div key={index} className="flex items-center gap-2">
-                      <Input value={address} onChange={(event) => updateForm("accessAddresses", form.accessAddresses.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} placeholder="请输入访问地址，例如 10.6.222.21" />
-                      {form.accessAddresses.length > 1 && (
-                        <button type="button" className="action-button is-danger" aria-label="删除访问地址" onClick={() => updateForm("accessAddresses", form.accessAddresses.filter((_, itemIndex) => itemIndex !== index))}>
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                  <button type="button" className="inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--color-brand)]" onClick={() => updateForm("accessAddresses", [...form.accessAddresses, ""])}>
+                  <div ref={accessAddressListRef} className="max-h-[132px] space-y-2 overflow-y-auto pr-1">
+                    {form.accessAddresses.map((address, index) => (
+                      <div key={index} className="flex items-center gap-2">
+                        <Input value={address} onChange={(event) => updateForm("accessAddresses", form.accessAddresses.map((item, itemIndex) => itemIndex === index ? event.target.value : item))} placeholder="请输入访问地址，例如 10.6.222.21" />
+                        {form.accessAddresses.length > 1 && (
+                          <button type="button" className="action-button is-danger" aria-label="删除访问地址" onClick={() => updateForm("accessAddresses", form.accessAddresses.filter((_, itemIndex) => itemIndex !== index))}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" className="inline-flex items-center gap-1.5 text-sm font-semibold text-[var(--color-brand)]" onClick={addAccessAddress}>
                     <Plus className="h-3.5 w-3.5" />
                     添加访问地址
                   </button>
@@ -826,7 +851,12 @@ function UnitCard({
   onDelete: (unitName: string) => void;
 }) {
   const navigate = useNavigate();
+  const { selectEdgeUnit } = useEdgeUnits();
   const status = statusMeta[unit.status];
+  const enterWorkbench = () => {
+    selectEdgeUnit(unit.name);
+    navigate("/dashboard");
+  };
 
   return (
     <article className="rounded-2xl bg-white p-6 shadow-[0_18px_50px_rgba(16,24,40,0.06)] ring-1 ring-[var(--color-border)]">
@@ -853,7 +883,7 @@ function UnitCard({
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" sideOffset={8} className="min-w-[156px] rounded-2xl border-[var(--color-border)] bg-white p-2 shadow-[0_18px_46px_rgba(16,24,40,0.16)]">
-            <DropdownMenuItem className="h-9 cursor-pointer rounded-xl px-3 text-sm text-[var(--color-text-primary)] focus:bg-[var(--color-bg-hover)]" onSelect={() => navigate("/dashboard")}>
+            <DropdownMenuItem className="h-9 cursor-pointer rounded-xl px-3 text-sm text-[var(--color-text-primary)] focus:bg-[var(--color-bg-hover)]" onSelect={enterWorkbench}>
               <ExternalLink className="h-4 w-4 text-[var(--color-text-tertiary)]" />
               进入工作台
             </DropdownMenuItem>
@@ -861,8 +891,8 @@ function UnitCard({
               <Pencil className="h-4 w-4 text-[var(--color-text-tertiary)]" />
               编辑
             </DropdownMenuItem>
-            <DropdownMenuItem className="h-9 cursor-pointer rounded-xl px-3 text-sm text-[var(--color-danger)] focus:bg-[var(--color-danger-soft)] focus:text-[var(--color-danger)]" onSelect={() => onDelete(unit.name)}>
-              <Trash2 className="h-4 w-4 text-[var(--color-danger)]" />
+            <DropdownMenuItem className="h-9 cursor-pointer rounded-xl px-3 text-sm text-[var(--color-text-secondary)] focus:bg-[var(--color-bg-hover)] focus:text-[var(--color-text-primary)]" onSelect={() => onDelete(unit.name)}>
+              <Trash2 className="h-4 w-4 text-[var(--color-text-tertiary)]" />
               删除
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -885,10 +915,10 @@ function UnitCard({
         <div className="flex flex-wrap items-center gap-3">
           <Capability label="Insight" enabled={unit.insight} />
           <Capability label="Monitor" enabled={unit.monitor} />
-          <span className="text-xs font-semibold text-[var(--color-text-tertiary)]" title="当前版本暂未开放">边缘监控组件下载（暂未开放）</span>
-          <span className="text-xs font-semibold text-[var(--color-text-tertiary)]" title="当前版本暂未开放">立即安装（暂未开放）</span>
+          <a href={PAAS_CONSOLE_URL} target="_blank" rel="noreferrer" className="text-xs font-semibold text-[var(--color-brand)] transition-colors hover:text-[var(--color-brand-hover)] hover:underline">边缘监控组件下载</a>
+          <a href={PAAS_CONSOLE_URL} target="_blank" rel="noreferrer" className="text-xs font-semibold text-[var(--color-brand)] transition-colors hover:text-[var(--color-brand-hover)] hover:underline">立即安装</a>
         </div>
-        <Button className="h-9 rounded-xl px-5 text-xs" onClick={() => navigate("/dashboard")}>
+        <Button className="h-9 rounded-xl px-5 text-xs" onClick={enterWorkbench}>
           进入工作台
           <ArrowRight className="h-3.5 w-3.5" />
         </Button>
@@ -908,16 +938,14 @@ export default function Home() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editingUnit, setEditingUnit] = useState<EdgeUnit | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EdgeUnit | null>(null);
-  const [nodeGroupOptions, setNodeGroupOptions] = useState<string[]>([]);
   const [clusterOptions, setClusterOptions] = useState<string[]>([]);
   const { logout } = useAuth();
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setError("");
     try {
-      const [result, nodeGroups, clusters] = await Promise.all([
+      const [result, clusters] = await Promise.all([
         listEdgeUnits(),
-        listNodeGroups().catch(() => []),
         listConnectedClusters().catch((err) => {
           setError(messageOfError(err, "真实集群加载失败"));
           return { items: [] };
@@ -925,7 +953,6 @@ export default function Home() {
       ]);
       setEdgeUnits(result.items.map(toHomeEdgeUnit));
       setWarnings(result.warnings || []);
-      setNodeGroupOptions(Array.from(new Set(nodeGroups.map(nodeGroupNameOf).filter(Boolean))));
       setClusterOptions(clusters.items.map((cluster) => cluster.name));
     } catch (err) {
       setError(messageOfError(err, "边缘单元加载失败"));
@@ -953,7 +980,6 @@ export default function Home() {
     try {
       const payload: EdgeUnitCreatePayload = {
         name: form.name.trim(),
-        nodeGroupRef: form.nodeGroupRef,
         clusterName: form.cluster,
         accessType: accessTypeFromUnitType(form.unitType),
         kubeEdgeVersion: form.version,
@@ -963,7 +989,7 @@ export default function Home() {
       };
       await createEdgeUnit(payload);
       await loadData();
-      setNotice(`边缘单元 ${payload.name} 已创建，底层 NodeGroup 保持独立管理。`);
+      setNotice(`边缘单元 ${payload.name} 已创建，暂未绑定 NodeGroup。`);
     } catch (err) {
       const message = messageOfError(err, "边缘单元创建失败");
       setNotice(message);
@@ -1087,7 +1113,6 @@ export default function Home() {
         open={createOpen}
         onOpenChange={setCreateOpen}
         clusterOptions={clusterOptions}
-        nodeGroupOptions={nodeGroupOptions}
         isSubmitting={isMutating}
         onCreate={handleCreate}
       />

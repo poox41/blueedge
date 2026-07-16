@@ -3,6 +3,7 @@ import {
   createEdgeUnit,
   deleteEdgeUnit,
   getEdgeUnit,
+  getEdgeUnitResources,
   listEdgeUnits,
   updateEdgeUnit,
 } from "../services/edge-unit.service.js";
@@ -25,6 +26,14 @@ export function registerEdgeUnitRoutes(app: express.Express) {
       sendServiceResult(res, await createEdgeUnit(req.body));
     } catch (error) {
       res.status(500).json({ message: error instanceof Error ? error.message : "edge unit create API is unavailable" });
+    }
+  });
+
+  app.get("/blueedge/edge-units/:name/resources", async (req, res) => {
+    try {
+      sendServiceResult(res, await getEdgeUnitResources(req.params.name));
+    } catch (error) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "edge unit resources API is unavailable" });
     }
   });
 

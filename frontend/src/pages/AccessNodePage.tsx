@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toAccessConfigUiModel, type AccessConfigInstallCommandResponse, type AccessConfigUiModel } from "@/api/adapters/access-config.adapter";
 import { getAccessConfigInstallCommand, listAccessConfigs } from "@/api/services/product";
 import { cn } from "@/lib/utils";
+import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 
 export function AccessNodePage() {
   const navigate = useNavigate();
@@ -30,6 +31,7 @@ export function AccessNodePage() {
   const [refreshing, setRefreshing] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);
   const [nodeName, setNodeName] = useState("");
+  const formValidation = useRequiredFieldValidation<"config">();
 
   const selectedConfig = useMemo(
     () => configs.find((config) => config.name === selectedConfigId),
@@ -60,7 +62,9 @@ export function AccessNodePage() {
   }, [loadData]);
 
   const openSteps = async () => {
-    if (!selectedConfig) return;
+    if (!formValidation.validate([
+      { field: "config", valid: Boolean(selectedConfig), message: "请选择接入配置", elementId: "access-node-config" },
+    ]) || !selectedConfig) return;
     setRefreshing(true);
     setError("");
     try {
@@ -114,8 +118,9 @@ export function AccessNodePage() {
                   <Select value={selectedConfigId} onValueChange={(value) => {
                     setSelectedConfigId(value);
                     setNodeName("");
+                    formValidation.clearError("config");
                   }}>
-                    <SelectTrigger className="h-11 flex-1 rounded-xl">
+                    <SelectTrigger id="access-node-config" aria-invalid={Boolean(formValidation.errors.config)} className="h-11 flex-1 rounded-xl">
                       <SelectValue placeholder="请选择接入配置" />
                     </SelectTrigger>
                     <SelectContent>
@@ -130,6 +135,7 @@ export function AccessNodePage() {
                     <RefreshCw className={cn("h-4 w-4", (refreshing || loading) && "animate-spin")} />
                   </button>
                 </div>
+                <RequiredFieldError id="access-node-config-error" message={formValidation.errors.config} />
                 <button type="button" onClick={() => navigate("/nodes?tab=access&create=1")} className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-[var(--color-brand)]">
                   创建接入配置 <ExternalLink className="h-3 w-3" />
                 </button>
@@ -152,7 +158,7 @@ export function AccessNodePage() {
               )}
               {error && <div className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">{error}</div>}
 
-              <Button disabled={!selectedConfig || refreshing} onClick={() => void openSteps()} className="h-10 rounded-xl bg-[var(--color-text-primary)] px-5 text-sm font-bold text-white hover:bg-[var(--color-text-primary)]/90">
+              <Button disabled={refreshing} onClick={() => void openSteps()} className="h-10 rounded-xl bg-[var(--color-text-primary)] px-5 text-sm font-bold text-white hover:bg-[var(--color-text-primary)]/90">
                 {refreshing ? "生成中..." : "获取接入步骤"}
                 <ArrowRight className="h-4 w-4" />
               </Button>

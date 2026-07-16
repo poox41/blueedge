@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { useNamespace } from "@/contexts/NamespaceContext";
 import { validateAccessConfigYaml, validateDeviceTwin, type DeviceTwinFormValue } from "@/lib/device-config";
 import { useNavigate, useParams } from "react-router-dom";
+import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 
 interface DI { namespace: string; name: string; model: string; node: string; edgeUnitRef?: string; nodeGroupRef?: string; status: string; statusColor: string; twins: number; createdAt: string; lastReport: string; protocol?: string; description: string; labels: Record<string, string>; raw: KubeResource | any; }
 interface LabelRule { id: string; key: string; value: string; }
@@ -117,6 +118,8 @@ report:
   qos: 0`;
 
 export function DeviceInstances() {
+  const deviceValidation = useRequiredFieldValidation<"name" | "namespace" | "model" | "protocol" | "twins" | "yaml">();
+  const twinValidation = useRequiredFieldValidation<"propertyName">();
   const navigate = useNavigate();
   const { namespace: detailNamespaceParam, name: detailNameParam } = useParams<{ namespace?: string; name?: string }>();
   const detailNamespace = detailNamespaceParam ? decodeURIComponent(detailNamespaceParam) : "";
@@ -127,6 +130,7 @@ export function DeviceInstances() {
   const [data, setData] = useState<DI[]>([]);
   const [modelOptions, setModelOptions] = useState<DeviceModelSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [warnings, setWarnings] = useState<string[]>([]);
   const [events, setEvents] = useState<ObservabilityEvent[]>([]);
@@ -154,8 +158,9 @@ export function DeviceInstances() {
   );
   const availableModels = useMemo(() => modelOptions.filter((item) => item.namespace === form.namespace), [form.namespace, modelOptions]);
 
-  const loadData = useCallback(async () => {
-    setIsLoading(true);
+  const loadData = useCallback(async (preserveCurrentRows = false) => {
+    if (preserveCurrentRows) setIsRefreshing(true);
+    else setIsLoading(true);
     setError("");
     setWarnings([]);
     try {
@@ -169,10 +174,13 @@ export function DeviceInstances() {
       setPage(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载终端设备数据失败");
-      setData([]);
-      setModelOptions([]);
+      if (!preserveCurrentRows) {
+        setData([]);
+        setModelOptions([]);
+      }
     } finally {
-      setIsLoading(false);
+      if (preserveCurrentRows) setIsRefreshing(false);
+      else setIsLoading(false);
     }
   }, []);
 
@@ -300,6 +308,7 @@ export function DeviceInstances() {
   };
   const confirmAddTwin = () => {
     setError("");
+    if (!twinValidation.validate([{ field: "propertyName", valid: Boolean(twinForm.propertyName.trim()), message: "请输入属性名", elementId: "device-twin-property-name" }])) return;
     try {
       const next: DeviceTwin = {
         propertyName: twinForm.propertyName.trim(),
@@ -396,10 +405,19 @@ export function DeviceInstances() {
     setError("");
     try {
       if (createStep === 1) {
-        if (!form.name.trim() || !form.namespace || !form.model || !form.protocol.trim()) throw new Error("请完整填写设备名称、命名空间、设备模型和访问协议");
+        if (!deviceValidation.validate([
+          { field: "name", valid: Boolean(form.name.trim()), message: "请输入设备名称", elementId: "device-name" },
+          { field: "namespace", valid: Boolean(form.namespace), message: "请选择命名空间", elementId: "device-namespace" },
+          { field: "model", valid: Boolean(form.model), message: "请选择设备模型", elementId: "device-model" },
+          { field: "protocol", valid: Boolean(form.protocol.trim()), message: "请输入访问协议", elementId: "device-protocol" },
+        ])) return;
       }
-      if (createStep === 2 && twins.length === 0) throw new Error("至少需要配置一个孪生属性");
-      if (createStep === 3) validateAccessConfigYaml(accessConfigYaml, form.protocol);
+      if (createStep === 2 && !deviceValidation.validate([{ field: "twins", valid: twins.length > 0, message: "至少需要配置一个孪生属性", elementId: "device-add-twin" }])) return;
+      if (createStep === 3) {
+        const yamlValid = Boolean(accessConfigYaml.trim());
+        if (!deviceValidation.validate([{ field: "yaml", valid: yamlValid, message: "请输入参数配置 YAML", elementId: "device-access-yaml" }])) return;
+        validateAccessConfigYaml(accessConfigYaml, form.protocol);
+      }
       setCreateStep((createStep + 1) as 1 | 2 | 3 | 4);
     } catch (err) {
       setError(err instanceof Error ? err.message : "当前步骤校验失败");
@@ -424,7 +442,7 @@ export function DeviceInstances() {
             <Input placeholder="搜索设备名称..." value={search} onChange={e => { setSearch(e.target.value); setPage(1); }} className="h-10 rounded-xl bg-white pl-11 text-sm" />
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="icon" className="h-9 w-9 rounded-[10px] border-[var(--color-border-strong)] bg-white" onClick={loadData} disabled={isLoading}><RefreshCw className={cn("h-4 w-4", isLoading && "animate-spin")} /></Button>
+            <Button variant="outline" size="icon" className="h-9 w-9 rounded-[10px] border-[var(--color-border-strong)] bg-white" onClick={() => void loadData(true)} disabled={isLoading || isRefreshing} aria-label="刷新终端设备列表"><RefreshCw className={cn("h-4 w-4", (isLoading || isRefreshing) && "animate-spin")} /></Button>
             <Dialog open={createOpen} onOpenChange={(open) => open ? setCreateOpen(true) : requestCancelCreate()}>
               <DialogTrigger asChild><Button onClick={openCreate} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-xs font-medium text-white hover:bg-[var(--color-text-primary)]/90"><Plus className="mr-1.5 h-4 w-4" />创建设备</Button></DialogTrigger>
               <DialogContent className="!flex !w-[min(600px,calc(100vw-48px))] !max-w-none max-h-[min(720px,calc(100vh-48px))] flex-col gap-0 overflow-hidden rounded-[24px] p-0" showCloseButton={false}>
@@ -440,18 +458,18 @@ export function DeviceInstances() {
                 <div className="min-h-0 flex-1 overflow-y-auto px-7 pb-8 pt-6">
                   {createStep === 1 && (
                     <div className="space-y-5">
-                      <PrototypeField label="设备名称" required>
-                        <Input disabled={Boolean(editingDevice)} placeholder="temp-sensor-01" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-10 rounded-xl text-sm disabled:bg-[var(--color-bg-soft)] disabled:text-[var(--color-text-tertiary)]" />
+                      <PrototypeField label="设备名称" required error={deviceValidation.errors.name} errorId="device-name-error">
+                        <Input id="device-name" disabled={Boolean(editingDevice)} placeholder="temp-sensor-01" value={form.name} onChange={e => { setForm({ ...form, name: e.target.value }); deviceValidation.clearError("name"); }} aria-invalid={Boolean(deviceValidation.errors.name)} aria-describedby={deviceValidation.errors.name ? "device-name-error" : undefined} className="h-10 rounded-xl text-sm disabled:bg-[var(--color-bg-soft)] disabled:text-[var(--color-text-tertiary)]" />
                         <p className="mt-1.5 text-xs leading-5 text-[var(--color-text-tertiary)]">最长 253 字符，只能是小写字母、数字、中划线(-)、点(.)的组合，不能有连续符号</p>
                       </PrototypeField>
-                      <PrototypeField label="命名空间" required>
-                        {editingDevice ? <Input disabled value={form.namespace} className="h-10 rounded-xl bg-[var(--color-bg-soft)] text-sm text-[var(--color-text-tertiary)]" /> : <select value={form.namespace} onChange={e => { setForm({ ...form, namespace: e.target.value, model: "", protocol: "" }); setTwins([]); }} className="blueedge-native-select !h-10 !rounded-xl !text-sm">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>}
+                      <PrototypeField label="命名空间" required error={deviceValidation.errors.namespace} errorId="device-namespace-error">
+                        {editingDevice ? <Input disabled value={form.namespace} className="h-10 rounded-xl bg-[var(--color-bg-soft)] text-sm text-[var(--color-text-tertiary)]" /> : <select id="device-namespace" value={form.namespace} onChange={e => { setForm({ ...form, namespace: e.target.value, model: "", protocol: "" }); setTwins([]); deviceValidation.clearError("namespace"); }} aria-invalid={Boolean(deviceValidation.errors.namespace)} aria-describedby={deviceValidation.errors.namespace ? "device-namespace-error" : undefined} className="blueedge-native-select !h-10 !rounded-xl !text-sm">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>}
                       </PrototypeField>
-                      <PrototypeField label="设备模型" required>
-                        {editingDevice ? <Input disabled value={form.model} className="h-10 rounded-xl bg-[var(--color-bg-soft)] text-sm text-[var(--color-text-tertiary)]" /> : <select value={form.model} onChange={e => { const model = availableModels.find((item) => item.name === e.target.value); setForm({ ...form, model: e.target.value, protocol: model?.protocol || form.protocol }); setTwins([]); }} className="blueedge-native-select !h-10 !rounded-xl !text-sm"><option value="">请选择真实设备模型</option>{availableModels.map(model => <option key={`${model.namespace}/${model.name}`} value={model.name}>{model.name}</option>)}</select>}
+                      <PrototypeField label="设备模型" required error={deviceValidation.errors.model} errorId="device-model-error">
+                        {editingDevice ? <Input disabled value={form.model} className="h-10 rounded-xl bg-[var(--color-bg-soft)] text-sm text-[var(--color-text-tertiary)]" /> : <select id="device-model" value={form.model} onChange={e => { const model = availableModels.find((item) => item.name === e.target.value); setForm({ ...form, model: e.target.value, protocol: model?.protocol || form.protocol }); setTwins([]); deviceValidation.clearError("model"); if (model?.protocol) deviceValidation.clearError("protocol"); }} aria-invalid={Boolean(deviceValidation.errors.model)} aria-describedby={deviceValidation.errors.model ? "device-model-error" : undefined} className="blueedge-native-select !h-10 !rounded-xl !text-sm"><option value="">请选择真实设备模型</option>{availableModels.map(model => <option key={`${model.namespace}/${model.name}`} value={model.name}>{model.name}</option>)}</select>}
                       </PrototypeField>
-                      <PrototypeField label="访问协议" required>
-                        <Input disabled={Boolean(editingDevice)} placeholder="MQTT / Modbus TCP / OPC UA" value={form.protocol} onChange={e => setForm({ ...form, protocol: e.target.value })} className="h-10 rounded-xl text-sm disabled:bg-[var(--color-bg-soft)] disabled:text-[var(--color-text-tertiary)]" />
+                      <PrototypeField label="访问协议" required error={deviceValidation.errors.protocol} errorId="device-protocol-error">
+                        <Input id="device-protocol" disabled={Boolean(editingDevice)} placeholder="MQTT / Modbus TCP / OPC UA" value={form.protocol} onChange={e => { setForm({ ...form, protocol: e.target.value }); deviceValidation.clearError("protocol"); }} aria-invalid={Boolean(deviceValidation.errors.protocol)} aria-describedby={deviceValidation.errors.protocol ? "device-protocol-error" : undefined} className="h-10 rounded-xl text-sm disabled:bg-[var(--color-bg-soft)] disabled:text-[var(--color-text-tertiary)]" />
                       </PrototypeField>
                       <PrototypeField label="描述">
                         <Textarea placeholder="请输入设备描述" value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} className="min-h-[82px] rounded-xl text-sm" />
@@ -462,7 +480,7 @@ export function DeviceInstances() {
                     <div className="space-y-7">
                       <div className="flex items-center justify-between">
                         <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">孪生属性</h3>
-                        <Button type="button" onClick={openAddTwin} disabled={!selectedModel} className="h-9 rounded-xl bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90"><Plus className="mr-1.5 h-4 w-4" />新增孪生</Button>
+                        <Button id="device-add-twin" type="button" onClick={openAddTwin} disabled={!selectedModel} className="h-9 rounded-xl bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90"><Plus className="mr-1.5 h-4 w-4" />新增孪生</Button>
                       </div>
                       {twins.length === 0 ? (
                         <div className="flex min-h-[120px] flex-col items-center justify-center rounded-2xl border border-dashed border-[#d8e1ec] bg-[#fbfcfe] text-center">
@@ -471,18 +489,19 @@ export function DeviceInstances() {
                         </div>
                       ) : (
                         <div className="overflow-hidden rounded-2xl border border-[var(--color-border)] bg-white">
-                          <Table><TableHeader><TableRow className="bg-[#f8fafc] hover:bg-[#f8fafc]"><TableHead>属性名称</TableHead><TableHead>期望值</TableHead><TableHead>采样间隔</TableHead><TableHead>上报间隔</TableHead><TableHead>访问 YAML</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+                          <Table><TableHeader><TableRow className="bg-white hover:bg-white"><TableHead>属性名称</TableHead><TableHead>期望值</TableHead><TableHead>采样间隔</TableHead><TableHead>上报间隔</TableHead><TableHead>访问 YAML</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
                             <TableBody>{twins.map((item) => <TableRow key={item.propertyName}><TableCell className="font-semibold">{item.propertyName}</TableCell><TableCell>{item.desiredValue || "-"}</TableCell><TableCell>{item.collectIntervalSeconds}s</TableCell><TableCell>{item.reportIntervalSeconds}s</TableCell><TableCell>{item.accessConfigYaml.trim() ? "已配置" : "-"}</TableCell><TableCell><div className="flex justify-end gap-2"><button type="button" className="action-button" onClick={() => openEditTwin(item)} aria-label={`编辑 ${item.propertyName}`}><Pencil className="h-3.5 w-3.5" /></button><button type="button" className="action-button is-danger" onClick={() => setTwins((prev) => prev.filter((current) => current.propertyName !== item.propertyName))} aria-label={`删除 ${item.propertyName}`}><Trash2 className="h-3.5 w-3.5" /></button></div></TableCell></TableRow>)}</TableBody>
                           </Table>
                         </div>
                       )}
+                      <RequiredFieldError id="device-twins-error" message={deviceValidation.errors.twins} />
                       <div className="space-y-3">
                         <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">标签</h3>
                         {labels.map((label) => (
                           <div key={label.id} className="grid grid-cols-[1fr_1fr_32px] items-center gap-3">
                             <Input value={label.key} onChange={(event) => updateLabelRule(label.id, { key: event.target.value })} placeholder="键" className="h-10 rounded-xl text-sm" />
                             <Input value={label.value} onChange={(event) => updateLabelRule(label.id, { value: event.target.value })} placeholder="值" className="h-10 rounded-xl text-sm" />
-                            <button type="button" className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-danger)]" onClick={() => removeLabelRule(label.id)} aria-label="删除标签"><X className="h-4 w-4" /></button>
+                            <button type="button" className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]" onClick={() => removeLabelRule(label.id)} aria-label="删除标签"><X className="h-4 w-4" /></button>
                           </div>
                         ))}
                         <button type="button" onClick={addLabelRule} className="inline-flex items-center gap-1 text-sm font-semibold text-[var(--color-brand)]"><Plus className="h-4 w-4" />添加标签</button>
@@ -491,8 +510,8 @@ export function DeviceInstances() {
                   )}
                   {createStep === 3 && (
                     <div className="space-y-5">
-                      <PrototypeField label="参数配置 YAML" required>
-                        <YamlPanel title="YAML 配置" value={accessConfigYaml} onChange={setAccessConfigYaml} actions downloadName={`${form.name || "device"}-access-config.yaml`} />
+                      <PrototypeField label="参数配置 YAML" required error={deviceValidation.errors.yaml} errorId="device-access-yaml-error">
+                        <div id="device-access-yaml" tabIndex={-1}><YamlPanel title="YAML 配置" value={accessConfigYaml} onChange={(value) => { setAccessConfigYaml(value); deviceValidation.clearError("yaml"); }} actions downloadName={`${form.name || "device"}-access-config.yaml`} /></div>
                       </PrototypeField>
                     </div>
                   )}
@@ -531,8 +550,8 @@ export function DeviceInstances() {
                 <button type="button" onClick={() => setAddTwinOpen(false)} className="absolute right-7 top-5 flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--color-border-strong)] text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"><X className="h-5 w-5" /></button>
                 <DialogHeader className="shrink-0 border-b border-[#eef1f5] px-7 py-6"><DialogTitle className="text-base font-bold">{editingTwinName ? "编辑孪生属性" : "新增孪生属性"}</DialogTitle></DialogHeader>
                 <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-7 py-7">
-                  <PrototypeField label="属性名" required>
-                    <Input list="device-model-property-options" placeholder="请输入属性名" value={twinForm.propertyName} onChange={(event) => setTwinForm({ ...twinForm, propertyName: event.target.value })} className="h-10 rounded-xl text-sm" />
+                  <PrototypeField label="属性名" required error={twinValidation.errors.propertyName} errorId="device-twin-property-name-error">
+                    <Input id="device-twin-property-name" list="device-model-property-options" placeholder="请输入属性名" value={twinForm.propertyName} onChange={(event) => { setTwinForm({ ...twinForm, propertyName: event.target.value }); twinValidation.clearError("propertyName"); }} aria-invalid={Boolean(twinValidation.errors.propertyName)} aria-describedby={twinValidation.errors.propertyName ? "device-twin-property-name-error" : undefined} className="h-10 rounded-xl text-sm" />
                     <datalist id="device-model-property-options">{(selectedModel?.properties || []).filter((property) => property.name === editingTwinName || !twins.some((item) => item.propertyName === property.name)).map((property) => <option key={property.name} value={property.name}>{property.type}</option>)}</datalist>
                     <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">可直接输入或从设备模型属性建议中选择；名称必须存在于当前设备模型。</p>
                   </PrototypeField>
@@ -547,7 +566,7 @@ export function DeviceInstances() {
                 </div>
                 <DialogFooter className="shrink-0 border-t border-[#eef1f5] bg-white px-7 py-5">
                   <Button variant="outline" onClick={() => setAddTwinOpen(false)} className="h-9 rounded-[10px] px-4 text-sm">取消</Button>
-                  <Button onClick={confirmAddTwin} disabled={!twinForm.propertyName.trim()} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">确定</Button>
+                  <Button onClick={confirmAddTwin} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">确定</Button>
                 </DialogFooter>
               </DialogContent>
             </Dialog>
@@ -570,7 +589,7 @@ export function DeviceInstances() {
       {error && <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
       {warnings.length > 0 && <div className="rounded-md border border-[#F7BA1E]/30 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{warnings.slice(0, 3).join("；")}</div>}
       <div className="table-card overflow-x-auto">
-        <Table className="min-w-[1040px] table-fixed"><TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+        <Table className="min-w-[1040px] table-fixed"><TableHeader><TableRow className="h-12 bg-white hover:bg-white">
           <TableHead className="w-[180px] px-6 text-xs font-medium text-[var(--color-text-tertiary)]">设备名称</TableHead>
           <TableHead className="w-[120px] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">绑定节点</TableHead>
           <TableHead className="w-[150px] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">设备模型</TableHead>
@@ -616,11 +635,17 @@ type TerminalDetailTab = "twins" | "labels" | "access" | "events" | "audit";
 function TerminalDeviceDetailPage({ device, events, error, onBack, onEdit, onUpdateTwin, onDeleteTwin, onAddLabel, onDeleteLabel, saving }: { device: DI; events: ObservabilityEvent[]; error: string; onBack: () => void; onEdit: () => void; onUpdateTwin: (propertyName: string, desiredValue: string) => void; onDeleteTwin: (propertyName: string) => void; onAddLabel: (key: string, value: string) => void; onDeleteLabel: (key: string) => void; saving: boolean }) {
   const [activeTab, setActiveTab] = useState<TerminalDetailTab>("twins");
   const [labelInput, setLabelInput] = useState({ key: "", value: "" });
+  const [labelInputError, setLabelInputError] = useState("");
   const twinItems = getTwins(device.raw);
   const accessYaml = device.raw?.extension?.accessConfigYaml || defaultAccessYaml;
   const handleAddLabel = () => {
     const key = labelInput.key.trim();
-    if (!key || saving) return;
+    if (saving) return;
+    if (!key) {
+      setLabelInputError("请输入标签键");
+      window.requestAnimationFrame(() => document.getElementById("device-label-key")?.focus());
+      return;
+    }
     onAddLabel(key, labelInput.value.trim());
     setLabelInput({ key: "", value: "" });
   };
@@ -639,7 +664,7 @@ function TerminalDeviceDetailPage({ device, events, error, onBack, onEdit, onUpd
     {error && <div className="rounded-[10px] border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-xs text-[#dc2626]">{error}</div>}
     <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]"><h2 className="mb-5 text-sm font-semibold text-[#111827]">基本信息</h2><div className="grid grid-cols-3 gap-x-6 gap-y-5"><DeviceInfo label="设备名称" value={device.name} /><DeviceInfo label="设备模型" value={device.model} /><DeviceInfo label="绑定节点" value={device.node} /><DeviceInfo label="协议" value={<ProtocolBadge value={device.protocol || "-"} />} /><DeviceInfo label="状态" value={<StatusPill status={device.status} />} /><DeviceInfo label="最后上报" value={device.lastReport} /></div>{device.description !== "-" && <><div className="my-5 border-t border-[#f0f1f3]" /><DeviceInfo label="描述" value={device.description} /></>}</section>
     <div className="flex flex-wrap gap-2">{tabs.map((tab) => <button key={tab.id} type="button" onClick={() => setActiveTab(tab.id)} className={cn("inline-flex h-9 items-center gap-1.5 rounded-[10px] border px-3 text-xs font-medium", activeTab === tab.id ? "border-[#0f172a] bg-[#0f172a] text-white" : "border-[var(--color-border-strong)] bg-white text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]")}>{tab.icon}{tab.label}</button>)}</div>
-    {activeTab === "twins" && <DevicePanel title="孪生数据"><div className="table-card overflow-x-auto"><Table className="min-w-[700px] table-fixed"><TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)]"><TableHead className="w-[160px] px-4 text-xs">属性</TableHead><TableHead className="w-[140px] px-4 text-xs">期望值</TableHead><TableHead className="w-[140px] px-4 text-xs">上报值</TableHead><TableHead className="w-[160px] px-4 text-xs">同步时间</TableHead><TableHead className="w-[100px] px-4 text-right text-xs">操作</TableHead></TableRow></TableHeader><TableBody>{twinItems.length === 0 ? <TableRow><TableCell colSpan={5} className="py-12 text-center text-sm text-[var(--color-text-secondary)]">暂无孪生数据</TableCell></TableRow> : twinItems.map((twin) => <TableRow key={`${twin.name}-${twin.desired}`} className="h-[60px]"><TableCell className="px-4 text-sm font-medium text-[var(--color-brand)]">{twin.name}</TableCell><TableCell className="px-4"><Input defaultValue={twin.desired === "-" ? "" : twin.desired} onBlur={(event) => { const nextValue = event.currentTarget.value; if (nextValue !== (twin.desired === "-" ? "" : twin.desired)) onUpdateTwin(twin.name, nextValue); }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} disabled={saving} className="h-9 w-full rounded-[10px] px-3 font-mono text-xs" /></TableCell><TableCell className="px-4 font-mono text-xs">{twin.reported}</TableCell><TableCell className="px-4 text-xs text-[var(--color-text-tertiary)]">{twin.syncTime}</TableCell><TableCell className="px-4 text-right"><button type="button" disabled={saving} onClick={() => onDeleteTwin(twin.name)} className="action-button is-danger ml-auto" title="删除孪生属性"><Trash2 className="h-3.5 w-3.5" /></button></TableCell></TableRow>)}</TableBody></Table></div></DevicePanel>}
+    {activeTab === "twins" && <DevicePanel title="孪生数据"><div className="table-card overflow-x-auto"><Table className="min-w-[700px] table-fixed"><TableHeader><TableRow className="h-12 bg-white hover:bg-white"><TableHead className="w-[160px] px-4 text-xs">属性</TableHead><TableHead className="w-[140px] px-4 text-xs">期望值</TableHead><TableHead className="w-[140px] px-4 text-xs">上报值</TableHead><TableHead className="w-[160px] px-4 text-xs">同步时间</TableHead><TableHead className="w-[100px] px-4 text-right text-xs">操作</TableHead></TableRow></TableHeader><TableBody>{twinItems.length === 0 ? <TableRow><TableCell colSpan={5} className="py-12 text-center text-sm text-[var(--color-text-secondary)]">暂无孪生数据</TableCell></TableRow> : twinItems.map((twin) => <TableRow key={`${twin.name}-${twin.desired}`} className="h-[60px]"><TableCell className="px-4 text-sm font-medium text-[var(--color-brand)]">{twin.name}</TableCell><TableCell className="px-4"><Input defaultValue={twin.desired === "-" ? "" : twin.desired} onBlur={(event) => { const nextValue = event.currentTarget.value; if (nextValue !== (twin.desired === "-" ? "" : twin.desired)) onUpdateTwin(twin.name, nextValue); }} onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} disabled={saving} className="h-9 w-full rounded-[10px] px-3 font-mono text-xs" /></TableCell><TableCell className="px-4 font-mono text-xs">{twin.reported}</TableCell><TableCell className="px-4 text-xs text-[var(--color-text-tertiary)]">{twin.syncTime}</TableCell><TableCell className="px-4 text-right"><button type="button" disabled={saving} onClick={() => onDeleteTwin(twin.name)} className="action-button is-danger ml-auto" title="删除孪生属性"><Trash2 className="h-3.5 w-3.5" /></button></TableCell></TableRow>)}</TableBody></Table></div></DevicePanel>}
     {activeTab === "labels" && (
       <section className="rounded-2xl border border-[#f0f1f3] bg-white p-6 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
         <div className="mb-4 flex items-center justify-between">
@@ -662,10 +687,11 @@ function TerminalDeviceDetailPage({ device, events, error, onBack, onEdit, onUpd
           </div>
         )}
         <div className="flex items-center gap-2 border-t border-[#f0f1f3] pt-4">
-          <Input value={labelInput.key} onChange={(event) => setLabelInput((current) => ({ ...current, key: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") handleAddLabel(); }} placeholder="键" className="h-9 flex-1 rounded-[10px] px-3 text-xs" />
+          <Input id="device-label-key" value={labelInput.key} onChange={(event) => { setLabelInput((current) => ({ ...current, key: event.target.value })); setLabelInputError(""); }} onKeyDown={(event) => { if (event.key === "Enter") handleAddLabel(); }} placeholder="键" aria-invalid={Boolean(labelInputError)} className="h-9 flex-1 rounded-[10px] px-3 text-xs" />
           <Input value={labelInput.value} onChange={(event) => setLabelInput((current) => ({ ...current, value: event.target.value }))} onKeyDown={(event) => { if (event.key === "Enter") handleAddLabel(); }} placeholder="值" className="h-9 flex-1 rounded-[10px] px-3 text-xs" />
-          <Button type="button" disabled={!labelInput.key.trim() || saving} onClick={handleAddLabel} className="h-8 shrink-0 rounded-[10px] bg-[#0f172a] px-3 text-xs font-medium text-white hover:bg-[#0f172a]/90"><Plus className="mr-1 h-3 w-3" />添加标签</Button>
+          <Button type="button" disabled={saving} onClick={handleAddLabel} className="h-8 shrink-0 rounded-[10px] bg-[#0f172a] px-3 text-xs font-medium text-white hover:bg-[#0f172a]/90"><Plus className="mr-1 h-3 w-3" />添加标签</Button>
         </div>
+        {labelInputError && <p className="mt-1 text-xs text-[var(--color-danger)]">{labelInputError}</p>}
       </section>
     )}
     {activeTab === "access" && (
@@ -863,13 +889,14 @@ function ConfirmItem({ label, value }: { label: string; value: string }) {
   );
 }
 
-function PrototypeField({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function PrototypeField({ label, required, children, error, errorId }: { label: string; required?: boolean; children: React.ReactNode; error?: string; errorId?: string }) {
   return (
     <div>
       <Label className="mb-2 block text-sm font-semibold text-[var(--color-text-primary)]">
         {label} {required && <span className="text-[var(--color-danger)]">*</span>}
       </Label>
       {children}
+      <RequiredFieldError id={errorId || "field-error"} message={error} />
     </div>
   );
 }

@@ -16,6 +16,7 @@ import { getPersistentVolumeSummary, listPersistentVolumeSummaries, listStorageC
 import type { StorageClassSummary } from "@/api/adapters/storage-class.adapter";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { validateRequiredDomFields } from "@/lib/form-validation";
 
 interface PV {
   name: string; status: string; statusColor: string; capacity: string;
@@ -170,6 +171,9 @@ export function PersistentVolumes() {
     }
   };
   const handleCreate = async () => {
+    if (!validateRequiredDomFields([
+      { elementId: "persistent-volume-create-name", valid: Boolean(form.name.trim()), message: "请输入持久卷名称" },
+    ])) return;
     setIsLoading(true);
     setError("");
     try {
@@ -195,7 +199,7 @@ export function PersistentVolumes() {
             <DialogContent className="max-w-lg">
               <DialogHeader><DialogTitle className="text-base">创建持久卷</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
-                <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input placeholder="如 pv-001" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
+                <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input id="persistent-volume-create-name" placeholder="如 pv-001" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">容量</Label><Input value={form.capacity} onChange={e => setForm({ ...form, capacity: e.target.value })} className="h-9 text-sm" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">存储类</Label><select value={form.storageClass} onChange={e => setForm({ ...form, storageClass: e.target.value })} className="blueedge-native-select">{storageClasses.length === 0 && <option value={form.storageClass}>{form.storageClass || "-"}</option>}{storageClasses.map((item) => <option key={item.name} value={item.name}>{item.name}{item.isDefault ? "（默认）" : ""}</option>)}</select></div>
@@ -209,7 +213,7 @@ export function PersistentVolumes() {
                   </div>
                 </div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm"  onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" onClick={handleCreate} disabled={isLoading}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
         </div>

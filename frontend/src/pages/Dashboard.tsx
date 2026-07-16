@@ -650,6 +650,10 @@ export function Dashboard() {
   const [editOpen, setEditOpen] = useState(false);
   const [introVisible, setIntroVisible] = useState(true);
 
+  useEffect(() => {
+    void refreshEdgeUnits();
+  }, [refreshEdgeUnits]);
+
   const handleSave = async (target: WorkbenchEdgeUnit, payload: EdgeUnitUpdatePayload) => {
     setIsMutating(true);
     setNotice("");

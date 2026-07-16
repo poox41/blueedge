@@ -156,7 +156,7 @@
     padding: 0 12px;
     border-radius: 10px;
     background: transparent;
-    color: var(--color-danger);
+    color: var(--color-text-secondary);
     font-size: 13px;
     font-weight: 500;
     border: 1px solid var(--color-border-strong);
@@ -165,7 +165,7 @@
     white-space: nowrap;
     flex-shrink: 0;
   }
-  .btn-danger-outline:hover { background: var(--color-danger-soft); border-color: var(--color-danger); }
+  .btn-danger-outline:hover { background: #f8fafc; border-color: #d1d5db; color: var(--color-text-primary); }
 
   .btn-tab,
   .btn-tab-active {
@@ -519,13 +519,13 @@
   }
 
   .action-button.is-danger {
-    color: var(--color-danger);
+    color: #64748b;
   }
 
   .action-button.is-danger:hover {
-    background: var(--color-danger-soft);
-    border-color: var(--color-danger);
-    color: var(--color-danger);
+    background: #f8fafc;
+    border-color: #d8dee8;
+    color: var(--color-text-primary);
   }
 
   .detail-action-button {

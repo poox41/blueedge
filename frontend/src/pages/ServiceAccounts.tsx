@@ -15,6 +15,7 @@ import { createServiceAccountResource, deleteServiceAccountResource, listService
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { validateRequiredDomFields } from "@/lib/form-validation";
 import { useNamespace } from "@/contexts/NamespaceContext";
 
 interface SA { namespace: string; name: string; secrets: string; createdAt: string; automount?: boolean; raw: KubeResource; }
@@ -121,6 +122,9 @@ export function ServiceAccounts() {
     }
   };
   const handleCreate = async () => {
+    if (!validateRequiredDomFields([
+      { elementId: "service-account-create-name", valid: Boolean(form.name.trim()), message: "请输入服务账户名称" },
+    ])) return;
     setIsLoading(true);
     setError("");
     try {
@@ -162,14 +166,14 @@ export function ServiceAccounts() {
               <DialogHeader><DialogTitle className="text-base">创建服务账户</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input placeholder="如 my-sa" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input id="service-account-create-name" placeholder="如 my-sa" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">命名空间</Label>
                     <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value })} className="blueedge-native-select">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
                   </div>
                 </div>
                 <div className="flex items-center gap-2"><input type="checkbox" checked={form.automount} onChange={e => setForm({ ...form, automount: e.target.checked })} className="rounded" /><Label className="text-xs text-[var(--color-text-secondary)]">自动挂载 Token</Label></div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm"  onClick={handleCreate} disabled={!form.name}>创建</Button></DialogFooter>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" onClick={handleCreate} disabled={isLoading}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
           <Dialog open={editOpen} onOpenChange={setEditOpen}>

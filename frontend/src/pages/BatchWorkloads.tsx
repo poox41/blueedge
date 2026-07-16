@@ -65,6 +65,7 @@ import {
 } from "@/api/services/product";
 import { listNamespaces, listNodeGroups } from "@/api/services/resources";
 import { cn } from "@/lib/utils";
+import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 
 type BatchWorkload = {
   id: string;
@@ -308,19 +309,22 @@ export function BatchWorkloads() {
   const [deployTarget, setDeployTarget] = useState<BatchWorkload | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<BatchWorkload | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
 
-  const loadItems = async () => {
-    setLoading(true);
+  const loadItems = async (preserveCurrentRows = false) => {
+    if (preserveCurrentRows) setRefreshing(true);
+    else setLoading(true);
     setError("");
     try {
       const data = await listBatchWorkloads();
       setItems(data.items.map((item) => toBatchWorkloadRow(item) as BatchWorkload));
     } catch (err) {
-      setItems([]);
+      if (!preserveCurrentRows) setItems([]);
       setError(err instanceof Error ? err.message : "批量工作负载加载失败");
     } finally {
-      setLoading(false);
+      if (preserveCurrentRows) setRefreshing(false);
+      else setLoading(false);
     }
   };
 
@@ -458,8 +462,8 @@ export function BatchWorkloads() {
           />
         </div>
         <div className="flex items-center gap-2">
-          <button type="button" onClick={() => void loadItems()} className="action-button" title="刷新">
-            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+          <button type="button" onClick={() => void loadItems(true)} disabled={loading || refreshing} className="action-button" title="刷新">
+            <RefreshCw className={cn("h-3.5 w-3.5", (loading || refreshing) && "animate-spin")} />
           </button>
           <Button variant="outline" onClick={() => setYamlOpen(true)} className="btn-secondary flex shrink-0 items-center gap-1.5 text-xs">
             YAML 创建
@@ -640,11 +644,11 @@ function BatchActionMenuItem({ icon, label, onClick, danger = false, disabled = 
       title={disabled ? "当前版本暂不支持编辑已创建计划" : undefined}
       className={cn(
         "flex h-8 w-full items-center gap-2 rounded-lg px-2 text-xs font-medium hover:bg-[#f8fafc]",
-        danger ? "text-[#ff4d4f]" : "text-[#374151]",
+        danger ? "text-[#64748b]" : "text-[#374151]",
         disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
       )}
     >
-      <span className={cn("text-[#94a3b8]", danger && "text-[#ff4d4f]")}>{icon}</span>
+      <span className="text-[#94a3b8]">{icon}</span>
       {label}
     </button>
   );
@@ -757,6 +761,7 @@ function BatchYamlEditor({ open, title, defaultValue, onSubmit, onCancel }: { op
 }
 
 function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; onOpenChange: (open: boolean) => void; onCreate: (form: BatchImageCreateForm) => void }) {
+  const formValidation = useRequiredFieldValidation<"name" | "namespace" | "replicas" | "containerName" | "containerImage">();
   const [step, setStep] = useState(0);
   const [advancedTab, setAdvancedTab] = useState(0);
   const [activeContainerIndex, setActiveContainerIndex] = useState(0);
@@ -789,14 +794,32 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
     setAdvancedTab(0);
     setActiveContainerIndex(0);
     setForm(defaultBatchImageForm());
+    formValidation.resetErrors();
     void refreshNamespaces();
   }, [open]);
 
   const close = () => onOpenChange(false);
   const activeContainer = form.containers[activeContainerIndex] || form.containers[0];
-  const isBasicValid = form.name.trim() !== "" && form.namespace.trim() !== "" && Number(form.replicas) > 0;
-  const isContainerValid = form.containers.length > 0 && form.containers.every((container) => container.name.trim() && container.image.trim());
-  const canGoNext = step === 0 ? isBasicValid : step === 1 ? isContainerValid : true;
+
+  const goToNextStep = () => {
+    if (step === 0) {
+      if (!formValidation.validate([
+        { field: "name", valid: Boolean(form.name.trim()), message: "请输入批量工作负载名称", elementId: "batch-workload-name" },
+        { field: "namespace", valid: Boolean(form.namespace.trim()), message: "请选择命名空间", elementId: "batch-workload-namespace" },
+        { field: "replicas", valid: Number(form.replicas) > 0, message: "请输入大于 0 的实例数", elementId: "batch-workload-replicas" },
+      ])) return;
+    }
+    if (step === 1) {
+      const invalidIndex = form.containers.findIndex((container) => !container.name.trim() || !container.image.trim());
+      if (invalidIndex >= 0) setActiveContainerIndex(invalidIndex);
+      const container = invalidIndex >= 0 ? form.containers[invalidIndex] : activeContainer;
+      if (!formValidation.validate([
+        { field: "containerName", valid: Boolean(container?.name.trim()), message: "请输入容器名称", elementId: "batch-container-name" },
+        { field: "containerImage", valid: Boolean(container?.image.trim()), message: "请输入容器镜像", elementId: "batch-container-image" },
+      ])) return;
+    }
+    setStep((current) => current + 1);
+  };
 
   const setContainers = (containers: BatchContainerForm[]) => {
     setForm((current) => ({ ...current, containers }));
@@ -844,13 +867,13 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
           {step === 0 && (
             <div className="space-y-4">
-              <CreateField label="名称" required>
-                <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="batch-nginx" className="h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0" />
+              <CreateField label="名称" required error={formValidation.errors.name} errorId="batch-workload-name-error">
+                <Input id="batch-workload-name" value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); formValidation.clearError("name"); }} placeholder="batch-nginx" aria-invalid={Boolean(formValidation.errors.name)} aria-describedby={formValidation.errors.name ? "batch-workload-name-error" : undefined} className="h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0" />
                 <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">最长 63 个字符，必须由小写字母、数字字符、"-"或"."组成，且以字母或数字开头及结尾。</p>
               </CreateField>
-              <CreateField label="命名空间" required>
+              <CreateField label="命名空间" required error={formValidation.errors.namespace} errorId="batch-workload-namespace-error">
                 <div className="flex gap-2">
-                  <select value={form.namespace} onChange={(event) => setForm({ ...form, namespace: event.target.value })} className="blueedge-native-select h-9 flex-1 rounded-[10px] border text-sm">
+                  <select id="batch-workload-namespace" value={form.namespace} onChange={(event) => { setForm({ ...form, namespace: event.target.value }); formValidation.clearError("namespace"); }} aria-invalid={Boolean(formValidation.errors.namespace)} aria-describedby={formValidation.errors.namespace ? "batch-workload-namespace-error" : undefined} className="blueedge-native-select h-9 flex-1 rounded-[10px] border text-sm">
                     <option value="">请选择命名空间</option>
                     {namespaceOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                   </select>
@@ -858,8 +881,8 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
                 </div>
                 {namespaceError && <p className="mt-2 text-xs text-[var(--color-danger)]">{namespaceError}</p>}
               </CreateField>
-              <CreateField label="实例" required>
-                <Input type="number" min={1} value={form.replicas} onChange={(event) => setForm({ ...form, replicas: event.target.value })} className="h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0" />
+              <CreateField label="实例" required error={formValidation.errors.replicas} errorId="batch-workload-replicas-error">
+                <Input id="batch-workload-replicas" type="number" min={1} value={form.replicas} onChange={(event) => { setForm({ ...form, replicas: event.target.value }); formValidation.clearError("replicas"); }} aria-invalid={Boolean(formValidation.errors.replicas)} aria-describedby={formValidation.errors.replicas ? "batch-workload-replicas-error" : undefined} className="h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0" />
                 <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">任务完成可以容忍拉取镜像失败的节点数量占比</p>
               </CreateField>
               <CreateField label="描述">
@@ -900,11 +923,11 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
 
               <BatchAccordion title="基本信息" defaultOpen>
                 <div className="grid grid-cols-2 gap-3">
-                  <CreateField label="容器名称" required compact>
-                    <Input value={activeContainer.name} onChange={(event) => updateContainer({ name: event.target.value })} placeholder="container-1" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                  <CreateField label="容器名称" required compact error={formValidation.errors.containerName} errorId="batch-container-name-error">
+                    <Input id="batch-container-name" value={activeContainer.name} onChange={(event) => { updateContainer({ name: event.target.value }); formValidation.clearError("containerName"); }} placeholder="container-1" aria-invalid={Boolean(formValidation.errors.containerName)} aria-describedby={formValidation.errors.containerName ? "batch-container-name-error" : undefined} className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
                   </CreateField>
-                  <CreateField label="容器镜像" required compact>
-                    <Input value={activeContainer.image} onChange={(event) => updateContainer({ image: event.target.value })} placeholder="nginx:1.21" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                  <CreateField label="容器镜像" required compact error={formValidation.errors.containerImage} errorId="batch-container-image-error">
+                    <Input id="batch-container-image" value={activeContainer.image} onChange={(event) => { updateContainer({ image: event.target.value }); formValidation.clearError("containerImage"); }} placeholder="nginx:1.21" aria-invalid={Boolean(formValidation.errors.containerImage)} aria-describedby={formValidation.errors.containerImage ? "batch-container-image-error" : undefined} className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
                   </CreateField>
                   <CreateField label="镜像拉取策略" compact>
                     <select value={activeContainer.pullPolicy} onChange={(event) => updateContainer({ pullPolicy: event.target.value as BatchContainerForm["pullPolicy"] })} className="blueedge-native-select h-10 rounded-[10px] border-2 text-sm">
@@ -1163,7 +1186,7 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
             <div className="flex items-center gap-3">
               <button type="button" onClick={close} className="btn-secondary text-sm">取消</button>
               {step < 2 ? (
-                <button type="button" onClick={() => canGoNext && setStep((current) => current + 1)} disabled={!canGoNext} className="btn-black text-sm disabled:cursor-not-allowed disabled:opacity-45">下一步</button>
+                <button type="button" onClick={goToNextStep} className="btn-black text-sm">下一步</button>
               ) : (
                 <button type="button" onClick={() => onCreate(form)} className="btn-black text-sm">创建</button>
               )}
@@ -1436,7 +1459,7 @@ function BatchWorkloadDetailPage({ item, openDefinitionInitially, onBack, onChan
           </div>
           <div className="overflow-hidden rounded-2xl border border-[#e8ebf0]">
             <Table><TableHeader><TableRow className="bg-[#fafbfc]"><TableHead className="px-5">工作负载名称</TableHead><TableHead>节点组名称</TableHead><TableHead>实例</TableHead><TableHead>状态</TableHead><TableHead>镜像</TableHead><TableHead className="w-[88px] text-right">操作</TableHead></TableRow></TableHeader>
-              <TableBody>{filteredWorkloads.length ? filteredWorkloads.map((workload) => <TableRow key={workload.name} className="h-[76px]"><TableCell className="px-5 font-semibold text-[#1e6bff]">{workload.name}</TableCell><TableCell>{workload.nodeGroup || "-"}</TableCell><TableCell>{workload.readyReplicas}/{workload.replicas}</TableCell><TableCell><LiveStatusBadge status={workload.status} /></TableCell><TableCell><ImageChip text={workload.image} /></TableCell><TableCell className="text-right"><button type="button" title="删除这个 Deployment" onClick={() => setDeploymentToDelete(workload.name)} className="action-button h-9 w-9 text-[#ef4444]"><Trash2 className="h-4 w-4" /></button></TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="py-14 text-center text-sm text-[var(--color-text-tertiary)]">暂无工作负载实例</TableCell></TableRow>}</TableBody>
+              <TableBody>{filteredWorkloads.length ? filteredWorkloads.map((workload) => <TableRow key={workload.name} className="h-[76px]"><TableCell className="px-5 font-semibold text-[#1e6bff]">{workload.name}</TableCell><TableCell>{workload.nodeGroup || "-"}</TableCell><TableCell>{workload.readyReplicas}/{workload.replicas}</TableCell><TableCell><LiveStatusBadge status={workload.status} /></TableCell><TableCell><ImageChip text={workload.image} /></TableCell><TableCell className="text-right"><button type="button" title="删除这个 Deployment" onClick={() => setDeploymentToDelete(workload.name)} className="action-button h-9 w-9"><Trash2 className="h-4 w-4" /></button></TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="py-14 text-center text-sm text-[var(--color-text-tertiary)]">暂无工作负载实例</TableCell></TableRow>}</TableBody>
             </Table>
           </div>
         </DefinitionSection>
@@ -2124,7 +2147,7 @@ function DeployFieldLabel({ label }: { label: string }) {
   return <Label className="mb-1.5 block text-xs font-normal text-[var(--color-text-secondary)]">{label}</Label>;
 }
 
-function CreateField({ label, required, children, compact = false }: { label: string; required?: boolean; children: ReactNode; compact?: boolean }) {
+function CreateField({ label, required, children, compact = false, error, errorId }: { label: string; required?: boolean; children: ReactNode; compact?: boolean; error?: string; errorId?: string }) {
   return (
     <div className={compact ? "space-y-1" : "space-y-2"}>
       <Label className={cn("font-semibold text-[#111827]", compact ? "text-xs text-[var(--color-text-secondary)]" : "text-base")}>
@@ -2132,6 +2155,7 @@ function CreateField({ label, required, children, compact = false }: { label: st
         {required && <span className="ml-1 text-[#ff4d4f]">*</span>}
       </Label>
       {children}
+      <RequiredFieldError id={errorId || "field-error"} message={error} />
     </div>
   );
 }

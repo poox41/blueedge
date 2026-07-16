@@ -16,6 +16,7 @@ import { createRoleBindingResource, deleteRoleBindingResource, listRoleBindings,
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { validateRequiredDomFields } from "@/lib/form-validation";
 import { useNamespace } from "@/contexts/NamespaceContext";
 
 interface RB { namespace: string; name: string; roleRef: string; labels: string; createdAt: string; subjects?: Array<{ kind: string; name: string; namespace: string }>; raw: KubeResource; }
@@ -145,6 +146,10 @@ export function RoleBindings() {
     }
   };
   const handleCreate = async () => {
+    if (!validateRequiredDomFields([
+      { elementId: "role-binding-create-name", valid: Boolean(form.name.trim()), message: "请输入角色绑定名称" },
+      { elementId: "role-binding-create-role", valid: Boolean(form.role.trim()), message: "请输入角色引用" },
+    ])) return;
     setIsLoading(true);
     setError("");
     try {
@@ -160,6 +165,10 @@ export function RoleBindings() {
   };
   const handleUpdate = async () => {
     if (!editItem) return;
+    if (!validateRequiredDomFields([
+      { elementId: "role-binding-edit-role", valid: Boolean(editForm.role.trim()), message: "请输入角色引用" },
+      { elementId: "role-binding-edit-subject", valid: Boolean(editForm.subject.trim()), message: "请输入绑定主体" },
+    ])) return;
     setIsLoading(true);
     setError("");
     try {
@@ -186,17 +195,17 @@ export function RoleBindings() {
               <DialogHeader><DialogTitle className="text-base">创建角色绑定</DialogTitle></DialogHeader>
               <div className="space-y-4 py-2">
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input placeholder="如 my-binding" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">名称</Label><Input id="role-binding-create-name" placeholder="如 my-binding" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} className="h-9 text-sm" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">命名空间</Label>
                     <select value={form.namespace} onChange={e => setForm({ ...form, namespace: e.target.value })} className="blueedge-native-select">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">角色引用</Label><Input placeholder="角色名称" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">角色引用</Label><Input id="role-binding-create-role" placeholder="角色名称" value={form.role} onChange={e => setForm({ ...form, role: e.target.value })} className="h-9 text-sm" /></div>
                   <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">绑定主体</Label><Textarea value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} className="min-h-20 text-sm" placeholder="ServiceAccount,default,default" /></div>
                 </div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm"  onClick={handleCreate} disabled={!form.name || !form.role}>创建</Button></DialogFooter>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setCreateOpen(false)}>取消</Button><Button size="sm" onClick={handleCreate} disabled={isLoading}>创建</Button></DialogFooter>
             </DialogContent>
           </Dialog>
           <Dialog open={editOpen} onOpenChange={setEditOpen}>
@@ -208,11 +217,11 @@ export function RoleBindings() {
                   <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">命名空间</Label><Input value={editForm.namespace} disabled className="h-9 text-sm bg-[var(--color-bg-soft)]" /></div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">角色引用</Label><Input value={editForm.role} onChange={e => setEditForm({ ...editForm, role: e.target.value })} className="h-9 text-sm" /></div>
-                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">绑定主体</Label><Textarea value={editForm.subject} onChange={e => setEditForm({ ...editForm, subject: e.target.value })} className="min-h-20 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">角色引用</Label><Input id="role-binding-edit-role" value={editForm.role} onChange={e => setEditForm({ ...editForm, role: e.target.value })} className="h-9 text-sm" /></div>
+                  <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">绑定主体</Label><Textarea id="role-binding-edit-subject" value={editForm.subject} onChange={e => setEditForm({ ...editForm, subject: e.target.value })} className="min-h-20 text-sm" /></div>
                 </div>
               </div>
-              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm"  onClick={handleUpdate} disabled={!editForm.role || !editForm.subject}>保存</Button></DialogFooter>
+              <DialogFooter><Button variant="outline" size="sm" onClick={() => setEditOpen(false)}>取消</Button><Button size="sm" onClick={handleUpdate} disabled={isLoading}>保存</Button></DialogFooter>
             </DialogContent>
           </Dialog>
         </div>

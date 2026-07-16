@@ -59,6 +59,7 @@ import {
 } from "@/api/services/resources";
 import {
   executeDeploymentCommand,
+  getEdgeUnitResources,
   getDeploymentAudit,
   getResourceLogs,
   getResourceObservability,
@@ -70,6 +71,7 @@ import type { DeploymentAuditRecord, DeploymentRevision } from "@/api/services/p
 import type { ObservabilityEvent, ObservabilitySummary } from "@/api/adapters/observability.adapter";
 import type { KubeResource, WorkloadView } from "@/types/kubeedge";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 
 type WorkloadStatus = "运行中" | "未就绪" | "异常";
 
@@ -634,8 +636,25 @@ const buildDeploymentResource = (form: WorkloadForm): KubeResource => {
   };
 };
 
+const assignDeploymentToEdgeUnit = (resource: KubeResource, edgeUnitName: string): KubeResource => {
+  const next = JSON.parse(JSON.stringify(resource)) as KubeResource;
+  next.metadata = {
+    ...next.metadata,
+    labels: { ...(next.metadata?.labels || {}), "blueedge.io/edge-unit": edgeUnitName },
+  };
+  const spec = next.spec as any;
+  if (spec?.template) {
+    spec.template.metadata = {
+      ...(spec.template.metadata || {}),
+      labels: { ...(spec.template.metadata?.labels || {}), "blueedge.io/edge-unit": edgeUnitName },
+    };
+  }
+  return next;
+};
+
 export function Deployments() {
   const { selectedNamespace } = useNamespace();
+  const { selectedEdgeUnitName } = useEdgeUnits();
   const [items, setItems] = useState<Workload[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -654,7 +673,16 @@ export function Deployments() {
     setIsLoading(true);
     setError("");
     try {
-      const rows = await listDeployments(selectedNamespace === "all" ? undefined : selectedNamespace);
+      if (!selectedEdgeUnitName) {
+        setItems([]);
+        return;
+      }
+      const [allRows, scope] = await Promise.all([
+        listDeployments(selectedNamespace === "all" ? undefined : selectedNamespace),
+        getEdgeUnitResources(selectedEdgeUnitName).catch(() => null),
+      ]);
+      const allowed = scope ? new Set(scope.item.deployments.map((item) => `${item.namespace}/${item.name}`)) : null;
+      const rows = allowed ? allRows.filter((item) => allowed.has(`${item.namespace}/${item.name}`)) : allRows;
       if (requestId !== loadRequestId.current) return;
       setItems(rows.map(toWorkload));
       void Promise.allSettled(rows.map((row) => getDeployment(row.namespace, row.name))).then((detailResults) => {
@@ -671,7 +699,7 @@ export function Deployments() {
     } finally {
       if (requestId === loadRequestId.current) setIsLoading(false);
     }
-  }, [selectedNamespace]);
+  }, [selectedEdgeUnitName, selectedNamespace]);
 
   useEffect(() => {
     void loadData();
@@ -687,7 +715,8 @@ export function Deployments() {
     setIsLoading(true);
     setError("");
     try {
-      await createDeploymentResource(buildDeploymentResource(form));
+      if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
+      await createDeploymentResource(assignDeploymentToEdgeUnit(buildDeploymentResource(form), selectedEdgeUnitName));
       setWizardOpen(false);
       await loadData();
       showToast("工作负载创建成功");
@@ -702,7 +731,8 @@ export function Deployments() {
     setIsLoading(true);
     setError("");
     try {
-      await createDeploymentResource(ensureDeploymentResource(source));
+      if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
+      await createDeploymentResource(assignDeploymentToEdgeUnit(ensureDeploymentResource(source), selectedEdgeUnitName));
       setYamlOpen(false);
       await loadData();
       showToast("工作负载创建成功");
@@ -930,7 +960,7 @@ export function Deployments() {
                       open={menuOpenId === item.id}
                       onOpenChange={(open) => setMenuOpenId(open ? item.id : null)}
                       onView={() => setSelectedWorkload(item)}
-                      onRestart={() => handleMenuAction("status", item)}
+                      onStatus={() => handleMenuAction("status", item)}
                       onDelete={() => setDeleteTarget(item)}
                       onAction={(action) => handleMenuAction(action, item)}
                     />
@@ -1064,14 +1094,14 @@ function WorkloadRowActions({
   open,
   onOpenChange,
   onView,
-  onRestart,
+  onStatus,
   onDelete,
   onAction,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onView: () => void;
-  onRestart: () => void;
+  onStatus: () => void;
   onDelete: () => void;
   onAction: (action: WorkloadMenuAction) => void;
 }) {
@@ -1107,7 +1137,7 @@ function WorkloadRowActions({
         <button type="button" className="action-button" title="查看" onClick={onView}>
           <Eye className="h-3.5 w-3.5" />
         </button>
-        <button type="button" className="action-button" title="重启" onClick={onRestart}>
+        <button type="button" className="action-button" title="工作负载状态" onClick={onStatus}>
           <RotateCcw className="h-3.5 w-3.5" />
         </button>
         <button ref={moreButtonRef} type="button" className="action-button" title="更多" onClick={toggleMenu}>
@@ -1174,11 +1204,11 @@ function WorkloadMenuItem({
       title={disabled ? "当前版本暂未开放" : undefined}
       className={cn(
         "flex h-8 w-full items-center rounded-lg px-2 text-xs font-medium hover:bg-[#f8fafc]",
-        danger ? "text-[#ef4444]" : "text-[#334155]",
+        danger ? "text-[#64748b]" : "text-[#334155]",
         disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
       )}
     >
-      <span className={cn("mr-2 flex w-4 shrink-0 items-center justify-center", danger ? "text-[#ef4444]" : "text-[#94a3b8]")}>{icon}</span>
+      <span className="mr-2 flex w-4 shrink-0 items-center justify-center text-[#94a3b8]">{icon}</span>
       <span className="shrink-0">{label}</span>
       {suffix && <span className="ml-auto text-[#94a3b8]">{suffix}</span>}
     </button>
@@ -2109,10 +2139,10 @@ function WorkloadConsoleDialog({ item, onClose }: { item: Workload; onClose: () 
 }
 
 function WorkloadStatusDialog({ item, onClose, onReload }: { item: Workload; onClose: () => void; onReload: () => Promise<void> }) {
-  const [submitting, setSubmitting] = useState<"start" | "stop" | "restart" | null>(null);
+  const [submitting, setSubmitting] = useState<"start" | "stop" | null>(null);
   const [error, setError] = useState("");
-  const execute = async (action: "start" | "stop" | "restart") => {
-    const labels = { start: "启动", stop: "停止", restart: "重启" };
+  const execute = async (action: "start" | "stop") => {
+    const labels = { start: "启动", stop: "停止" };
     if (!window.confirm(`确认${labels[action]}工作负载 ${item.name}？该操作会真实更新集群中的 Deployment。`)) return;
     setSubmitting(action);
     setError("");
@@ -2130,7 +2160,7 @@ function WorkloadStatusDialog({ item, onClose, onReload }: { item: Workload; onC
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-w-[560px] rounded-[24px] p-0" showCloseButton={false}>
         <DialogHeader className="border-b border-[#eef2f7] px-6 py-5"><div className="flex items-center justify-between"><DialogTitle>工作负载状态</DialogTitle><button type="button" onClick={onClose} className="action-button"><X className="h-4 w-4" /></button></div></DialogHeader>
-        <div className="space-y-5 p-6"><div className="grid grid-cols-3 gap-3"><DetailInfoItem label="名称" value={item.name} /><DetailInfoItem label="命名空间" value={item.namespace} /><DetailInfoItem label="副本" value={`${item.readyReplicas}/${item.replicas}`} /></div>{error && <div className="rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#b91c1c]">{error}</div>}<div className="grid grid-cols-3 gap-3"><button type="button" disabled={item.replicas > 0 || submitting !== null} onClick={() => void execute("start")} className="h-11 rounded-xl border border-[#dfe5ee] font-semibold disabled:opacity-40">启动</button><button type="button" disabled={item.replicas === 0 || submitting !== null} onClick={() => void execute("stop")} className="h-11 rounded-xl border border-[#dfe5ee] font-semibold disabled:opacity-40">停止</button><button type="button" disabled={item.replicas === 0 || submitting !== null} onClick={() => void execute("restart")} className="h-11 rounded-xl bg-[#0f172a] font-semibold text-white disabled:bg-[#94a3b8]">{submitting === "restart" ? "重启中..." : "重启"}</button></div><p className="text-xs leading-5 text-[#94a3b8]">停止会将 replicas 真实缩容为 0；启动会恢复停止前副本数；重启会更新 Pod 模板注解触发滚动重建。</p></div>
+        <div className="space-y-5 p-6"><div className="grid grid-cols-3 gap-3"><DetailInfoItem label="名称" value={item.name} /><DetailInfoItem label="命名空间" value={item.namespace} /><DetailInfoItem label="副本" value={`${item.readyReplicas}/${item.replicas}`} /></div>{error && <div className="rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#b91c1c]">{error}</div>}<div className="grid grid-cols-2 gap-3"><button type="button" disabled={item.replicas > 0 || submitting !== null} onClick={() => void execute("start")} className="h-11 rounded-xl border border-[#dfe5ee] font-semibold disabled:opacity-40">启动</button><button type="button" disabled={item.replicas === 0 || submitting !== null} onClick={() => void execute("stop")} className="h-11 rounded-xl border border-[#dfe5ee] font-semibold disabled:opacity-40">停止</button></div><p className="text-xs leading-5 text-[#94a3b8]">停止会将 replicas 真实缩容为 0；启动会恢复停止前副本数。</p></div>
       </DialogContent>
     </Dialog>
   );
@@ -2428,6 +2458,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
   const [activeContainerIndex, setActiveContainerIndex] = useState(0);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState(false);
+  const clearError = (field: string) => setErrors((current) => ({ ...current, [field]: "" }));
 
   const close = () => {
     setStep(0);
@@ -2447,6 +2478,20 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
     if (step >= 1 && containers.some((container) => !container.image.trim())) next.image = "请输入镜像地址";
     if (step >= 1 && containers.some((container) => !container.name.trim())) next.containerName = "请输入容器名称";
     setErrors(next);
+    let firstErrorId = "";
+    if (next.name) firstErrorId = "workload-name";
+    else if (next.namespace) firstErrorId = "workload-namespace";
+    else if (next.replicas) firstErrorId = "workload-replicas";
+    else if (next.containerName || next.image) {
+      const invalidIndex = containers.findIndex((container) => !container.name.trim() || !container.image.trim());
+      if (invalidIndex >= 0) setActiveContainerIndex(invalidIndex);
+      firstErrorId = next.containerName ? "workload-container-name" : "workload-container-image";
+    }
+    if (firstErrorId) window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const target = document.getElementById(firstErrorId);
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+      target?.focus({ preventScroll: true });
+    }));
     return Object.keys(next).length === 0;
   };
 
@@ -2510,7 +2555,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
         <StepIndicator step={step} />
 
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
-          {step === 0 && <BasicStep form={form} setForm={setForm} errors={errors} />}
+          {step === 0 && <BasicStep form={form} setForm={setForm} errors={errors} clearError={clearError} />}
           {step === 1 && (
             <ContainerStep
               containers={containers}
@@ -2518,6 +2563,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
               activeIndex={activeContainerIndex}
               setActiveIndex={setActiveContainerIndex}
               errors={errors}
+              clearError={clearError}
             />
           )}
           {step === 2 && <AdvancedStep form={form} setForm={setForm} />}
@@ -2532,7 +2578,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
               {touched && !canGoNext && step < 2 && <span className="text-xs text-[#ef4444]">请填写所有必填项</span>}
               <button type="button" onClick={close} className="h-10 rounded-xl border border-[#dfe5ee] bg-white px-5 text-sm font-semibold text-[#111827] hover:bg-[#f8fafc]">取消</button>
               {step < 2 ? (
-                <button type="button" onClick={next} disabled={!canGoNext} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033] disabled:cursor-not-allowed disabled:bg-[#9ca3af]">下一步</button>
+                <button type="button" onClick={next} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">下一步</button>
               ) : (
                 <button type="button" onClick={create} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">创建</button>
               )}
@@ -2580,7 +2626,7 @@ function WizardStep({ active, done, icon, label }: { active: boolean; done: bool
   );
 }
 
-function BasicStep({ form, setForm, errors }: { form: WorkloadForm; setForm: (form: WorkloadForm) => void; errors: Record<string, string> }) {
+function BasicStep({ form, setForm, errors, clearError }: { form: WorkloadForm; setForm: (form: WorkloadForm) => void; errors: Record<string, string>; clearError: (field: string) => void }) {
   const namespaces = useNamespaceOptions();
   const [refreshedNamespaces, setRefreshedNamespaces] = useState<Array<{ value: string; label: string }> | null>(null);
   const [refreshingNamespaces, setRefreshingNamespaces] = useState(false);
@@ -2607,7 +2653,7 @@ function BasicStep({ form, setForm, errors }: { form: WorkloadForm; setForm: (fo
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-4">
         <CreateField label="工作负载名称" required error={errors.name}>
-          <Input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="例如: nginx-deployment" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+          <Input id="workload-name" value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); clearError("name"); }} placeholder="例如: nginx-deployment" aria-invalid={Boolean(errors.name)} className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
         </CreateField>
         <CreateField label="别名">
           <Input value={form.alias} onChange={(event) => setForm({ ...form, alias: event.target.value })} placeholder="显示名称（可选）" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
@@ -2616,7 +2662,7 @@ function BasicStep({ form, setForm, errors }: { form: WorkloadForm; setForm: (fo
       <div className="grid grid-cols-2 gap-4">
         <CreateField label="命名空间" required error={errors.namespace}>
           <div className="flex gap-2">
-            <select value={form.namespace} onChange={(event) => setForm({ ...form, namespace: event.target.value })} className="blueedge-native-select h-10 flex-1 rounded-[10px] border-2 text-sm">
+            <select id="workload-namespace" value={form.namespace} onChange={(event) => { setForm({ ...form, namespace: event.target.value }); clearError("namespace"); }} aria-invalid={Boolean(errors.namespace)} className="blueedge-native-select h-10 flex-1 rounded-[10px] border-2 text-sm">
               <option value="">请选择命名空间</option>
               {namespaceOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
             </select>
@@ -2625,7 +2671,7 @@ function BasicStep({ form, setForm, errors }: { form: WorkloadForm; setForm: (fo
           {namespaceError && <p className="mt-1 text-xs text-[var(--color-danger)]">{namespaceError}</p>}
         </CreateField>
         <CreateField label="实例数" required error={errors.replicas}>
-          <Input type="number" min={1} value={form.replicas} onChange={(event) => setForm({ ...form, replicas: event.target.value })} className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+          <Input id="workload-replicas" type="number" min={1} value={form.replicas} onChange={(event) => { setForm({ ...form, replicas: event.target.value }); clearError("replicas"); }} aria-invalid={Boolean(errors.replicas)} className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
         </CreateField>
       </div>
       <CreateField label="描述">
@@ -2635,12 +2681,13 @@ function BasicStep({ form, setForm, errors }: { form: WorkloadForm; setForm: (fo
   );
 }
 
-function ContainerStep({ containers, setContainers, activeIndex, setActiveIndex, errors }: {
+function ContainerStep({ containers, setContainers, activeIndex, setActiveIndex, errors, clearError }: {
   containers: ContainerDraft[];
   setContainers: (containers: ContainerDraft[]) => void;
   activeIndex: number;
   setActiveIndex: (index: number) => void;
   errors: Record<string, string>;
+  clearError: (field: string) => void;
 }) {
   const container = containers[activeIndex] || containers[0];
 
@@ -2726,10 +2773,10 @@ function ContainerStep({ containers, setContainers, activeIndex, setActiveIndex,
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <CreateField label="容器名称" required error={errors.containerName} compact>
-              <Input value={container.name} onChange={(event) => updateContainer({ name: event.target.value })} placeholder="container-1" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+              <Input id="workload-container-name" value={container.name} onChange={(event) => { updateContainer({ name: event.target.value }); clearError("containerName"); }} placeholder="container-1" aria-invalid={Boolean(errors.containerName)} className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
             </CreateField>
             <CreateField label="容器镜像" required error={errors.image} compact>
-              <Input value={container.image} onChange={(event) => updateContainer({ image: event.target.value })} placeholder="nginx:1.21" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+              <Input id="workload-container-image" value={container.image} onChange={(event) => { updateContainer({ image: event.target.value }); clearError("image"); }} placeholder="nginx:1.21" aria-invalid={Boolean(errors.image)} className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
             </CreateField>
           </div>
           <div className="grid grid-cols-2 gap-3">

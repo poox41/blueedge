@@ -36,6 +36,7 @@ import { getAccessConfig, updateAccessConfig } from "@/api/services/product";
 import { listNodes } from "@/api/services/resources";
 import type { EdgeNodeView } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 
 type DetailTab = "nodes" | "labels" | "yaml";
 
@@ -86,6 +87,7 @@ spec:
 export function AccessConfigDetailPage() {
   const navigate = useNavigate();
   const { name = "" } = useParams();
+  const formValidation = useRequiredFieldValidation<"criAddress" | "address" | "registry">();
   const [config, setConfig] = useState<AccessConfigUiModel | null>(null);
   const [nodes, setNodes] = useState<EdgeNodeView[]>([]);
   const [loading, setLoading] = useState(true);
@@ -132,11 +134,17 @@ export function AccessConfigDetailPage() {
     if (!config) return;
     setForm(toEditForm(config));
     setError("");
+    formValidation.resetErrors();
     setEditOpen(true);
   };
 
   const save = async () => {
-    if (!config || !form || !form.address.trim() || !form.criAddress.trim() || !form.registry.trim()) return;
+    if (!config || !form) return;
+    if (!formValidation.validate([
+      { field: "criAddress", valid: Boolean(form.criAddress.trim()), message: "请输入 CRI 服务地址", elementId: "access-config-cri-address" },
+      { field: "address", valid: Boolean(form.address.trim()), message: "请输入访问地址", elementId: "access-config-address" },
+      { field: "registry", valid: Boolean(form.registry.trim()), message: "请输入镜像仓库", elementId: "access-config-registry" },
+    ])) return;
     setSaving(true);
     setError("");
     try {
@@ -229,7 +237,7 @@ export function AccessConfigDetailPage() {
       {activeTab === "nodes" && (
         <section className="table-card overflow-hidden">
           <Table className="table-fixed">
-            <TableHeader><TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+            <TableHeader><TableRow className="h-12 bg-white hover:bg-white">
               <TableHead className="px-5 text-xs text-[var(--color-text-tertiary)]">节点名称</TableHead>
               <TableHead className="px-5 text-xs text-[var(--color-text-tertiary)]">IP 地址</TableHead>
               <TableHead className="px-5 text-xs text-[var(--color-text-tertiary)]">状态</TableHead>
@@ -277,22 +285,23 @@ export function AccessConfigDetailPage() {
           {form && <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-7 py-6">
             <EditField label="配置名称" required><Input value={config.name} readOnly className="h-11 rounded-xl bg-white" /></EditField>
             <EditField label="驱动方式" required><Segmented value={form.driver} values={["systemd", "cgroups"]} onChange={(value) => setForm({ ...form, driver: value as EditForm["driver"] })} /></EditField>
-            <EditField label="CRI 服务地址" required><Input value={form.criAddress} onChange={(event) => setForm({ ...form, criAddress: event.target.value })} className="h-11 rounded-xl" /></EditField>
-            <EditField label="访问地址" required><Input value={form.address} onChange={(event) => setForm({ ...form, address: event.target.value })} className="h-11 rounded-xl" /></EditField>
+            <EditField label="CRI 服务地址" required><Input id="access-config-cri-address" value={form.criAddress} onChange={(event) => { setForm({ ...form, criAddress: event.target.value }); formValidation.clearError("criAddress"); }} aria-invalid={Boolean(formValidation.errors.criAddress)} className="h-11 rounded-xl" /><RequiredFieldError id="access-config-cri-address-error" message={formValidation.errors.criAddress} /></EditField>
+            <EditField label="访问地址" required><Input id="access-config-address" value={form.address} onChange={(event) => { setForm({ ...form, address: event.target.value }); formValidation.clearError("address"); }} aria-invalid={Boolean(formValidation.errors.address)} className="h-11 rounded-xl" /><RequiredFieldError id="access-config-address-error" message={formValidation.errors.address} /></EditField>
             <EditField label="通信协议" required><Segmented value={form.protocol} values={["websocket", "QUIC"]} labels={["WebSocket", "QUIC"]} onChange={(value) => setForm({ ...form, protocol: value as EditForm["protocol"] })} /></EditField>
             <EditField label="镜像仓库" required>
-              <Input value={form.registry} onChange={(event) => setForm({ ...form, registry: event.target.value })} className="h-11 rounded-xl" />
+              <Input id="access-config-registry" value={form.registry} onChange={(event) => { setForm({ ...form, registry: event.target.value }); formValidation.clearError("registry"); }} aria-invalid={Boolean(formValidation.errors.registry)} className="h-11 rounded-xl" />
+              <RequiredFieldError id="access-config-registry-error" message={formValidation.errors.registry} />
               <div className="mt-3 flex flex-wrap gap-2"><Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => setForm({ ...form, registry: config.cloudCoreAddress || form.registry })}><Cloud className="h-4 w-4" />引用云端地址</Button><Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => setForm({ ...form, registry: "registry.cn-beijing.aliyuncs.com/kubeedge" })}><RotateCcw className="h-4 w-4" />一键填充默认仓库</Button></div>
               <div className="mt-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-soft)] p-4 text-sm text-[var(--color-text-secondary)]"><p className="flex items-center gap-2 font-semibold text-[var(--color-text-primary)]"><HelpCircle className="h-4 w-4 text-[#f59e0b]" />镜像仓库说明</p><p className="mt-2">用于拉取边端组件，建议使用边缘节点可稳定访问的企业仓库。</p></div>
             </EditField>
             <EditField label="描述"><Textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} className="min-h-24 rounded-xl" /></EditField>
             <EditField label="标签">
-              <div className="space-y-3">{form.labels.map((label, index) => <div key={index} className="grid grid-cols-[1fr_1fr_40px] gap-3"><Input value={label.key} placeholder="键" onChange={(event) => setForm({ ...form, labels: form.labels.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item) })} className="h-10 rounded-xl" /><Input value={label.value} placeholder="值" onChange={(event) => setForm({ ...form, labels: form.labels.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item) })} className="h-10 rounded-xl" /><button type="button" className="flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--color-border)] text-[var(--color-danger)]" onClick={() => setForm({ ...form, labels: form.labels.length > 1 ? form.labels.filter((_, itemIndex) => itemIndex !== index) : [{ key: "", value: "" }] })}><Trash2 className="h-4 w-4" /></button></div>)}</div>
+              <div className="space-y-3">{form.labels.map((label, index) => <div key={index} className="grid grid-cols-[1fr_1fr_40px] gap-3"><Input value={label.key} placeholder="键" onChange={(event) => setForm({ ...form, labels: form.labels.map((item, itemIndex) => itemIndex === index ? { ...item, key: event.target.value } : item) })} className="h-10 rounded-xl" /><Input value={label.value} placeholder="值" onChange={(event) => setForm({ ...form, labels: form.labels.map((item, itemIndex) => itemIndex === index ? { ...item, value: event.target.value } : item) })} className="h-10 rounded-xl" /><button type="button" className="flex h-10 w-10 items-center justify-center rounded-xl border border-[var(--color-border)] text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]" onClick={() => setForm({ ...form, labels: form.labels.length > 1 ? form.labels.filter((_, itemIndex) => itemIndex !== index) : [{ key: "", value: "" }] })}><Trash2 className="h-4 w-4" /></button></div>)}</div>
               <button type="button" onClick={() => setForm({ ...form, labels: [...form.labels, { key: "", value: "" }] })} className="mt-3 inline-flex items-center gap-1 text-sm font-semibold text-[var(--color-brand)]"><Plus className="h-4 w-4" />添加标签</button>
             </EditField>
             {error && <div className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">{error}</div>}
           </div>}
-          <DialogFooter className="h-16 shrink-0 border-t border-[var(--color-border)] px-7 py-3"><Button variant="outline" className="h-10 rounded-xl px-6" onClick={() => setCancelConfirmOpen(true)}>取消</Button><Button className="h-10 rounded-xl px-6" onClick={() => void save()} disabled={saving || !form?.address.trim() || !form?.criAddress.trim() || !form?.registry.trim()}>{saving ? "保存中..." : "保存"}</Button></DialogFooter>
+          <DialogFooter className="h-16 shrink-0 border-t border-[var(--color-border)] px-7 py-3"><Button variant="outline" className="h-10 rounded-xl px-6" onClick={() => setCancelConfirmOpen(true)}>取消</Button><Button className="h-10 rounded-xl px-6" onClick={() => void save()} disabled={saving}>{saving ? "保存中..." : "保存"}</Button></DialogFooter>
         </DialogContent>
       </Dialog>
 

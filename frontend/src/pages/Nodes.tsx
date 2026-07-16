@@ -17,9 +17,10 @@ import { deleteNodeResource, getNode, listNodes, listPods, updateNodeResource } 
 import { toAccessConfigUiModel, type AccessConfigUiModel } from "@/api/adapters/access-config.adapter";
 import { toHomeEdgeUnit } from "@/api/adapters/edge-unit.adapter";
 import { nodeSummaryStatusText } from "@/api/adapters/node-summary.adapter";
-import { createAccessConfig as createAccessConfigResource, deleteAccessConfig, getNodeSummary, listAccessConfigs, listEdgeUnits, updateAccessConfig, type AccessConfigPayload } from "@/api/services/product";
+import { createAccessConfig as createAccessConfigResource, deleteAccessConfig, getEdgeUnitResources, getNodeSummary, listAccessConfigs, listEdgeUnits, updateAccessConfig, type AccessConfigPayload } from "@/api/services/product";
 import type { EdgeNodeView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 
 interface Node {
   name: string; role: string; status: string; statusColor: string; labels: number;
@@ -66,6 +67,18 @@ type AccessLabelDraft = {
   id: string;
   key: string;
   value: string;
+};
+
+type AccessRequiredField = "name" | "edgeUnitRef" | "nodeName" | "kubeEdgeVersion" | "criAddress" | "address" | "registry";
+
+const accessRequiredMessages: Record<AccessRequiredField, string> = {
+  name: "请输入配置名称",
+  edgeUnitRef: "请选择关联边缘单元",
+  nodeName: "请输入未来注册的节点名称",
+  kubeEdgeVersion: "请输入实际 KubeEdge 版本",
+  criAddress: "请选择 CRI 服务地址",
+  address: "请输入访问地址",
+  registry: "请输入镜像仓库地址",
 };
 
 const defaultAccessForm: AccessConfigForm = {
@@ -234,6 +247,7 @@ function toAccessConfigRow(item: AccessConfigUiModel): AccessConfig {
 }
 
 export function Nodes() {
+  const { selectedEdgeUnitName } = useEdgeUnits();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<Node[]>([]);
@@ -258,6 +272,7 @@ export function Nodes() {
   const [accessLabelDrafts, setAccessLabelDrafts] = useState<AccessLabelDraft[]>([]);
   const [accessLabelSearch, setAccessLabelSearch] = useState("");
   const [accessForm, setAccessForm] = useState<AccessConfigForm>(defaultAccessForm);
+  const [accessFormErrors, setAccessFormErrors] = useState<Partial<Record<AccessRequiredField, string>>>({});
   const pageSize = 10;
 
   const loadAccessConfigs = useCallback(async () => {
@@ -278,7 +293,16 @@ export function Nodes() {
     setIsLoading(true);
     setError("");
     try {
-      const [nodes, metrics, pods] = await Promise.allSettled([listNodes(), listNodeMetrics(), listPods()]);
+      if (!selectedEdgeUnitName) {
+        setData([]);
+        return;
+      }
+      const [nodes, metrics, pods, scope] = await Promise.allSettled([
+        listNodes(),
+        listNodeMetrics(),
+        listPods(),
+        getEdgeUnitResources(selectedEdgeUnitName),
+      ]);
       const nodeRows = nodes.status === "fulfilled" ? nodes.value : [];
       const metricsRows = metrics.status === "fulfilled" ? metrics.value : [];
       const podRows = pods.status === "fulfilled" ? pods.value : [];
@@ -290,7 +314,11 @@ export function Nodes() {
         }
         return acc;
       }, new Map<string, number>());
-      setData(nodeRows.map((node) => toPageNode(node, metricsByName, podCountByNode)));
+      const allowedNodeNames = scope.status === "fulfilled" ? new Set(scope.value.item.nodeNames) : null;
+      const visibleNodeRows = allowedNodeNames
+        ? nodeRows.filter((node) => allowedNodeNames.has(node.name))
+        : nodeRows;
+      setData(visibleNodeRows.map((node) => toPageNode(node, metricsByName, podCountByNode)));
       setCurrentPage(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "节点数据加载失败");
@@ -298,7 +326,7 @@ export function Nodes() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [selectedEdgeUnitName]);
 
   useEffect(() => {
     void loadNodes();
@@ -396,6 +424,36 @@ export function Nodes() {
   };
   const resetAccessForm = () => {
     setAccessForm(defaultAccessForm);
+    setAccessFormErrors({});
+  };
+  const updateAccessFormField = <K extends keyof AccessConfigForm,>(field: K, value: AccessConfigForm[K]) => {
+    setAccessForm((current) => ({ ...current, [field]: value }));
+    if (field in accessRequiredMessages) {
+      setAccessFormErrors((current) => {
+        if (!current[field as AccessRequiredField]) return current;
+        const next = { ...current };
+        delete next[field as AccessRequiredField];
+        return next;
+      });
+    }
+  };
+  const validateAccessForm = () => {
+    const nextErrors: Partial<Record<AccessRequiredField, string>> = {};
+    (Object.keys(accessRequiredMessages) as AccessRequiredField[]).forEach((field) => {
+      const value = accessForm[field];
+      if (typeof value !== "string" || !value.trim()) nextErrors[field] = accessRequiredMessages[field];
+    });
+    setAccessFormErrors(nextErrors);
+    const firstInvalidField = (Object.keys(accessRequiredMessages) as AccessRequiredField[]).find((field) => nextErrors[field]);
+    if (firstInvalidField) {
+      window.requestAnimationFrame(() => {
+        const target = document.getElementById(`access-config-${firstInvalidField}`);
+        target?.scrollIntoView({ behavior: "smooth", block: "center" });
+        target?.focus({ preventScroll: true });
+      });
+      return false;
+    }
+    return true;
   };
   const requestCloseAccessCreate = () => {
     setAccessCancelConfirmOpen(true);
@@ -406,8 +464,8 @@ export function Nodes() {
     resetAccessForm();
   };
   const createAccessConfig = async () => {
+    if (!validateAccessForm()) return;
     const name = accessForm.name.trim();
-    if (!name) return;
     const payload: AccessConfigPayload = {
       name,
       edgeUnitRef: accessForm.edgeUnitRef,
@@ -589,7 +647,7 @@ export function Nodes() {
         {activeTab === "nodes" ? (
           <Table className="min-w-[960px] table-fixed">
             <TableHeader>
-              <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+              <TableRow className="h-12 bg-white hover:bg-white">
                 <TableHead className="w-[190px] px-4 text-left text-xs font-medium text-[var(--color-text-tertiary)]">名称</TableHead>
                 <TableHead className="w-[110px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">别名</TableHead>
                 <TableHead className="w-[88px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">状态</TableHead>
@@ -631,7 +689,7 @@ export function Nodes() {
         ) : (
           <Table className="min-w-[800px] table-fixed">
             <TableHeader>
-              <TableRow className="h-12 bg-[var(--color-bg-soft)] hover:bg-[var(--color-bg-soft)]">
+              <TableRow className="h-12 bg-white hover:bg-white">
                 <TableHead className="w-[220px] px-4 text-left text-xs font-medium text-[var(--color-text-tertiary)]">名称</TableHead>
                 <TableHead className="w-[220px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">节点标签</TableHead>
                 <TableHead className="w-[100px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">驱动方式</TableHead>
@@ -719,20 +777,26 @@ export function Nodes() {
             <DialogTitle className="text-lg font-semibold">创建接入配置</DialogTitle>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-7 py-6">
-            <AccessField label="配置名称" required>
-              <Input value={accessForm.name} onChange={(event) => setAccessForm({ ...accessForm, name: event.target.value })} placeholder="请输入配置名称" className="h-11 rounded-xl" />
+            <AccessField label="配置名称" required error={accessFormErrors.name} errorId="access-config-name-error">
+              <Input id="access-config-name" value={accessForm.name} onChange={(event) => updateAccessFormField("name", event.target.value)} placeholder="请输入配置名称" aria-invalid={Boolean(accessFormErrors.name)} aria-describedby={accessFormErrors.name ? "access-config-name-error" : undefined} className={cn("h-11 rounded-xl", accessFormErrors.name && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")} />
             </AccessField>
-            <AccessField label="关联边缘单元" required>
+            <AccessField label="关联边缘单元" required error={accessFormErrors.edgeUnitRef} errorId="access-config-edgeUnitRef-error">
               <select value={accessForm.edgeUnitRef} onChange={(event) => {
                 const edgeUnit = edgeUnitOptions.find((item) => item.name === event.target.value);
                 setAccessForm({ ...accessForm, edgeUnitRef: event.target.value, kubeEdgeVersion: edgeUnit?.version || accessForm.kubeEdgeVersion });
-              }} className="h-11 w-full rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm outline-none focus:border-[var(--color-brand)]">
+                setAccessFormErrors((current) => {
+                  const next = { ...current };
+                  delete next.edgeUnitRef;
+                  if (edgeUnit?.version) delete next.kubeEdgeVersion;
+                  return next;
+                });
+              }} id="access-config-edgeUnitRef" aria-invalid={Boolean(accessFormErrors.edgeUnitRef)} aria-describedby={accessFormErrors.edgeUnitRef ? "access-config-edgeUnitRef-error" : undefined} className={cn("h-11 w-full rounded-xl border-2 bg-white px-4 text-sm outline-none", accessFormErrors.edgeUnitRef ? "border-[var(--color-danger)] focus:border-[var(--color-danger)]" : "border-[var(--color-input-border)] focus:border-[var(--color-brand)]")}>
                 <option value="">请选择边缘单元</option>
                 {edgeUnitOptions.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
               </select>
             </AccessField>
-            <AccessField label="节点名称" required>
-              <Input value={accessForm.nodeName} onChange={(event) => setAccessForm({ ...accessForm, nodeName: event.target.value })} placeholder="请输入未来注册的节点名称" className="h-11 rounded-xl" />
+            <AccessField label="节点名称" required error={accessFormErrors.nodeName} errorId="access-config-nodeName-error">
+              <Input id="access-config-nodeName" value={accessForm.nodeName} onChange={(event) => updateAccessFormField("nodeName", event.target.value)} placeholder="请输入未来注册的节点名称" aria-invalid={Boolean(accessFormErrors.nodeName)} aria-describedby={accessFormErrors.nodeName ? "access-config-nodeName-error" : undefined} className={cn("h-11 rounded-xl", accessFormErrors.nodeName && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")} />
             </AccessField>
             <div className="grid gap-4 md:grid-cols-2">
               <AccessField label="节点架构" required>
@@ -742,8 +806,8 @@ export function Nodes() {
                   <option value="arm">arm</option>
                 </select>
               </AccessField>
-              <AccessField label="KubeEdge 版本" required>
-                <Input value={accessForm.kubeEdgeVersion} onChange={(event) => setAccessForm({ ...accessForm, kubeEdgeVersion: event.target.value })} placeholder="请输入实际 KubeEdge 版本" className="h-11 rounded-xl" />
+              <AccessField label="KubeEdge 版本" required error={accessFormErrors.kubeEdgeVersion} errorId="access-config-kubeEdgeVersion-error">
+                <Input id="access-config-kubeEdgeVersion" value={accessForm.kubeEdgeVersion} onChange={(event) => updateAccessFormField("kubeEdgeVersion", event.target.value)} placeholder="请输入实际 KubeEdge 版本" aria-invalid={Boolean(accessFormErrors.kubeEdgeVersion)} aria-describedby={accessFormErrors.kubeEdgeVersion ? "access-config-kubeEdgeVersion-error" : undefined} className={cn("h-11 rounded-xl", accessFormErrors.kubeEdgeVersion && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")} />
               </AccessField>
             </div>
             <AccessField label="驱动方式" required>
@@ -753,15 +817,15 @@ export function Nodes() {
                 onChange={(driver) => setAccessForm({ ...accessForm, driver: driver as AccessConfigForm["driver"] })}
               />
             </AccessField>
-            <AccessField label="CRI 服务地址" required>
-              <select value={accessForm.criAddress} onChange={(event) => setAccessForm({ ...accessForm, criAddress: event.target.value })} className="h-11 w-full rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm outline-none focus:border-[var(--color-brand)]">
+            <AccessField label="CRI 服务地址" required error={accessFormErrors.criAddress} errorId="access-config-criAddress-error">
+              <select id="access-config-criAddress" value={accessForm.criAddress} onChange={(event) => updateAccessFormField("criAddress", event.target.value)} aria-invalid={Boolean(accessFormErrors.criAddress)} aria-describedby={accessFormErrors.criAddress ? "access-config-criAddress-error" : undefined} className={cn("h-11 w-full rounded-xl border-2 bg-white px-4 text-sm outline-none", accessFormErrors.criAddress ? "border-[var(--color-danger)] focus:border-[var(--color-danger)]" : "border-[var(--color-input-border)] focus:border-[var(--color-brand)]")}>
                 <option value="">点击读取现有 CRI 服务地址</option>
                 <option value="/run/containerd/containerd.sock">/run/containerd/containerd.sock</option>
                 <option value="/var/run/dockershim.sock">/var/run/dockershim.sock</option>
               </select>
             </AccessField>
-            <AccessField label="访问地址" required>
-              <Input value={accessForm.address} onChange={(event) => setAccessForm({ ...accessForm, address: event.target.value })} placeholder="example.com:10000" className="h-11 rounded-xl" />
+            <AccessField label="访问地址" required error={accessFormErrors.address} errorId="access-config-address-error">
+              <Input id="access-config-address" value={accessForm.address} onChange={(event) => updateAccessFormField("address", event.target.value)} placeholder="example.com:10000" aria-invalid={Boolean(accessFormErrors.address)} aria-describedby={accessFormErrors.address ? "access-config-address-error" : undefined} className={cn("h-11 rounded-xl", accessFormErrors.address && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")} />
             </AccessField>
             <AccessField label="通信协议" required>
               <SegmentedChoice
@@ -770,11 +834,11 @@ export function Nodes() {
                 onChange={(protocol) => setAccessForm({ ...accessForm, protocol: protocol as AccessConfigForm["protocol"] })}
               />
             </AccessField>
-            <AccessField label="镜像仓库" required>
-              <Input value={accessForm.registry} onChange={(event) => setAccessForm({ ...accessForm, registry: event.target.value })} className="h-11 rounded-xl" />
+            <AccessField label="镜像仓库" required error={accessFormErrors.registry} errorId="access-config-registry-error">
+              <Input id="access-config-registry" value={accessForm.registry} onChange={(event) => updateAccessFormField("registry", event.target.value)} aria-invalid={Boolean(accessFormErrors.registry)} aria-describedby={accessFormErrors.registry ? "access-config-registry-error" : undefined} className={cn("h-11 rounded-xl", accessFormErrors.registry && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")} />
               <div className="mt-3 flex gap-3">
-                <Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => setAccessForm({ ...accessForm, registry: "registry.cn-shanghai.aliyuncs.com/kubeedge/default" })}>引用云端地址</Button>
-                <Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => setAccessForm({ ...accessForm, registry: "registry.cn-beijing.aliyuncs.com/kubeedge" })}>一键填充默认仓库</Button>
+                <Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => updateAccessFormField("registry", "registry.cn-shanghai.aliyuncs.com/kubeedge/default")}>引用云端地址</Button>
+                <Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => updateAccessFormField("registry", "registry.cn-beijing.aliyuncs.com/kubeedge")}>一键填充默认仓库</Button>
               </div>
               <div className="mt-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-soft)] p-4 text-sm text-[var(--color-text-secondary)]">
                 <p className="mb-2 font-semibold text-[var(--color-text-primary)]">镜像仓库说明</p>
@@ -805,7 +869,7 @@ export function Nodes() {
                     <button
                       type="button"
                       onClick={() => setAccessForm({ ...accessForm, labelRules: accessForm.labelRules.length > 1 ? accessForm.labelRules.filter((_, itemIndex) => itemIndex !== index) : [{ key: "", value: "" }] })}
-                      className="flex h-10 w-10 items-center justify-center rounded-xl text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]"
+                      className="flex h-10 w-10 items-center justify-center rounded-xl text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"
                       title="删除标签规则"
                     >
                       <Trash2 className="h-4 w-4" />
@@ -821,24 +885,26 @@ export function Nodes() {
           </div>
           <DialogFooter className="border-t border-[var(--color-border)] px-7 py-5">
             <Button variant="outline" className="h-10 rounded-xl px-5" onClick={requestCloseAccessCreate}>取消</Button>
-            <Button className="h-10 rounded-xl px-6" onClick={() => void createAccessConfig()} disabled={!accessForm.name.trim() || !accessForm.edgeUnitRef || !accessForm.nodeName.trim() || !accessForm.kubeEdgeVersion.trim() || !accessForm.address.trim()}>确定</Button>
+            <Button className="h-10 rounded-xl px-6" onClick={() => void createAccessConfig()} disabled={isLoading}>{isLoading ? "创建中..." : "确定"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
       <AlertDialog open={accessCancelConfirmOpen} onOpenChange={setAccessCancelConfirmOpen}>
-        <AlertDialogContent className="z-[120] max-w-[480px] rounded-2xl p-0">
-          <AlertDialogHeader className="border-b border-[var(--color-border)] px-7 py-5">
-            <AlertDialogTitle className="flex items-center gap-3 text-lg">
-              <AlertTriangle className="h-5 w-5 text-[var(--color-danger)]" />
+        <AlertDialogContent className="z-[120] !w-[calc(100%-2rem)] !max-w-[440px] gap-0 overflow-hidden rounded-2xl p-0 sm:!max-w-[440px]">
+          <AlertDialogHeader className="border-b border-[var(--color-border)] px-6 py-4 text-left">
+            <AlertDialogTitle className="flex items-center gap-2 text-base font-semibold">
+              <AlertTriangle className="h-[18px] w-[18px] text-[var(--color-danger)]" />
               确认取消创建
             </AlertDialogTitle>
           </AlertDialogHeader>
-          <AlertDialogDescription className="px-7 py-7 text-base text-[var(--color-text-secondary)]">
-            取消后，当前创建内容将不会保存。
-          </AlertDialogDescription>
-          <AlertDialogFooter className="border-t border-[var(--color-border)] px-7 py-5">
-            <AlertDialogCancel className="h-10 rounded-xl px-6">取消</AlertDialogCancel>
-            <AlertDialogAction className="h-10 rounded-xl bg-[var(--color-danger)] px-6 text-white hover:bg-[var(--color-danger)]/90" onClick={confirmCancelAccessCreate}>
+          <div className="px-6 py-5">
+            <AlertDialogDescription className="text-sm leading-6 text-[var(--color-text-secondary)]">
+              取消后，当前创建内容将不会保存。
+            </AlertDialogDescription>
+          </div>
+          <AlertDialogFooter className="border-t border-[var(--color-border)] px-6 py-4">
+            <AlertDialogCancel className="h-9 rounded-[10px] px-5 text-sm">取消</AlertDialogCancel>
+            <AlertDialogAction className="h-9 rounded-[10px] bg-[var(--color-danger)] px-5 text-sm text-white hover:bg-[var(--color-danger)]/90" onClick={confirmCancelAccessCreate}>
               确认取消
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -851,7 +917,10 @@ export function Nodes() {
           setAccessLabelSearch("");
         }
       }}>
-        <DialogContent className="max-w-[680px] gap-0 overflow-hidden rounded-[24px] p-0">
+        <DialogContent
+          className="max-w-[680px] gap-0 overflow-hidden rounded-[24px] p-0"
+          onOpenAutoFocus={(event) => event.preventDefault()}
+        >
           <DialogHeader className="border-b border-[var(--color-border)] px-8 py-6">
             <DialogTitle className="text-lg font-semibold">修改标签 — {accessLabelTarget?.name}</DialogTitle>
           </DialogHeader>
@@ -871,7 +940,7 @@ export function Nodes() {
                   .map((label) => (
                     <span key={label.id} className="inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--color-bg-soft)] px-3 text-sm text-[var(--color-text-primary)]">
                       <span>{label.key}: {label.value}</span>
-                      <button type="button" onClick={() => setAccessLabelDrafts((current) => current.filter((item) => item.id !== label.id))} className="text-[var(--color-text-tertiary)] hover:text-[var(--color-danger)]" title="删除标签">
+                      <button type="button" onClick={() => setAccessLabelDrafts((current) => current.filter((item) => item.id !== label.id))} className="text-[var(--color-text-tertiary)] hover:text-[var(--color-text-primary)]" title="删除标签">
                         <X className="h-3.5 w-3.5" />
                       </button>
                     </span>
@@ -889,7 +958,7 @@ export function Nodes() {
                   <div key={label.id} className="grid grid-cols-[1fr_1fr_40px] items-center gap-3">
                     <Input value={label.key} onChange={(event) => setAccessLabelDrafts((current) => current.map((item) => item.id === label.id ? { ...item, key: event.target.value } : item))} placeholder="键（Key）" className="h-11 rounded-xl" />
                     <Input value={label.value} onChange={(event) => setAccessLabelDrafts((current) => current.map((item) => item.id === label.id ? { ...item, value: event.target.value } : item))} placeholder="值（Value）" className="h-11 rounded-xl" />
-                    <button type="button" onClick={() => setAccessLabelDrafts((current) => current.filter((item) => item.id !== label.id))} className="flex h-10 w-10 items-center justify-center rounded-xl text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]" title="删除新增标签">
+                    <button type="button" onClick={() => setAccessLabelDrafts((current) => current.filter((item) => item.id !== label.id))} className="flex h-10 w-10 items-center justify-center rounded-xl text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]" title="删除新增标签">
                       <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
@@ -946,7 +1015,7 @@ export function Nodes() {
                     {selected.unschedulable ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <Ban className="w-3.5 h-3.5 mr-1" />}
                     {selected.unschedulable ? "恢复调度" : "设为不可调度"}
                   </Button>
-                  <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => openDelete(selected)}><Trash2 className="w-3.5 h-3.5 mr-1 text-[var(--color-danger)]" /><span className="text-[var(--color-danger)]">删除</span></Button>
+                  <Button size="sm" variant="outline" className="h-8 text-xs text-[var(--color-text-secondary)]" onClick={() => openDelete(selected)}><Trash2 className="mr-1 h-3.5 w-3.5" /><span>删除</span></Button>
                 </div>
               </TabsContent>
               <TabsContent value="resource" className="mt-3 space-y-3">
@@ -1071,7 +1140,7 @@ function PortalActionMenu({ items }: { items: ActionMenuItem[] }) {
               role="menuitem"
               className={cn(
                 "flex h-9 w-full items-center gap-2 px-3.5 text-left text-xs transition-colors hover:bg-[var(--color-bg-hover)]",
-                item.danger ? "text-[var(--color-danger)] hover:bg-[var(--color-danger-soft)]" : "text-[#111827]",
+                item.danger ? "text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]" : "text-[#111827]",
               )}
               onClick={(event) => {
                 event.stopPropagation();
@@ -1127,13 +1196,14 @@ function SchedulePill({ unschedulable }: { unschedulable: boolean }) {
   );
 }
 
-function AccessField({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+function AccessField({ label, required, children, error, errorId }: { label: string; required?: boolean; children: React.ReactNode; error?: string; errorId?: string }) {
   return (
     <div>
       <div className="mb-2 text-sm font-semibold text-[var(--color-text-primary)]">
         {label} {required && <span className="text-[var(--color-danger)]">*</span>}
       </div>
       {children}
+      {error && <p id={errorId} className="mt-1.5 text-xs font-medium text-[var(--color-danger)]">{error}</p>}
     </div>
   );
 }
