@@ -52,6 +52,43 @@ export async function getEdgeUnitConfigMaps(warnings: EdgeUnitWarning[]): Promis
   });
 }
 
+function resourceRefKey(item: any): string {
+  const metadata = metadataOf(item);
+  const namespace = String(metadata.namespace || item?.namespace || "default");
+  const name = String(metadata.name || item?.name || "");
+  return `${namespace}/${name}`;
+}
+
+export function mergeResourceDetails(
+  summaries: any[],
+  detailsRaw: any,
+  warnings: EdgeUnitWarning[],
+  source: string,
+): any[] {
+  const details = itemsOf(detailsRaw);
+  if (summaries.length > 0 && details.length === 0) {
+    warnings.push({ source, message: "Kubernetes resource details unavailable; summary data was used instead" });
+    return summaries;
+  }
+
+  const summaryByRef = new Map(summaries.map((item) => [resourceRefKey(item), item]));
+  const merged = details.map((detail) => {
+    const summary = summaryByRef.get(resourceRefKey(detail));
+    if (!summary) return detail;
+    return {
+      ...summary,
+      ...detail,
+      metadata: {
+        ...(summary?.metadata || {}),
+        ...(detail?.metadata || {}),
+      },
+    };
+  });
+  const detailRefs = new Set(details.map(resourceRefKey));
+  merged.push(...summaries.filter((summary) => !detailRefs.has(resourceRefKey(summary))));
+  return merged;
+}
+
 async function getNodeGroupDetailsRaw() {
   const nodeGroupList = await getJson("/nodegroup");
   const nodeGroupSummaries = itemsOf(nodeGroupList);
@@ -125,28 +162,8 @@ export async function collectEdgeUnitAuxSources(warnings: EdgeUnitWarning[]) {
     warnings.push({ source: "edgeapplication", message: edgeApplicationsRaw.reason instanceof Error ? edgeApplicationsRaw.reason.message : "EdgeApplication list unavailable" });
   }
 
-  const mergeResourceDetails = (items: any[], detailsRaw: any, source: string) => {
-    const details = itemsOf(detailsRaw);
-    if (items.length > 0 && details.length === 0) {
-      warnings.push({ source, message: "Kubernetes resource details unavailable; summary data was used instead" });
-      return items;
-    }
-    const detailByRef = new Map(details.map((item) => {
-      const metadata = metadataOf(item);
-      const namespace = String(metadata.namespace || item?.namespace || "default");
-      const name = String(metadata.name || item?.name || "");
-      return [`${namespace}/${name}`, item];
-    }));
-    return items.map((item) => {
-      const metadata = metadataOf(item);
-      const namespace = String(metadata.namespace || item?.namespace || "default");
-      const name = String(metadata.name || item?.name || "");
-      return detailByRef.get(`${namespace}/${name}`) || item;
-    });
-  };
-
-  const deployments = mergeResourceDetails(deploymentSummaries, k8sDeploymentsRaw, "deployment.detail");
-  const edgeApplications = mergeResourceDetails(edgeApplicationSummaries, k8sEdgeApplicationsRaw, "edgeapplication.detail");
+  const deployments = mergeResourceDetails(deploymentSummaries, k8sDeploymentsRaw, warnings, "deployment.detail");
+  const edgeApplications = mergeResourceDetails(edgeApplicationSummaries, k8sEdgeApplicationsRaw, warnings, "edgeapplication.detail");
   const pods = itemsOf(podsRaw);
 
   return { nodes, pods, deployments, edgeApplications, accessConfigs };

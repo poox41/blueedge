@@ -82,5 +82,6 @@ export function observabilityUnavailableText(reason?: string) {
   if (reason === "device_logs_not_configured" || reason === "device_metrics_not_configured") return "当前未配置数据源";
   if (reason === "not_requested") return "未请求";
   if (reason === "no_pods") return "未找到关联 Pod";
+  if (reason === "metrics_unavailable") return "容器尚未运行或指标尚未采集，暂无监控数据";
   return "监控数据不可用";
 }

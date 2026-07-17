@@ -82,8 +82,8 @@ function metricsFromPodMetric(metric: any) {
 }
 
 export async function getPodSummaryMetrics(namespace: string, name: string, warnings: EdgeUnitWarning[]) {
-  const data = await getK8sJson(`/apis/metrics.k8s.io/v1beta1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(name)}`).catch((error) => {
-    warnings.push(warning("metrics.pod", error, "pod metrics unavailable"));
+  const data = await getK8sJson(`/apis/metrics.k8s.io/v1beta1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(name)}`).catch(() => {
+    warnings.push(podMetricsUnavailableWarning(name));
     return null;
   });
   if (!data) return { available: false, containers: [] };
@@ -107,8 +107,8 @@ export async function getPodSummaryRecentLogs(namespace: string, name: string, c
 }
 
 async function getPodMetricsRaw(namespace: string, name: string, warnings: EdgeUnitWarning[]) {
-  const data = await getK8sJson(`/apis/metrics.k8s.io/v1beta1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(name)}`).catch((error) => {
-    warnings.push(warning("metrics", error, "pod metrics unavailable"));
+  const data = await getK8sJson(`/apis/metrics.k8s.io/v1beta1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(name)}`).catch(() => {
+    warnings.push(podMetricsUnavailableWarning(name));
     return null;
   });
   return data;
@@ -236,6 +236,14 @@ export function nodeMetricsUnavailableWarning(name: string): EdgeUnitWarning {
     source: "metrics.node",
     code: "metrics_unavailable",
     message: `节点 ${name} 的 CPU、内存监控指标暂不可用，不影响节点健康状态和其他操作`,
+  };
+}
+
+export function podMetricsUnavailableWarning(name: string): EdgeUnitWarning {
+  return {
+    source: "metrics.pod",
+    code: "metrics_unavailable",
+    message: `Pod ${name} 尚未运行或指标尚未采集，暂无监控数据`,
   };
 }
 

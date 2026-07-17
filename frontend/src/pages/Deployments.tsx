@@ -69,6 +69,7 @@ import {
   runDeploymentAction,
 } from "@/api/services/product";
 import type { DeploymentAuditRecord, DeploymentRevision } from "@/api/services/product";
+import { observabilityUnavailableText } from "@/api/adapters/observability.adapter";
 import type { ObservabilityEvent, ObservabilitySummary } from "@/api/adapters/observability.adapter";
 import type { KubeResource, WorkloadView } from "@/types/kubeedge";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
@@ -93,6 +94,8 @@ type Workload = {
 type DeploymentPodRow = {
   name: string;
   status: string;
+  statusMessage: string;
+  statusError: boolean;
   readyContainers: number;
   totalContainers: number;
   podIP: string;
@@ -366,6 +369,31 @@ const deploymentPodRows = (pods: unknown[], item: Workload): DeploymentPodRow[] 
     const status = asRecord(resource.status);
     const containerSpecs = asRecordArray(spec.containers);
     const containerStatuses = asRecordArray(status.containerStatuses);
+    const allContainerStatuses = [...asRecordArray(status.initContainerStatuses), ...containerStatuses];
+    const waitingStates = allContainerStatuses
+      .map((entry) => asRecord(asRecord(entry.state).waiting))
+      .filter((entry) => Object.keys(entry).length > 0);
+    const terminatedStates = allContainerStatuses
+      .map((entry) => asRecord(asRecord(entry.state).terminated))
+      .filter((entry) => Object.keys(entry).length > 0);
+    const containerState = waitingStates.find((entry) => String(entry.reason || "") !== "ContainerCreating")
+      || waitingStates[0]
+      || terminatedStates.find((entry) => Number(entry.exitCode || 0) !== 0)
+      || terminatedStates[0];
+    const containerReason = String(containerState?.reason || "");
+    const containerMessage = String(containerState?.message || "");
+    const statusErrorReasons = new Set(["ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff", "CreateContainerConfigError", "CreateContainerError", "RunContainerError", "InvalidImageName"]);
+    const statusLabels: Record<string, string> = {
+      ImagePullBackOff: "镜像拉取失败（ImagePullBackOff）",
+      ErrImagePull: "镜像拉取失败（ErrImagePull）",
+      CrashLoopBackOff: "容器反复崩溃（CrashLoopBackOff）",
+      CreateContainerConfigError: "容器配置错误",
+      CreateContainerError: "容器创建失败",
+      RunContainerError: "容器启动失败",
+      InvalidImageName: "镜像名称无效",
+      ContainerCreating: "容器创建中",
+      PodInitializing: "容器初始化中",
+    };
     const resources = containerSpecs.map((container) => asRecord(container.resources));
     const requests = resources.map((entry) => asRecord(entry.requests));
     const limits = resources.map((entry) => asRecord(entry.limits));
@@ -376,7 +404,9 @@ const deploymentPodRows = (pods: unknown[], item: Workload): DeploymentPodRow[] 
     };
     return [{
       name: String(metadata.name || "未配置"),
-      status: String(status.phase || "未知"),
+      status: statusLabels[containerReason] || containerReason || String(status.phase || "未知"),
+      statusMessage: containerMessage,
+      statusError: statusErrorReasons.has(containerReason) || String(status.phase || "") === "Failed",
       readyContainers: containerStatuses.filter((entry) => entry.ready === true).length,
       totalContainers: containerSpecs.length,
       podIP: String(status.podIP || "未配置"),
@@ -1404,7 +1434,14 @@ function WorkloadDetailPage({
             <TableHeader><TableRow><TableHead>容器组名称</TableHead><TableHead>状态</TableHead><TableHead>容器（正常/总量）</TableHead><TableHead>容器组 IP</TableHead><TableHead>节点</TableHead><TableHead>重启次数</TableHead><TableHead>CPU 申请值/限制值</TableHead><TableHead>内存申请值/限制值</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
             <TableBody>
               {visiblePods.length === 0 ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-sm text-[var(--color-text-tertiary)]">{podsLoading ? "正在加载关联 Pod..." : "暂无关联 Pod"}</TableCell></TableRow> : visiblePods.map((pod) => (
-                <TableRow key={pod.name}><TableCell className="font-semibold text-[#1e6bff]">{pod.name}</TableCell><TableCell>{pod.status}</TableCell><TableCell>{pod.readyContainers}/{pod.totalContainers}</TableCell><TableCell>{pod.podIP}</TableCell><TableCell>{pod.nodeName}</TableCell><TableCell>{pod.restartCount}</TableCell><TableCell>{pod.cpu}</TableCell><TableCell>{pod.memory}</TableCell><TableCell className="text-right"><button type="button" onClick={() => onAction("logs")} className="action-button" title="查看日志"><MoreHorizontal className="h-3.5 w-3.5" /></button></TableCell></TableRow>
+                <TableRow key={pod.name}>
+                  <TableCell className="font-semibold text-[#1e6bff]">{pod.name}</TableCell>
+                  <TableCell className="min-w-[220px]">
+                    <div className={cn("font-medium", pod.statusError ? "text-[#dc2626]" : "text-[#334155]")}>{pod.status}</div>
+                    {pod.statusMessage && <div className="mt-1 max-w-[320px] truncate text-xs text-[#94a3b8]" title={pod.statusMessage}>{pod.statusMessage}</div>}
+                  </TableCell>
+                  <TableCell>{pod.readyContainers}/{pod.totalContainers}</TableCell><TableCell>{pod.podIP}</TableCell><TableCell>{pod.nodeName}</TableCell><TableCell>{pod.restartCount}</TableCell><TableCell>{pod.cpu}</TableCell><TableCell>{pod.memory}</TableCell><TableCell className="text-right"><button type="button" onClick={() => onAction("logs")} className="action-button" title="查看日志"><MoreHorizontal className="h-3.5 w-3.5" /></button></TableCell>
+                </TableRow>
               ))}
             </TableBody>
           </Table>
@@ -2289,7 +2326,7 @@ function WorkloadMonitorDrawer({ item, onClose }: { item: Workload; onClose: () 
               </div>
               <p className="text-xs leading-5 text-[#94a3b8]">曲线由弹窗打开后的真实 metrics-server 采样形成；当前集群未提供工作负载网络与磁盘历史指标，因此不展示原型中的静态网络/磁盘曲线。</p>
             </div>
-          ) : <DetailEmpty text={metrics?.reason || "监控指标当前不可用"} />}
+          ) : <DetailEmpty text={observabilityUnavailableText(metrics?.reason)} />}
         </div>
       </div>
     </div>

@@ -133,9 +133,17 @@ export async function listNamespaces(): Promise<Array<{ value: string; label: st
 }
 
 export async function listDeployments(namespace?: string): Promise<WorkloadView[]> {
-  const path = namespace ? `/deployment/${namespace}` : "/deployment";
-  const res = await bffRequest<unknown>(path);
-  return normalizeDeploymentList(res.data);
+  const items: WorkloadView[] = [];
+  let page = 1;
+
+  while (page <= 100) {
+    const result = await listDeploymentPage(namespace, { page, pageSize: 100 });
+    items.push(...result.items);
+    if (!result.hasNext || result.items.length === 0) return items;
+    page += 1;
+  }
+
+  throw new Error("Deployment 列表分页超过安全上限");
 }
 
 export interface DeploymentListOptions {

@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blueedge-api-gateway-bff-down
+  namespace: blueedge-test
+  labels:
+    app: blueedge-api-gateway-bff-down
+    blueedge.io/test-scenario: bff-unavailable
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blueedge-api-gateway-bff-down
+  template:
+    metadata:
+      labels:
+        app: blueedge-api-gateway-bff-down
+        blueedge.io/test-scenario: bff-unavailable
+    spec:
+      serviceAccountName: blueedge-dashboard
+      imagePullSecrets:
+        - name: blueedge-registry-secret
+        - name: acr-pull-secret
+      nodeSelector:
+        kubernetes.io/hostname: k8s-master
+      containers:
+        - name: blueedge-api-gateway
+          image: 183.95.195.121:31438/blueedge/api-gateway:2026071704
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: PORT
+              value: "7001"
+            - name: BFF_BASE_URL
+              value: http://127.0.0.1:65535/api/v1
+          envFrom:
+            - configMapRef:
+                name: blueedge-config
+            - secretRef:
+                name: blueedge-secret
+          ports:
+            - name: http
+              containerPort: 7001
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blueedge-api-gateway-bff-down
+  namespace: blueedge-test
+spec:
+  selector:
+    app: blueedge-api-gateway-bff-down
+  ports:
+    - name: http
+      port: 7001
+      targetPort: http
