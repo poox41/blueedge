@@ -115,8 +115,8 @@ export function registerBatchTaskRoutes(app: express.Express) {
     }
   });
 
-  app.get("/blueedge/workloads/batch", async (_req, res) => {
-    try { res.json(await listBatchWorkloads()); }
+  app.get("/blueedge/workloads/batch", async (req, res) => {
+    try { res.json(await listBatchWorkloads(typeof req.query.edgeUnitRef === "string" ? req.query.edgeUnitRef : "")); }
     catch (error) { res.status(500).json({ message: error instanceof Error ? error.message : "batch workload list API is unavailable" }); }
   });
 

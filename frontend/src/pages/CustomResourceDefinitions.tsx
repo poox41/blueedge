@@ -1,4 +1,4 @@
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
+import { ListPagination } from "@/components/common/ListPagination";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Search, RefreshCw, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, RefreshCw, Eye, Copy } from "lucide-react";
 import { getCRD, listCRDs } from "@/api/services/resources";
 import { cn } from "@/lib/utils";
 
@@ -56,7 +56,7 @@ export function CustomResourceDefinitions() {
   const [page, setPage] = useState(1);
   const [detailOpen, setDetailOpen] = useState(false);
   const [selected, setSelected] = useState<CRD | null>(null);
-  const pageSize = 10;
+  const [pageSize, setPageSize] = useState(10);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -78,7 +78,6 @@ export function CustomResourceDefinitions() {
   }, [loadData]);
 
   const filtered = useMemo(() => { let r = data; if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase())); return r; }, [data, search]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
@@ -124,17 +123,8 @@ export function CustomResourceDefinitions() {
             <TableCell className="px-4 py-3"><button type="button" className="action-button" title="查看详情" onClick={() => openDetail(row)}><Eye className="h-3.5 w-3.5" /></button></TableCell>
           </TableRow>
         ))}</TableBody></Table>
+        <ListPagination total={filtered.length} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
       </div>
-      {filtered.length > pageSize && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-[var(--color-text-tertiary)]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
-          <Pagination><PaginationContent>
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="h-7 w-7 p-0"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (<PaginationItem key={p}><Button variant={page === p ? "default" : "outline"} size="sm" onClick={() => setPage(p)} className={cn("h-7 w-7 p-0 text-xs", page === p ? "bg-[var(--color-text-primary)] text-white" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}>{p}</Button></PaginationItem>))}
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="h-7 w-7 p-0"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
-          </PaginationContent></Pagination>
-        </div>
-      )}
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
         <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
           <SheetHeader className="pb-4 border-b border-[var(--color-border-strong)]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle></SheetHeader>

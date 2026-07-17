@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ListPagination, useListPagination } from "@/components/common/ListPagination";
 import { createRuleEndpointResource, deleteRuleEndpointResource, getRuleEndpoint, listNamespaces, listRuleEndpoints, updateRuleEndpointResource } from "@/api/services/resources";
 import { listClusterEvents } from "@/api/services/product";
 import type { ClusterEvent } from "@/api/services/product";
@@ -323,6 +324,7 @@ export function RuleEndpoints() {
     const keyword = search.trim().toLowerCase();
     return data.filter((row) => (selectedNamespace === "all" || row.namespace === selectedNamespace) && (!keyword || row.name.toLowerCase().includes(keyword)));
   }, [data, search, selectedNamespace]);
+  const { paginatedItems, paginationProps } = useListPagination(filtered);
 
   const openMenu = (row: MessageEndpointRow, button: HTMLButtonElement) => {
     const rect = button.getBoundingClientRect();
@@ -475,7 +477,7 @@ export function RuleEndpoints() {
                 </TableCell>
               </TableRow>
             ) : (
-              filtered.map((row) => (
+              paginatedItems.map((row) => (
                 <TableRow key={`${row.namespace}-${row.name}`} className="table-row cursor-pointer" onClick={() => navigate(`/ruleendpoints/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.name)}`)}>
                   <TableCell className="table-name-cell">
                     <span className="text-sm font-medium text-[var(--color-brand)]">{row.name}</span>
@@ -497,6 +499,7 @@ export function RuleEndpoints() {
             )}
           </TableBody>
         </Table>
+        <ListPagination {...paginationProps} />
       </section>
 
       {menuTarget && (

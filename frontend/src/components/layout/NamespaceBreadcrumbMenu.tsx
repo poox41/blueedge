@@ -1,11 +1,67 @@
+import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { ChevronDown } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { getEdgeUnitResources } from "@/api/services/product";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 import { useNamespace } from "@/contexts/NamespaceContext";
 import { cn } from "@/lib/utils";
 
 export function NamespaceBreadcrumbMenu() {
-  const { namespaces, selectedNamespace, loading, error, selectNamespace } = useNamespace();
-  const label = namespaces.find((item) => item.value === selectedNamespace)?.label || selectedNamespace;
+  const { namespaces: clusterNamespaces, selectedNamespace, loading: clusterLoading, error: clusterError, selectNamespace } = useNamespace();
+  const { selectedEdgeUnitName } = useEdgeUnits();
+  const location = useLocation();
+  const resourceKind = location.pathname === "/edgeapps"
+    ? "edgeApplications"
+    : null;
+  const [relatedNamespaces, setRelatedNamespaces] = useState<string[]>([]);
+  const [scopeLoading, setScopeLoading] = useState(false);
+  const [scopeError, setScopeError] = useState("");
+
+  useEffect(() => {
+    if (!resourceKind || !selectedEdgeUnitName) {
+      setRelatedNamespaces([]);
+      setScopeError("");
+      return;
+    }
+    let active = true;
+    setRelatedNamespaces([]);
+    setScopeLoading(true);
+    setScopeError("");
+    getEdgeUnitResources(selectedEdgeUnitName)
+      .then((response) => {
+        if (!active) return;
+        const namespaces = Array.from(new Set(response.item[resourceKind].map((item) => item.namespace || "default"))).sort();
+        setRelatedNamespaces(namespaces);
+      })
+      .catch((cause) => {
+        if (!active) return;
+        setRelatedNamespaces([]);
+        setScopeError(cause instanceof Error ? cause.message : "边缘单元命名空间范围加载失败");
+      })
+      .finally(() => {
+        if (active) setScopeLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [resourceKind, selectedEdgeUnitName]);
+
+  const namespaces = useMemo(() => resourceKind
+    ? [
+        { value: "all", label: "全部相关命名空间" },
+        ...relatedNamespaces.map((namespace) => ({ value: namespace, label: namespace })),
+      ]
+    : clusterNamespaces, [clusterNamespaces, relatedNamespaces, resourceKind]);
+
+  useEffect(() => {
+    if (!resourceKind || scopeLoading) return;
+    if (!namespaces.some((item) => item.value === selectedNamespace)) selectNamespace("all");
+  }, [namespaces, resourceKind, scopeLoading, selectNamespace, selectedNamespace]);
+
+  const loading = resourceKind ? scopeLoading : clusterLoading;
+  const error = resourceKind ? scopeError : clusterError;
+  const label = namespaces.find((item) => item.value === selectedNamespace)?.label || (resourceKind ? "全部相关命名空间" : selectedNamespace);
 
   return (
     <DropdownMenu>

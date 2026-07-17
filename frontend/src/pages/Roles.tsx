@@ -1,4 +1,4 @@
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
+import { ListPagination } from "@/components/common/ListPagination";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,12 +10,11 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight, Pencil } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, Eye, Copy, Pencil } from "lucide-react";
 import { formatLabels, getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
 import { createRoleResource, deleteRoleResource, listRoles, updateRoleResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource } from "@/types/kubeedge";
-import { cn } from "@/lib/utils";
 import { validateRequiredDomFields } from "@/lib/form-validation";
 import { useNamespace } from "@/contexts/NamespaceContext";
 
@@ -88,7 +87,7 @@ export function Roles() {
   const [form, setForm] = useState({ name: "", namespace: "default", resources: "pods", verbs: "get,list" });
   const [editForm, setEditForm] = useState({ name: "", namespace: "default", resources: "pods", verbs: "get,list" });
   const [editItem, setEditItem] = useState<Role | null>(null);
-  const pageSize = 10;
+  const [pageSize, setPageSize] = useState(10);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -108,7 +107,6 @@ export function Roles() {
   }, [loadData]);
 
   const filtered = useMemo(() => { let r = data; if (ns !== "all") r = r.filter(d => d.namespace === ns); if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase())); return r; }, [data, ns, search]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
@@ -238,17 +236,8 @@ export function Roles() {
             <TableCell className="px-4 py-3"><div className="action-group"><button type="button" className="action-button" title="查看详情" onClick={() => openDetail(row)}><Eye className="h-3.5 w-3.5" /></button><button type="button" className="action-button" title="编辑" onClick={() => openEdit(row)}><Pencil className="h-3.5 w-3.5" /></button><button type="button" className="action-button is-danger" title="删除" onClick={() => openDel(row)}><Trash2 className="h-3.5 w-3.5" /></button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
+        <ListPagination total={filtered.length} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
       </div>
-      {filtered.length > pageSize && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-[var(--color-text-tertiary)]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
-          <Pagination><PaginationContent>
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="h-7 w-7 p-0"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (<PaginationItem key={p}><Button variant={page === p ? "default" : "outline"} size="sm" onClick={() => setPage(p)} className={cn("h-7 w-7 p-0 text-xs", page === p ? "bg-[var(--color-text-primary)] text-white" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}>{p}</Button></PaginationItem>))}
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="h-7 w-7 p-0"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
-          </PaginationContent></Pagination>
-        </div>
-      )}
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
         <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
           <SheetHeader className="pb-4 border-b border-[var(--color-border-strong)]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle><Badge variant="outline" className="text-xs font-normal w-fit mt-2">{selected?.namespace}</Badge></SheetHeader>

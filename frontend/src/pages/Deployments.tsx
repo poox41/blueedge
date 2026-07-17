@@ -45,17 +45,18 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ListPagination, useListPagination } from "@/components/common/ListPagination";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
-  createDeploymentResource,
+  createEdgeUnitDeploymentResource,
   deleteDeploymentResource,
   getDeployment,
   listDeployments,
   listNamespaces,
   listPods,
-  updateDeploymentResource,
+  updateEdgeUnitDeploymentResource,
 } from "@/api/services/resources";
 import {
   executeDeploymentCommand,
@@ -636,25 +637,9 @@ const buildDeploymentResource = (form: WorkloadForm): KubeResource => {
   };
 };
 
-const assignDeploymentToEdgeUnit = (resource: KubeResource, edgeUnitName: string): KubeResource => {
-  const next = JSON.parse(JSON.stringify(resource)) as KubeResource;
-  next.metadata = {
-    ...next.metadata,
-    labels: { ...(next.metadata?.labels || {}), "blueedge.io/edge-unit": edgeUnitName },
-  };
-  const spec = next.spec as any;
-  if (spec?.template) {
-    spec.template.metadata = {
-      ...(spec.template.metadata || {}),
-      labels: { ...(spec.template.metadata?.labels || {}), "blueedge.io/edge-unit": edgeUnitName },
-    };
-  }
-  return next;
-};
-
 export function Deployments() {
   const { selectedNamespace } = useNamespace();
-  const { selectedEdgeUnitName } = useEdgeUnits();
+  const { selectedEdgeUnit, selectedEdgeUnitName } = useEdgeUnits();
   const [items, setItems] = useState<Workload[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -679,10 +664,10 @@ export function Deployments() {
       }
       const [allRows, scope] = await Promise.all([
         listDeployments(selectedNamespace === "all" ? undefined : selectedNamespace),
-        getEdgeUnitResources(selectedEdgeUnitName).catch(() => null),
+        getEdgeUnitResources(selectedEdgeUnitName),
       ]);
-      const allowed = scope ? new Set(scope.item.deployments.map((item) => `${item.namespace}/${item.name}`)) : null;
-      const rows = allowed ? allRows.filter((item) => allowed.has(`${item.namespace}/${item.name}`)) : allRows;
+      const allowed = new Set(scope.item.deployments.map((item) => `${item.namespace}/${item.name}`));
+      const rows = allRows.filter((item) => allowed.has(`${item.namespace}/${item.name}`));
       if (requestId !== loadRequestId.current) return;
       setItems(rows.map(toWorkload));
       void Promise.allSettled(rows.map((row) => getDeployment(row.namespace, row.name))).then((detailResults) => {
@@ -710,13 +695,14 @@ export function Deployments() {
     if (!keyword) return items;
     return items.filter((item) => [item.name, item.alias, item.namespace, item.image].some((value) => value.toLowerCase().includes(keyword)));
   }, [items, search]);
+  const { paginatedItems, paginationProps } = useListPagination(filtered);
 
   const createFromForm = async (form: WorkloadForm) => {
     setIsLoading(true);
     setError("");
     try {
       if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
-      await createDeploymentResource(assignDeploymentToEdgeUnit(buildDeploymentResource(form), selectedEdgeUnitName));
+      await createEdgeUnitDeploymentResource(selectedEdgeUnitName, buildDeploymentResource(form));
       setWizardOpen(false);
       await loadData();
       showToast("工作负载创建成功");
@@ -732,7 +718,7 @@ export function Deployments() {
     setError("");
     try {
       if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
-      await createDeploymentResource(assignDeploymentToEdgeUnit(ensureDeploymentResource(source), selectedEdgeUnitName));
+      await createEdgeUnitDeploymentResource(selectedEdgeUnitName, ensureDeploymentResource(source));
       setYamlOpen(false);
       await loadData();
       showToast("工作负载创建成功");
@@ -748,7 +734,8 @@ export function Deployments() {
     setError("");
     try {
       const resource = buildDeploymentUpdateResource(item, form);
-      await updateDeploymentResource(item.namespace, resource);
+      if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
+      await updateEdgeUnitDeploymentResource(selectedEdgeUnitName, item.namespace, item.name, resource);
       setActionPanel(null);
       setSelectedWorkload((current) => current?.id === item.id ? {
         ...current,
@@ -772,7 +759,8 @@ export function Deployments() {
     setError("");
     try {
       const resource = ensureDeploymentUpdateResource(item, source);
-      await updateDeploymentResource(item.namespace, resource);
+      if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
+      await updateEdgeUnitDeploymentResource(selectedEdgeUnitName, item.namespace, item.name, resource);
       setActionPanel(null);
       const container = getFirstContainer(resource);
       setSelectedWorkload((current) => current?.id === item.id ? {
@@ -797,7 +785,8 @@ export function Deployments() {
     setError("");
     try {
       const resource = buildDeploymentMetadataUpdateResource(item, labels, annotations);
-      await updateDeploymentResource(item.namespace, resource);
+      if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
+      await updateEdgeUnitDeploymentResource(selectedEdgeUnitName, item.namespace, item.name, resource);
       setActionPanel(null);
       setSelectedWorkload((current) => current?.id === item.id ? { ...current, raw: resource } : current);
       await loadData();
@@ -944,7 +933,7 @@ export function Deployments() {
                 </TableCell>
               </TableRow>
             ) : (
-              filtered.map((item) => (
+              paginatedItems.map((item) => (
                 <TableRow key={item.id} className="table-row group cursor-pointer" onClick={() => setSelectedWorkload(item)}>
                   <TableCell className="table-name-cell table-name-workload">
                     <span className="text-sm font-medium text-[#1e6bff]">{item.name}</span>
@@ -970,10 +959,16 @@ export function Deployments() {
             )}
           </TableBody>
         </Table>
+        <ListPagination {...paginationProps} />
       </section>
 
       <YamlCreateModal open={yamlOpen} defaultValue={defaultYaml} onSubmit={createFromYaml} onCancel={() => setYamlOpen(false)} />
-      <CreateWorkloadWizard open={wizardOpen} onOpenChange={setWizardOpen} onCreate={createFromForm} />
+      <CreateWorkloadWizard
+        open={wizardOpen}
+        onOpenChange={setWizardOpen}
+        onCreate={createFromForm}
+        nodeGroupRef={selectedEdgeUnit?.rawRef.nodeGroupRef || (selectedEdgeUnit?.rawRef.kind === "NodeGroup" ? selectedEdgeUnit.name : "")}
+      />
       <WorkloadActionModal
         panel={actionPanel}
         onClose={() => setActionPanel(null)}
@@ -2451,7 +2446,7 @@ function YamlCreateModal({
   );
 }
 
-function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean; onOpenChange: (open: boolean) => void; onCreate: (form: WorkloadForm) => void }) {
+function CreateWorkloadWizard({ open, onOpenChange, onCreate, nodeGroupRef }: { open: boolean; onOpenChange: (open: boolean) => void; onCreate: (form: WorkloadForm) => void; nodeGroupRef: string }) {
   const [step, setStep] = useState(0);
   const [form, setForm] = useState(defaultForm);
   const [containers, setContainers] = useState<ContainerDraft[]>([createContainerDraft(0)]);
@@ -2555,7 +2550,14 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
         <StepIndicator step={step} />
 
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
-          {step === 0 && <BasicStep form={form} setForm={setForm} errors={errors} clearError={clearError} />}
+          {step === 0 && (
+            <div className="space-y-4">
+              <div className={cn("rounded-xl border px-4 py-3 text-sm", nodeGroupRef ? "border-[#bfdbfe] bg-[#eff6ff] text-[#1d4ed8]" : "border-[#fecaca] bg-[#fef2f2] text-[#dc2626]") }>
+                {nodeGroupRef ? `目标节点组：${nodeGroupRef}。创建后由后端自动写入归属标签和节点调度约束。` : "当前边缘单元尚未绑定 NodeGroup，无法创建工作负载。"}
+              </div>
+              <BasicStep form={form} setForm={setForm} errors={errors} clearError={clearError} />
+            </div>
+          )}
           {step === 1 && (
             <ContainerStep
               containers={containers}
@@ -2580,7 +2582,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
               {step < 2 ? (
                 <button type="button" onClick={next} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">下一步</button>
               ) : (
-                <button type="button" onClick={create} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">创建</button>
+                <button type="button" disabled={!nodeGroupRef} onClick={create} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033] disabled:cursor-not-allowed disabled:opacity-50">创建</button>
               )}
             </div>
           </div>

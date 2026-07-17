@@ -104,6 +104,7 @@ export interface BatchWorkloadPlanContainer {
 }
 
 export interface BatchWorkloadPlan {
+  edgeUnitRef?: string;
   namespace: string;
   name: string;
   targetGroups: string[];
@@ -128,6 +129,7 @@ export interface BatchWorkloadPlan {
 }
 
 export interface BatchTaskPayload {
+  edgeUnitRef?: string;
   name: string;
   targetType: "node" | "nodeGroup" | "edgeUnit" | "deployment";
   targetRefs: string[];
@@ -443,8 +445,8 @@ export async function createBatchWorkloadTask(payload: BatchTaskPayload): Promis
   return res.data;
 }
 
-export async function listBatchWorkloads(): Promise<BatchTaskListResponse> {
-  const res = await gatewayRequest<BatchTaskListResponse>("/blueedge/workloads/batch");
+export async function listBatchWorkloads(edgeUnitRef?: string): Promise<BatchTaskListResponse> {
+  const res = await gatewayRequest<BatchTaskListResponse>("/blueedge/workloads/batch", { params: { edgeUnitRef } });
   return res.data;
 }
 

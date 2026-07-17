@@ -4,12 +4,58 @@ import {
   buildEdgeUnitConfiguration,
   buildEdgeUnitConfigMapData,
   buildEdgeUnitRuntime,
+  bindDeploymentToEdgeUnitNodeGroup,
   deploymentBelongsToEdgeUnit,
   deploymentTargetsEdgeUnit,
   edgeApplicationBelongsToEdgeUnit,
   edgeApplicationTargetsEdgeUnit,
   nodeTargetsEdgeUnit,
 } from "../dist/services/edge-unit.service.js";
+
+test("EdgeUnit workload creation injects ownership and explicit NodeGroup scheduling", () => {
+  const resource = bindDeploymentToEdgeUnitNodeGroup({
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: "edge-app", namespace: "default" },
+    spec: { template: { metadata: { labels: { app: "edge-app" } }, spec: { containers: [{ name: "app", image: "nginx" }] } } },
+  }, "unit-a", "group-a", { metadata: { name: "group-a" }, spec: { nodes: ["edge-01"] } });
+
+  assert.equal(resource.metadata.labels["blueedge.io/edge-unit"], "unit-a");
+  assert.equal(resource.metadata.labels["blueedge.io/node-group"], "group-a");
+  assert.equal(resource.spec.template.metadata.labels["blueedge.io/edge-unit"], "unit-a");
+  assert.deepEqual(
+    resource.spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0],
+    { key: "kubernetes.io/hostname", operator: "In", values: ["edge-01"] },
+  );
+});
+
+test("EdgeUnit workload creation rejects scheduling outside the bound NodeGroup", () => {
+  const resource = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: "edge-app", namespace: "default" },
+    spec: { template: { spec: { nodeName: "cloud-01", containers: [{ name: "app", image: "nginx" }] } } },
+  };
+  assert.throws(
+    () => bindDeploymentToEdgeUnitNodeGroup(resource, "unit-a", "group-a", { metadata: { name: "group-a" }, spec: { nodes: ["edge-01"] } }),
+    /不属于 NodeGroup group-a/,
+  );
+});
+
+test("EdgeUnit workload creation merges NodeGroup matchLabels and rejects conflicts", () => {
+  const resource = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: "edge-app", namespace: "default" },
+    spec: { template: { spec: { nodeSelector: { region: "east" }, containers: [{ name: "app", image: "nginx" }] } } },
+  };
+  const group = { metadata: { name: "group-a" }, spec: { matchLabels: { nodeType: "edge", region: "east" } } };
+  assert.deepEqual(bindDeploymentToEdgeUnitNodeGroup(resource, "unit-a", "group-a", group).spec.template.spec.nodeSelector, { region: "east", nodeType: "edge" });
+  assert.throws(
+    () => bindDeploymentToEdgeUnitNodeGroup({ ...resource, spec: { template: { spec: { ...resource.spec.template.spec, nodeSelector: { region: "west" } } } } }, "unit-a", "group-a", group),
+    /冲突/,
+  );
+});
 
 test("EdgeUnit update can bind and explicitly unbind nodeGroupRef", () => {
   const existing = {

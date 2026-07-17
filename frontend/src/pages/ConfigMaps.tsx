@@ -20,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ListPagination, useListPagination } from "@/components/common/ListPagination";
 import { cn } from "@/lib/utils";
 import {
   createConfigMapResource,
@@ -376,6 +377,7 @@ export function ConfigMaps() {
       .filter((item) => selectedNamespace === "all" || item.namespace === selectedNamespace)
       .filter((item) => !keyword || [item.name, item.alias, item.namespace, formatLabels(item.labels)].some((value) => value.toLowerCase().includes(keyword)));
   }, [currentType, items, search, selectedNamespace]);
+  const { paginatedItems, paginationProps } = useListPagination(filtered);
 
   const loadData = useCallback(async (preserveData = false) => {
     if (!preserveData) setIsLoading(true);
@@ -760,7 +762,7 @@ export function ConfigMaps() {
                   </div>
                 </TableCell>
               </TableRow>
-            ) : filtered.map((row) => (
+            ) : paginatedItems.map((row) => (
               <TableRow key={row.id} className="table-row group cursor-pointer" onClick={() => navigate(`/configmaps/${row.type === "配置项" ? "config" : "secret"}/${encodeURIComponent(row.namespace)}/${encodeURIComponent(row.name)}`)}>
                 <TableCell className="table-name-cell text-sm font-medium text-[#1e6bff]">
                   {row.name}
@@ -787,6 +789,7 @@ export function ConfigMaps() {
             ))}
           </TableBody>
         </Table>
+        <ListPagination {...paginationProps} />
       </div>
 
       <CreateConfigItemDialog open={createOpen} type={currentType} namespaces={namespaceOptions} refreshingNamespaces={refreshingNamespaces} onRefreshNamespaces={handleNamespaceRefresh} onOpenChange={setCreateOpen} onSubmit={handleCreate} />

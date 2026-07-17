@@ -9,8 +9,8 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
-import { AlertTriangle, Trash2, ChevronLeft, ChevronRight, Copy, Ban, CheckCircle2, MoreHorizontal, Pause, Pencil, Plus, Search, X } from "lucide-react";
+import { ListPagination, useListPagination } from "@/components/common/ListPagination";
+import { AlertTriangle, Trash2, Copy, Ban, CheckCircle2, MoreHorizontal, Pause, Pencil, Plus, Search, X } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { formatMemory, listNodeMetrics } from "@/api/services/metrics";
 import { deleteNodeResource, getNode, listNodes, listPods, updateNodeResource } from "@/api/services/resources";
@@ -273,7 +273,7 @@ export function Nodes() {
   const [accessLabelSearch, setAccessLabelSearch] = useState("");
   const [accessForm, setAccessForm] = useState<AccessConfigForm>(defaultAccessForm);
   const [accessFormErrors, setAccessFormErrors] = useState<Partial<Record<AccessRequiredField, string>>>({});
-  const pageSize = 10;
+  const [pageSize, setPageSize] = useState(10);
 
   const loadAccessConfigs = useCallback(async () => {
     setAccessError("");
@@ -356,8 +356,8 @@ export function Nodes() {
     if (!keyword) return accessConfigs;
     return accessConfigs.filter((item) => item.name.toLowerCase().includes(keyword) || item.nodeLabel.toLowerCase().includes(keyword) || item.address.toLowerCase().includes(keyword));
   }, [accessConfigs, accessSearch]);
+  const { paginatedItems: paginatedAccessConfigs, paginationProps: accessPaginationProps } = useListPagination(filteredAccessConfigs);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (currentPage - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
@@ -643,7 +643,8 @@ export function Nodes() {
           </Button>
         </div>
       </div>
-      <div className="table-card overflow-x-auto">
+      <div className="table-card overflow-hidden">
+        <div className="overflow-x-auto">
         {activeTab === "nodes" ? (
           <Table className="min-w-[960px] table-fixed">
             <TableHeader>
@@ -702,7 +703,7 @@ export function Nodes() {
             <TableBody>
               {filteredAccessConfigs.length === 0 ? (
                 <TableRow><TableCell colSpan={7}><div className="blueedge-empty-state"><span className="blueedge-empty-state-icon" aria-hidden="true" /><span className="text-sm">暂无接入配置</span></div></TableCell></TableRow>
-              ) : filteredAccessConfigs.map((item) => (
+              ) : paginatedAccessConfigs.map((item) => (
                 <TableRow
                   key={item.name}
                   className="h-[69px] cursor-pointer border-b border-[var(--color-border)] transition-colors hover:bg-[var(--color-bg-hover)]"
@@ -732,19 +733,10 @@ export function Nodes() {
             </TableBody>
           </Table>
         )}
-      </div>
-      {activeTab === "nodes" && filtered.length > pageSize && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-[var(--color-text-tertiary)]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
-          <Pagination><PaginationContent>
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.max(1, p - 1))} disabled={currentPage === 1} className="h-7 w-7 p-0"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map(page => (
-              <PaginationItem key={page}><Button variant={currentPage === page ? "default" : "outline"} size="sm" onClick={() => setCurrentPage(page)} className={cn("h-7 w-7 p-0 text-xs", currentPage === page ? "bg-[var(--color-text-primary)] text-white hover:bg-[var(--color-brand-dark)]" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}>{page}</Button></PaginationItem>
-            ))}
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="h-7 w-7 p-0"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
-          </PaginationContent></Pagination>
         </div>
-      )}
+        {activeTab === "nodes" && <ListPagination total={filtered.length} page={currentPage} pageSize={pageSize} onPageChange={setCurrentPage} onPageSizeChange={(size) => { setPageSize(size); setCurrentPage(1); }} />}
+        {activeTab === "access" && <ListPagination {...accessPaginationProps} />}
+      </div>
       <Dialog open={!!aliasTarget} onOpenChange={(open) => {
         if (!open) {
           setAliasTarget(null);

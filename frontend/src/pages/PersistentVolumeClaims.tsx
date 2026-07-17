@@ -1,4 +1,4 @@
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
+import { ListPagination } from "@/components/common/ListPagination";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogT
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, Eye, Copy, ChevronLeft, ChevronRight } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, Eye, Copy } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import { createPersistentVolumeClaim, deletePersistentVolumeClaim } from "@/api/services/storage";
@@ -17,7 +17,6 @@ import { pvcStatusColor, pvcStatusText, type PersistentVolumeClaimSummary } from
 import { getPersistentVolumeClaimSummary, listPersistentVolumeClaimSummaries, listStorageClasses } from "@/api/services/product";
 import type { StorageClassSummary } from "@/api/adapters/storage-class.adapter";
 import type { KubeResource } from "@/types/kubeedge";
-import { cn } from "@/lib/utils";
 import { validateRequiredDomFields } from "@/lib/form-validation";
 import { useNamespace } from "@/contexts/NamespaceContext";
 
@@ -111,7 +110,7 @@ export function PersistentVolumeClaims() {
   const [delItem, setDelItem] = useState<PVC | null>(null);
   const [storageClasses, setStorageClasses] = useState<StorageClassSummary[]>([]);
   const [form, setForm] = useState({ name: "", namespace: "default", capacity: "10Gi", accessMode: "ReadWriteOnce", storageClass: "local-path" });
-  const pageSize = 10;
+  const [pageSize, setPageSize] = useState(10);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -143,7 +142,6 @@ export function PersistentVolumeClaims() {
     if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
     return r;
   }, [data, ns, search]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
@@ -252,17 +250,8 @@ export function PersistentVolumeClaims() {
             <TableCell className="px-4 py-3"><div className="action-group"><button type="button" className="action-button" title="查看详情" onClick={() => openDetail(row)}><Eye className="h-3.5 w-3.5" /></button><button type="button" className="action-button is-danger" title="删除" onClick={() => openDel(row)}><Trash2 className="h-3.5 w-3.5" /></button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
+        <ListPagination total={filtered.length} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
       </div>
-      {filtered.length > pageSize && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-[var(--color-text-tertiary)]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
-          <Pagination><PaginationContent>
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="h-7 w-7 p-0"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (<PaginationItem key={p}><Button variant={page === p ? "default" : "outline"} size="sm" onClick={() => setPage(p)} className={cn("h-7 w-7 p-0 text-xs", page === p ? "bg-[var(--color-text-primary)] text-white" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}>{p}</Button></PaginationItem>))}
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="h-7 w-7 p-0"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
-          </PaginationContent></Pagination>
-        </div>
-      )}
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
         <SheetContent className="w-[600px] sm:max-w-[600px] overflow-y-auto">
           <SheetHeader className="pb-4 border-b border-[var(--color-border-strong)]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle><div className="flex items-center gap-2 mt-2"><StatusBadge status={selected?.status || ""} color={selected?.statusColor || "default"} /><Badge variant="outline" className="text-xs font-normal">{selected?.namespace}</Badge></div></SheetHeader>

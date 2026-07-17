@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import yaml from "js-yaml";
 import { useNamespace } from "@/contexts/NamespaceContext";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 import type { ReactNode } from "react";
 import {
   AlertTriangle,
@@ -44,6 +45,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ListPagination, useListPagination } from "@/components/common/ListPagination";
 import { Textarea } from "@/components/ui/textarea";
 import { toBatchWorkloadRow } from "@/api/adapters/batch-task.adapter";
 import type { BatchTaskApiItem } from "@/api/adapters/batch-task.adapter";
@@ -245,7 +247,7 @@ function toBatchWorkloadPlan(form: BatchImageCreateForm, targetGroups: string[] 
   };
 }
 
-const defaultBatchYaml = `# BlueEdge 平台批量工作负载定义；提交后会生成真实 apps/v1 Deployment
+const defaultBatchYaml = `# BlueEdge 平台批量工作负载定义；目标 NodeGroup 自动继承当前 EdgeUnit 绑定
 apiVersion: blueedge.io/v1alpha1
 kind: BatchWorkloadPlan
 metadata:
@@ -253,8 +255,6 @@ metadata:
   namespace: default
 spec:
   replicas: 1
-  targetGroups:
-    - edge-group
   template:
     spec:
       containers:
@@ -298,6 +298,8 @@ const highlightYaml = (code: string): string => code.split("\n").map(highlightYa
 
 export function BatchWorkloads() {
   const { selectedNamespace } = useNamespace();
+  const { selectedEdgeUnit, selectedEdgeUnitName } = useEdgeUnits();
+  const nodeGroupRef = selectedEdgeUnit?.rawRef.nodeGroupRef || (selectedEdgeUnit?.rawRef.kind === "NodeGroup" ? selectedEdgeUnit.name : "");
   const [items, setItems] = useState<BatchWorkload[]>([]);
   const [search, setSearch] = useState("");
   const [yamlOpen, setYamlOpen] = useState(false);
@@ -317,7 +319,11 @@ export function BatchWorkloads() {
     else setLoading(true);
     setError("");
     try {
-      const data = await listBatchWorkloads();
+      if (!selectedEdgeUnitName) {
+        setItems([]);
+        return;
+      }
+      const data = await listBatchWorkloads(selectedEdgeUnitName);
       setItems(data.items.map((item) => toBatchWorkloadRow(item) as BatchWorkload));
     } catch (err) {
       if (!preserveCurrentRows) setItems([]);
@@ -330,7 +336,7 @@ export function BatchWorkloads() {
 
   useEffect(() => {
     void loadItems();
-  }, []);
+  }, [selectedEdgeUnitName]);
 
   const filtered = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -338,6 +344,7 @@ export function BatchWorkloads() {
       .filter((item) => selectedNamespace === "all" || item.namespace === selectedNamespace)
       .filter((item) => !keyword || [item.name, item.namespace, item.image].some((value) => value.toLowerCase().includes(keyword)));
   }, [items, search, selectedNamespace]);
+  const { paginatedItems, paginationProps } = useListPagination(filtered);
 
   const createFromYaml = async (yamlText: string) => {
     try {
@@ -348,11 +355,14 @@ export function BatchWorkloads() {
       const containers = Array.isArray(spec?.template?.spec?.containers) ? spec.template.spec.containers : [];
       const name = String(metadata.name || `batch-workload-${Date.now().toString().slice(-5)}`).trim();
       const namespace = String(metadata.namespace || "default").trim();
-      const targetGroups = Array.isArray(spec.targetGroups) ? spec.targetGroups.map(String).filter(Boolean) : [];
-      if (!targetGroups.length) throw new Error("YAML 中 spec.targetGroups 至少需要一个真实 NodeGroup");
+      if (!selectedEdgeUnitName || !nodeGroupRef) throw new Error("当前边缘单元尚未绑定 NodeGroup");
+      const requestedTargetGroups = Array.isArray(spec.targetGroups) ? spec.targetGroups.map(String).filter(Boolean) : [];
+      if (requestedTargetGroups.some((group: string) => group !== nodeGroupRef)) throw new Error(`当前边缘单元只能部署到 NodeGroup ${nodeGroupRef}`);
+      const targetGroups = [nodeGroupRef];
       if (!containers.length || containers.some((container: any) => !container?.name || !container?.image)) throw new Error("YAML 中至少需要一个包含 name 和 image 的容器");
       const image = String(containers[0].image);
       await createBatchWorkloadTask({
+        edgeUnitRef: selectedEdgeUnitName,
         name,
         targetType: "deployment",
         targetRefs: targetGroups,
@@ -361,6 +371,7 @@ export function BatchWorkloads() {
         description: "YAML 批量工作负载计划",
         targets: [{ namespace, image, yaml: yamlText }],
         plan: {
+          edgeUnitRef: selectedEdgeUnitName,
           namespace,
           name,
           targetGroups,
@@ -379,10 +390,12 @@ export function BatchWorkloads() {
   const createFromImage = async (form: BatchImageCreateForm) => {
     const primaryImage = form.containers[0]?.image.trim() || "nginx:1.25-alpine";
     try {
+      if (!selectedEdgeUnitName || !nodeGroupRef) throw new Error("当前边缘单元尚未绑定 NodeGroup");
       await createBatchWorkloadTask({
+        edgeUnitRef: selectedEdgeUnitName,
         name: form.name.trim() || `batch-image-${Date.now().toString().slice(-5)}`,
         targetType: "deployment",
-        targetRefs: form.targetGroups,
+        targetRefs: [nodeGroupRef],
         image: primaryImage,
         failurePolicy: "continue",
         description: form.description || "镜像批量工作负载计划",
@@ -399,7 +412,7 @@ export function BatchWorkloads() {
           ports: form.ports,
           strategy: form.strategy,
         }],
-        plan: toBatchWorkloadPlan(form, form.targetGroups),
+        plan: { ...toBatchWorkloadPlan(form, [nodeGroupRef]), edgeUnitRef: selectedEdgeUnitName },
       });
       setImageOpen(false);
       await loadItems();
@@ -438,7 +451,7 @@ export function BatchWorkloads() {
             await loadItems();
           }}
         />
-        <ImageCreateDialog open={imageOpen} onOpenChange={setImageOpen} onCreate={createFromImage} />
+        <ImageCreateDialog open={imageOpen} onOpenChange={setImageOpen} onCreate={createFromImage} nodeGroupRef={nodeGroupRef} />
       </div>
     );
   }
@@ -497,7 +510,7 @@ export function BatchWorkloads() {
                 </TableCell>
               </TableRow>
             ) : (
-              filtered.map((item) => (
+              paginatedItems.map((item) => (
                 <TableRow key={item.id} className="table-row group cursor-pointer" onClick={() => { setOpenDefinitionInitially(false); setDefinitionTarget(item); }}>
                   <TableCell className="table-name-cell">
                     <span className="text-sm font-medium text-[#1e6bff]">{item.name}</span>
@@ -535,6 +548,7 @@ export function BatchWorkloads() {
             )}
           </TableBody>
         </Table>
+        <ListPagination {...paginationProps} />
       </section>
 
       <BatchYamlEditor open={yamlOpen} title="YAML 批量创建工作负载" defaultValue={defaultBatchYaml} onSubmit={createFromYaml} onCancel={() => setYamlOpen(false)} />
@@ -554,7 +568,7 @@ export function BatchWorkloads() {
         }}
         onCancel={() => setEditYamlTarget(null)}
       />
-      <ImageCreateDialog open={imageOpen} onOpenChange={setImageOpen} onCreate={createFromImage} />
+      <ImageCreateDialog open={imageOpen} onOpenChange={setImageOpen} onCreate={createFromImage} nodeGroupRef={nodeGroupRef} />
       <DeployDialog
         item={deployTarget}
         onOpenChange={(open) => !open && setDeployTarget(null)}
@@ -760,7 +774,7 @@ function BatchYamlEditor({ open, title, defaultValue, onSubmit, onCancel }: { op
   );
 }
 
-function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; onOpenChange: (open: boolean) => void; onCreate: (form: BatchImageCreateForm) => void }) {
+function ImageCreateDialog({ open, onOpenChange, onCreate, nodeGroupRef }: { open: boolean; onOpenChange: (open: boolean) => void; onCreate: (form: BatchImageCreateForm) => void; nodeGroupRef: string }) {
   const formValidation = useRequiredFieldValidation<"name" | "namespace" | "replicas" | "containerName" | "containerImage">();
   const [step, setStep] = useState(0);
   const [advancedTab, setAdvancedTab] = useState(0);
@@ -793,10 +807,10 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
     setStep(0);
     setAdvancedTab(0);
     setActiveContainerIndex(0);
-    setForm(defaultBatchImageForm());
+    setForm({ ...defaultBatchImageForm(), targetGroups: nodeGroupRef ? [nodeGroupRef] : [] });
     formValidation.resetErrors();
     void refreshNamespaces();
-  }, [open]);
+  }, [nodeGroupRef, open]);
 
   const close = () => onOpenChange(false);
   const activeContainer = form.containers[activeContainerIndex] || form.containers[0];
@@ -867,6 +881,9 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
           {step === 0 && (
             <div className="space-y-4">
+              <div className={cn("rounded-xl border px-4 py-3 text-sm", nodeGroupRef ? "border-[#bfdbfe] bg-[#eff6ff] text-[#1d4ed8]" : "border-[#fecaca] bg-[#fef2f2] text-[#dc2626]") }>
+                {nodeGroupRef ? `目标节点组：${nodeGroupRef}。创建计划时会立即生成绑定该节点组的真实 Deployment。` : "当前边缘单元尚未绑定 NodeGroup，无法创建批量工作负载。"}
+              </div>
               <CreateField label="名称" required error={formValidation.errors.name} errorId="batch-workload-name-error">
                 <Input id="batch-workload-name" value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); formValidation.clearError("name"); }} placeholder="batch-nginx" aria-invalid={Boolean(formValidation.errors.name)} aria-describedby={formValidation.errors.name ? "batch-workload-name-error" : undefined} className="h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0" />
                 <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">最长 63 个字符，必须由小写字母、数字字符、"-"或"."组成，且以字母或数字开头及结尾。</p>
@@ -1188,7 +1205,7 @@ function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; on
               {step < 2 ? (
                 <button type="button" onClick={goToNextStep} className="btn-black text-sm">下一步</button>
               ) : (
-                <button type="button" onClick={() => onCreate(form)} className="btn-black text-sm">创建</button>
+                <button type="button" disabled={!nodeGroupRef} onClick={() => onCreate(form)} className="btn-black text-sm disabled:cursor-not-allowed disabled:opacity-50">创建</button>
               )}
             </div>
           </div>

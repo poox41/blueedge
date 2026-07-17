@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { buildBatchDeployment } from "../dist/services/batch-workload.service.js";
 
 const plan = {
+  edgeUnitRef: "unit-a",
   namespace: "default",
   name: "batch-nginx",
   targetGroups: ["edge-group"],
@@ -38,6 +39,9 @@ test("renders a real apps/v1 Deployment pinned to explicit NodeGroup nodes", () 
   assert.deepEqual(resource.spec.template.spec.containers[0].resources.requests, { cpu: "100m", memory: "64Mi" });
   assert.deepEqual(resource.spec.template.spec.containers[0].readinessProbe.exec.command, ["/bin/sh", "-c", "test -e /proc/1"]);
   assert.equal(resource.metadata.labels["blueedge.io/managed-by"], "blueedge-batch-workload");
+  assert.equal(resource.metadata.labels["blueedge.io/edge-unit"], "unit-a");
+  assert.equal(resource.metadata.labels["blueedge.io/node-group"], "edge-group");
+  assert.equal(resource.spec.template.metadata.labels["blueedge.io/edge-unit"], "unit-a");
 });
 
 test("renders NodeGroup matchLabels as a real pod nodeSelector", () => {
@@ -48,5 +52,8 @@ test("renders NodeGroup matchLabels as a real pod nodeSelector", () => {
 
   assert.deepEqual(resource.spec.template.spec.nodeSelector, { nodeType: "edge", region: "east" });
   assert.equal(resource.spec.template.spec.affinity, undefined);
-  assert.deepEqual(resource.spec.selector.matchLabels, resource.spec.template.metadata.labels);
+  assert.deepEqual(
+    Object.fromEntries(Object.keys(resource.spec.selector.matchLabels).map((key) => [key, resource.spec.template.metadata.labels[key]])),
+    resource.spec.selector.matchLabels,
+  );
 });

@@ -31,6 +31,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ListPagination, useListPagination } from "@/components/common/ListPagination";
 import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 import { createRuleResource, deleteRuleResource, getRule, listNamespaces, listRuleEndpoints, listRules, updateRuleResource } from "@/api/services/resources";
 import { getRuleAudit, getRuleDelivery, getRuleEvents } from "@/api/services/product";
@@ -342,6 +343,7 @@ export function Rules() {
     const keyword = search.trim().toLowerCase();
     return routes.filter((route) => (selectedNamespace === "all" || route.namespace === selectedNamespace) && (!keyword || route.name.toLowerCase().includes(keyword)));
   }, [routes, search, selectedNamespace]);
+  const { paginatedItems, paginationProps } = useListPagination(filteredRoutes);
 
   const sourceEndpoint = findEndpoint(endpoints, form.namespace, form.source);
   const targetEndpoint = findEndpoint(endpoints, form.namespace, form.target);
@@ -615,7 +617,7 @@ export function Rules() {
                 </TableCell>
               </TableRow>
             ) : (
-              filteredRoutes.map((route) => {
+              paginatedItems.map((route) => {
                 const source = findEndpoint(endpoints, route.namespace, route.source);
                 const target = findEndpoint(endpoints, route.namespace, route.target);
                 return (
@@ -642,6 +644,7 @@ export function Rules() {
             )}
           </TableBody>
         </Table>
+        <ListPagination {...paginationProps} />
       </section>
 
       {menuTarget && (

@@ -48,6 +48,7 @@ export interface BatchWorkloadPlanContainer {
 }
 
 export interface BatchWorkloadPlan {
+  edgeUnitRef?: string;
   namespace: string;
   name: string;
   targetGroups: string[];

@@ -15,6 +15,7 @@ import type { BatchWorkloadPlan, BatchWorkloadPlanContainer } from "../types/bat
 import type { EdgeUnitWarning } from "../types/warnings.js";
 import { dataOf, getResourceEvents, itemsOf, labelsOf, metadataOf } from "../utils/kubernetes.js";
 import { readStringArrayField, readStringField } from "../utils/validation.js";
+import { bindDeploymentToEdgeUnitNodeGroup, resolveEdgeUnitNodeGroup } from "./edge-unit.service.js";
 
 const batchTaskNameLabel = "blueedge.io/batch-task";
 const batchTaskTypeLabel = "blueedge.io/task-type";
@@ -94,6 +95,7 @@ function normalizePlan(body: any): BatchWorkloadPlan {
   if (!Number.isInteger(replicas) || replicas < 1) throw new Error("replicas must be a positive integer");
   if (containers.length === 0) throw new Error("至少配置一个容器");
   return {
+    ...(String(source?.edgeUnitRef || body?.edgeUnitRef || "").trim() ? { edgeUnitRef: String(source?.edgeUnitRef || body?.edgeUnitRef).trim() } : {}),
     namespace,
     name,
     targetGroups: [...new Set(targetGroups)],
@@ -184,7 +186,13 @@ export function buildBatchDeployment(plan: BatchWorkloadPlan, id: string, target
     metadata: {
       name: instanceName,
       namespace: plan.namespace,
-      labels: { ...(plan.metadata?.labels || {}), ...selectorLabels, [managedByLabel]: managedByValue },
+      labels: {
+        ...(plan.metadata?.labels || {}),
+        ...selectorLabels,
+        [managedByLabel]: managedByValue,
+        "blueedge.io/node-group": groupName,
+        ...(plan.edgeUnitRef ? { "blueedge.io/edge-unit": plan.edgeUnitRef } : {}),
+      },
       annotations: { ...(plan.metadata?.annotations || {}), "blueedge.io/batch-workload-name": plan.name, "blueedge.io/target-group-name": groupName },
     },
     spec: {
@@ -195,7 +203,15 @@ export function buildBatchDeployment(plan: BatchWorkloadPlan, id: string, target
       minReadySeconds: plan.strategy?.minReadySeconds ?? 0,
       progressDeadlineSeconds: plan.strategy?.progressDeadlineSeconds ?? 600,
       template: {
-        metadata: { labels: { ...(plan.podTemplate.labels || {}), ...selectorLabels }, annotations: plan.podTemplate.annotations || {} },
+        metadata: {
+          labels: {
+            ...(plan.podTemplate.labels || {}),
+            ...selectorLabels,
+            "blueedge.io/node-group": groupName,
+            ...(plan.edgeUnitRef ? { "blueedge.io/edge-unit": plan.edgeUnitRef } : {}),
+          },
+          annotations: plan.podTemplate.annotations || {},
+        },
         spec: {
           ...scheduling,
           ...(plan.podTemplate.network?.type === "host" ? { hostNetwork: true, dnsPolicy: "ClusterFirstWithHostNet" } : {}),
@@ -230,6 +246,15 @@ async function validateTargets(plan: BatchWorkloadPlan) {
     return group;
   });
   return selected;
+}
+
+async function bindPlanToEdgeUnit(plan: BatchWorkloadPlan): Promise<BatchWorkloadPlan> {
+  if (!plan.edgeUnitRef) return plan;
+  const { nodeGroupRef } = await resolveEdgeUnitNodeGroup(plan.edgeUnitRef);
+  if (plan.targetGroups.some((name) => name !== nodeGroupRef)) {
+    throw new Error(`EdgeUnit ${plan.edgeUnitRef} 只能部署到绑定的 NodeGroup ${nodeGroupRef}`);
+  }
+  return { ...plan, targetGroups: [nodeGroupRef] };
 }
 
 function controlMatches(resource: any, id: string) {
@@ -392,14 +417,24 @@ async function createDeployments(plan: BatchWorkloadPlan, id: string, groups: an
   }
 }
 
-export async function listBatchWorkloads() {
+export async function listBatchWorkloads(edgeUnitRef = "") {
   const [controls, deployments] = await Promise.all([listControls(), listManagedDeployments()]);
-  return { items: controls.map((control) => workloadView(control, deployments)).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))) };
+  let items = controls.map((control) => workloadView(control, deployments));
+  if (edgeUnitRef) {
+    let nodeGroupRef = "";
+    try { ({ nodeGroupRef } = await resolveEdgeUnitNodeGroup(edgeUnitRef)); }
+    catch (error) {
+      if (error instanceof Error && /未绑定 NodeGroup/.test(error.message)) return { items: [] };
+      throw error;
+    }
+    items = items.filter((item) => item.plan?.edgeUnitRef === edgeUnitRef || item.targetGroups.includes(nodeGroupRef));
+  }
+  return { items: items.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))) };
 }
 
 export async function createBatchWorkload(body: any) {
   let plan: BatchWorkloadPlan;
-  try { plan = normalizePlan(body); } catch (error) { return { status: 400, body: { message: error instanceof Error ? error.message : "Invalid BatchWorkload payload" } }; }
+  try { plan = await bindPlanToEdgeUnit(normalizePlan(body)); } catch (error) { return { status: 400, body: { message: error instanceof Error ? error.message : "Invalid BatchWorkload payload" } }; }
   const id = batchWorkloadId(plan.namespace, plan.name);
   if (await findControl(id)) return { status: 409, body: { message: `批量工作负载 ${plan.namespace}/${plan.name} 已存在` } };
   let groups: any[];
@@ -489,7 +524,7 @@ export async function addBatchWorkloadDeployments(id: string, body: any) {
   if (!found || !found.plan) return { status: 404, body: { message: `BatchWorkload ${id} not found` } };
   let patchPlan: BatchWorkloadPlan;
   try {
-    patchPlan = normalizePlan({ ...body, plan: { ...found.plan, ...(body?.plan || {}), namespace: found.plan.namespace, name: found.plan.name } });
+    patchPlan = await bindPlanToEdgeUnit(normalizePlan({ ...body, plan: { ...found.plan, ...(body?.plan || {}), namespace: found.plan.namespace, name: found.plan.name } }));
   } catch (error) { return { status: 400, body: { message: error instanceof Error ? error.message : "Invalid deployment payload" } }; }
   const existingGroups = new Set(found.deployments.map((item) => String(item?.metadata?.annotations?.["blueedge.io/target-group-name"] || "")));
   const newGroups = patchPlan.targetGroups.filter((name) => !existingGroups.has(name));
@@ -525,7 +560,8 @@ export async function updateBatchWorkloadYaml(id: string, yamlText: string) {
     return { status: 400, body: { message: "编辑 YAML 不能新增或重命名 Deployment，请使用“新增部署”" } };
   }
   try {
-    for (const document of documents) {
+    for (const sourceDocument of documents) {
+      let document = sourceDocument;
       const name = String(document.metadata.name);
       const existing = existingByName.get(name);
       document.metadata.namespace = found.plan.namespace;
@@ -535,6 +571,11 @@ export async function updateBatchWorkloadYaml(id: string, yamlText: string) {
       document.spec.template = document.spec.template || {};
       document.spec.template.metadata = document.spec.template.metadata || {};
       document.spec.template.metadata.labels = { ...(existing?.spec?.template?.metadata?.labels || {}), ...(document.spec.template.metadata.labels || {}), [workloadIdLabel]: id };
+      if (found.plan.edgeUnitRef) {
+        const { nodeGroupRef, nodeGroup } = await resolveEdgeUnitNodeGroup(found.plan.edgeUnitRef);
+        document = bindDeploymentToEdgeUnitNodeGroup(document, found.plan.edgeUnitRef, nodeGroupRef, nodeGroup);
+        document.metadata.resourceVersion = metadataOf(existing).resourceVersion;
+      }
       await requestK8sJson(deploymentPath(found.plan.namespace, name), { method: "PUT", body: document });
     }
     return getBatchWorkload(id);

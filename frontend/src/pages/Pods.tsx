@@ -11,11 +11,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
+import { ListPagination } from "@/components/common/ListPagination";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Copy, Eye, Terminal, Trash2, ChevronLeft, ChevronRight } from "lucide-react";
+import { Copy, Eye, Terminal, Trash2 } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { PageHeader } from "@/components/common/PageHeader";
 import { formatMemory, listPodMetrics, type PodMetric } from "@/api/services/metrics";
@@ -182,7 +182,7 @@ export function Pods() {
   const [logs, setLogs] = useState("");
   const [deleteItem, setDeleteItem] = useState<PodRow | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
-  const pageSize = 10;
+  const [pageSize, setPageSize] = useState(10);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -218,7 +218,6 @@ export function Pods() {
     );
   }, [data, search]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
@@ -341,20 +340,8 @@ export function Pods() {
             ))}
           </TableBody>
         </Table>
+        <ListPagination total={filtered.length} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
       </div>
-
-      {filtered.length > pageSize && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-[var(--color-text-tertiary)]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
-          <Pagination><PaginationContent>
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page === 1} className="h-7 w-7 p-0"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
-            {Array.from({ length: totalPages }, (_, index) => index + 1).map((item) => (
-              <PaginationItem key={item}><Button variant={page === item ? "default" : "outline"} size="sm" onClick={() => setPage(item)} className={cn("h-7 w-7 p-0 text-xs", page === item ? "bg-[var(--color-text-primary)] text-white" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}>{item}</Button></PaginationItem>
-            ))}
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page === totalPages} className="h-7 w-7 p-0"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
-          </PaginationContent></Pagination>
-        </div>
-      )}
 
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
         <SheetContent className="w-[640px] sm:max-w-[640px] overflow-y-auto">

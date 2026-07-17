@@ -50,18 +50,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Pagination,
-  PaginationContent,
-  PaginationItem,
-} from "@/components/ui/pagination";
+import { ListPagination } from "@/components/common/ListPagination";
 import {
   Search,
   Plus,
   RefreshCw,
   Trash2,
-  ChevronLeft,
-  ChevronRight,
   Play,
   Pause,
   RotateCcw,
@@ -548,7 +542,7 @@ spec:
     progressDeadlineSeconds: "600",
   });
 
-  const pageSize = 10;
+  const [pageSize, setPageSize] = useState(10);
 
   const loadData = useCallback(async (preserveCurrentRows = false) => {
     if (preserveCurrentRows) setIsRefreshing(true);
@@ -561,10 +555,10 @@ spec:
       }
       const [allItems, scope] = await Promise.all([
         listEdgeApplications(namespace === "all" ? undefined : namespace),
-        getEdgeUnitResources(selectedEdgeUnitName).catch(() => null),
+        getEdgeUnitResources(selectedEdgeUnitName),
       ]);
-      const allowed = scope ? new Set(scope.item.edgeApplications.map((item) => `${item.namespace}/${item.name}`)) : null;
-      const items = allowed ? allItems.filter((item) => allowed.has(`${getResourceNamespace(item)}/${getResourceName(item)}`)) : allItems;
+      const allowed = new Set(scope.item.edgeApplications.map((item) => `${item.namespace}/${item.name}`));
+      const items = allItems.filter((item) => allowed.has(`${getResourceNamespace(item)}/${getResourceName(item)}`));
       const rows = items.map(toEdgeApp);
       const detailedRows = await Promise.all(
         rows.map(async (row) => {
@@ -629,7 +623,6 @@ spec:
     return result;
   }, [data, namespace, typeFilter, search]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (currentPage - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
   const createName = form.name.trim();
@@ -1303,42 +1296,8 @@ spec:
             )}
           </TableBody>
         </Table>
+        <ListPagination total={filtered.length} page={currentPage} pageSize={pageSize} onPageChange={setCurrentPage} onPageSizeChange={(size) => { setPageSize(size); setCurrentPage(1); }} />
       </div>
-
-      {/* Pagination */}
-      {filtered.length > pageSize && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-[var(--color-text-tertiary)]">
-            显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条
-          </span>
-          <Pagination>
-            <PaginationContent>
-              <PaginationItem>
-                <Button variant="outline" size="sm" onClick={() => setCurrentPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1} className="h-7 w-7 p-0">
-                  <ChevronLeft className="w-4 h-4" />
-                </Button>
-              </PaginationItem>
-              {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
-                <PaginationItem key={page}>
-                  <Button
-                    variant={currentPage === page ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setCurrentPage(page)}
-                    className={cn("h-7 w-7 p-0 text-xs", currentPage === page ? "bg-[var(--color-text-primary)] text-white hover:bg-[var(--color-brand-dark)]" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}
-                  >
-                    {page}
-                  </Button>
-                </PaginationItem>
-              ))}
-              <PaginationItem>
-                <Button variant="outline" size="sm" onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages} className="h-7 w-7 p-0">
-                  <ChevronRight className="w-4 h-4" />
-                </Button>
-              </PaginationItem>
-            </PaginationContent>
-          </Pagination>
-        </div>
-      )}
 
       {/* Detail Sheet */}
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>

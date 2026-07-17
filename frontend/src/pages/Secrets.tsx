@@ -1,4 +1,4 @@
-import { type Dispatch, type SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,11 +15,11 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
+import { ListPagination } from "@/components/common/ListPagination";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { ChevronLeft, ChevronRight, Copy, Eye, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import { Copy, Eye, Pencil, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
 import { getResourceCreatedAt, getResourceName, getResourceNamespace } from "@/api/adapters/kube-resource.adapter";
 import { createSecretResource, deleteSecretResource, getSecret, listSecrets, updateSecretResource } from "@/api/services/resources";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
@@ -237,7 +237,7 @@ export function Secrets() {
   const [editItem, setEditItem] = useState<SecretRow | null>(null);
   const [form, setForm] = useState<SecretFormState>(emptySecretForm());
   const [editForm, setEditForm] = useState<SecretFormState>(emptySecretForm());
-  const pageSize = 10;
+  const [pageSize, setPageSize] = useState(10);
 
   const loadData = useCallback(async (preserveCurrentRows = false) => {
     if (preserveCurrentRows) setIsRefreshing(true);
@@ -269,7 +269,6 @@ export function Secrets() {
       item.keys.some((key) => key.toLowerCase().includes(keyword)),
     );
   }, [data, search]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
@@ -409,8 +408,8 @@ export function Secrets() {
             <TableCell className="px-4 py-3"><div className="action-group"><button type="button" className="action-button" title="查看详情" onClick={() => openDetail(row)}><Eye className="h-3.5 w-3.5" /></button><button type="button" className="action-button" title="编辑" onClick={() => openEdit(row)}><Pencil className="h-3.5 w-3.5" /></button><button type="button" className="action-button is-danger" title="删除" onClick={() => { setDeleteItem(row); setDeleteOpen(true); }}><Trash2 className="h-3.5 w-3.5" /></button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
+        <ListPagination total={filtered.length} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
       </div>
-      {filtered.length > pageSize && <Pager page={page} totalPages={totalPages} start={start} pageSize={pageSize} total={filtered.length} setPage={setPage} />}
       <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
         <SheetContent className="w-[620px] sm:max-w-[620px] overflow-y-auto">
           <SheetHeader className="pb-4 border-b border-[var(--color-border-strong)]"><SheetTitle className="text-base font-semibold">{selected?.name}</SheetTitle><div className="flex items-center gap-2 mt-2"><Badge variant="outline" className="text-xs font-normal">{selected?.namespace}</Badge><Badge variant="outline" className="text-xs font-normal">{selected?.type}</Badge></div></SheetHeader>
@@ -473,19 +472,6 @@ function SecretForm({ form, setForm, namespaces, readonly = false }: { form: Sec
       ) : (
         <div className="space-y-1.5"><Label className="text-xs text-[var(--color-text-secondary)]">数据（每行一组 key=value）</Label><Textarea value={form.dataText} onChange={(e) => setForm({ ...form, dataText: e.target.value })} className="min-h-40 text-sm font-mono" /></div>
       )}
-    </div>
-  );
-}
-
-function Pager({ page, totalPages, start, pageSize, total, setPage }: { page: number; totalPages: number; start: number; pageSize: number; total: number; setPage: Dispatch<SetStateAction<number>> }) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-sm text-[var(--color-text-tertiary)]">显示 {start + 1}-{Math.min(start + pageSize, total)}，共 {total} 条</span>
-      <Pagination><PaginationContent>
-        <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page === 1} className="h-7 w-7 p-0"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
-        {Array.from({ length: totalPages }, (_, index) => index + 1).map((item) => (<PaginationItem key={item}><Button variant={page === item ? "default" : "outline"} size="sm" onClick={() => setPage(item)} className={cn("h-7 w-7 p-0 text-xs", page === item ? "bg-[var(--color-text-primary)] text-white" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}>{item}</Button></PaginationItem>))}
-        <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page === totalPages} className="h-7 w-7 p-0"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
-      </PaginationContent></Pagination>
     </div>
   );
 }

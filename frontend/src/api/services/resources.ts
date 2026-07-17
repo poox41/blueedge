@@ -189,6 +189,22 @@ export async function createDeploymentResource(resource: KubeResource): Promise<
   return createNamespacedResource("deployment", resource.metadata?.namespace || "default", resource);
 }
 
+export async function createEdgeUnitDeploymentResource(edgeUnitName: string, resource: KubeResource): Promise<KubeResource> {
+  const res = await gatewayRequest<KubeResource, KubeResource>(`/blueedge/edge-units/${encodePathPart(edgeUnitName)}/deployments`, {
+    method: "POST",
+    body: resource,
+  });
+  return res.data;
+}
+
+export async function updateEdgeUnitDeploymentResource(edgeUnitName: string, namespace: string, name: string, resource: KubeResource): Promise<KubeResource> {
+  const res = await gatewayRequest<KubeResource, KubeResource>(`/blueedge/edge-units/${encodePathPart(edgeUnitName)}/deployments/${encodePathPart(namespace)}/${encodePathPart(name)}`, {
+    method: "PUT",
+    body: resource,
+  });
+  return res.data;
+}
+
 export async function updateDeploymentResource(namespace: string, resource: KubeResource): Promise<KubeResource> {
   return updateNamespacedResource("deployment", namespace, resource);
 }

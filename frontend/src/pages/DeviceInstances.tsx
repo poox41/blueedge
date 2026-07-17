@@ -1,4 +1,4 @@
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
+import { ListPagination } from "@/components/common/ListPagination";
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -150,7 +150,7 @@ export function DeviceInstances() {
   const [twins, setTwins] = useState<DeviceTwin[]>([]);
   const [accessConfigYaml, setAccessConfigYaml] = useState(defaultAccessYaml);
   const [twinForm, setTwinForm] = useState<TwinForm>({ propertyName: "", desiredValue: "", collectIntervalSeconds: "10", reportIntervalSeconds: "60", accessConfigYaml: defaultTwinYaml });
-  const pageSize = 10;
+  const [pageSize, setPageSize] = useState(10);
 
   const selectedModel = useMemo(
     () => modelOptions.find((item) => item.namespace === form.namespace && item.name === form.model) || null,
@@ -212,7 +212,6 @@ export function DeviceInstances() {
     if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
     return r;
   }, [data, search, selectedNamespace]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
@@ -588,7 +587,8 @@ export function DeviceInstances() {
       </div>
       {error && <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
       {warnings.length > 0 && <div className="rounded-md border border-[#F7BA1E]/30 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{warnings.slice(0, 3).join("；")}</div>}
-      <div className="table-card overflow-x-auto">
+      <div className="table-card overflow-hidden">
+        <div className="overflow-x-auto">
         <Table className="min-w-[1040px] table-fixed"><TableHeader><TableRow className="h-12 bg-white hover:bg-white">
           <TableHead className="w-[180px] px-6 text-xs font-medium text-[var(--color-text-tertiary)]">设备名称</TableHead>
           <TableHead className="w-[120px] px-5 text-xs font-medium text-[var(--color-text-tertiary)]">绑定节点</TableHead>
@@ -611,17 +611,9 @@ export function DeviceInstances() {
             <TableCell className="px-5 py-3 text-right"><button type="button" className="action-button is-danger ml-auto" title="删除" onClick={(event) => { event.stopPropagation(); openDel(row); }}><Trash2 className="h-3.5 w-3.5" /></button></TableCell>
           </TableRow>
         ))}</TableBody></Table>
-      </div>
-      {filtered.length > pageSize && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-[var(--color-text-tertiary)]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
-          <Pagination><PaginationContent>
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="h-7 w-7 p-0"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (<PaginationItem key={p}><Button variant={page === p ? "default" : "outline"} size="sm" onClick={() => setPage(p)} className={cn("h-7 w-7 p-0 text-xs", page === p ? "bg-[var(--color-text-primary)] text-white" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}>{p}</Button></PaginationItem>))}
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="h-7 w-7 p-0"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
-          </PaginationContent></Pagination>
         </div>
-      )}
+        <ListPagination total={filtered.length} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
+      </div>
       <AlertDialog open={delOpen} onOpenChange={setDelOpen}>
         <AlertDialogContent><AlertDialogHeader><AlertDialogTitle className="text-base">确认删除？</AlertDialogTitle><AlertDialogDescription className="text-sm">即将删除终端设备 <span className="font-medium text-[var(--color-text-primary)]">{delItem?.name}</span>，此操作不可恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel><AlertDialogAction className="h-8 text-sm" onClick={confirmDel}>确认删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
       </AlertDialog>

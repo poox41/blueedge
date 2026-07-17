@@ -33,6 +33,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ListPagination, useListPagination } from "@/components/common/ListPagination";
 import { Textarea } from "@/components/ui/textarea";
 import { toBatchTaskRow } from "@/api/adapters/batch-task.adapter";
 import type { BatchTaskApiItem } from "@/api/adapters/batch-task.adapter";
@@ -192,6 +193,7 @@ export function BatchTasks() {
     const keyword = search.trim().toLowerCase();
     return tasks.filter((task) => task.type === activeType && (!keyword || task.name.toLowerCase().includes(keyword)));
   }, [activeType, search, tasks]);
+  const { paginatedItems, paginationProps } = useListPagination(filtered);
 
   const openDetail = (task: BatchTask) => {
     setDetailTarget(task);
@@ -398,7 +400,7 @@ export function BatchTasks() {
                 </TableCell>
               </TableRow>
             ) : (
-              filtered.map((task) => (
+              paginatedItems.map((task) => (
                 <TableRow key={task.id} className="group h-[69px] cursor-pointer hover:bg-[var(--color-bg-hover)]" onClick={() => openDetail(task)}>
                   {activeType === "节点升级" ? (
                     <UpgradeTaskRow task={task} onDetail={() => openDetail(task)} onDelete={() => setDeleteTarget(task)} />
@@ -410,6 +412,7 @@ export function BatchTasks() {
             )}
           </TableBody>
         </Table>
+        <ListPagination {...paginationProps} />
       </section>
 
       <CreateUpgradeTaskModal

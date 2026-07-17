@@ -1,11 +1,13 @@
 import type express from "express";
 import {
   createEdgeUnit,
+  createEdgeUnitDeployment,
   deleteEdgeUnit,
   getEdgeUnit,
   getEdgeUnitResources,
   listEdgeUnits,
   updateEdgeUnit,
+  updateEdgeUnitDeployment,
 } from "../services/edge-unit.service.js";
 
 function sendServiceResult(res: express.Response, result: { status: number; body: any }) {
@@ -26,6 +28,22 @@ export function registerEdgeUnitRoutes(app: express.Express) {
       sendServiceResult(res, await createEdgeUnit(req.body));
     } catch (error) {
       res.status(500).json({ message: error instanceof Error ? error.message : "edge unit create API is unavailable" });
+    }
+  });
+
+  app.post("/blueedge/edge-units/:name/deployments", async (req, res) => {
+    try {
+      sendServiceResult(res, await createEdgeUnitDeployment(req.params.name, req.body));
+    } catch (error) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "edge unit workload create API is unavailable" });
+    }
+  });
+
+  app.put("/blueedge/edge-units/:name/deployments/:namespace/:deploymentName", async (req, res) => {
+    try {
+      sendServiceResult(res, await updateEdgeUnitDeployment(req.params.name, req.params.namespace, req.params.deploymentName, req.body));
+    } catch (error) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "edge unit workload update API is unavailable" });
     }
   });
 

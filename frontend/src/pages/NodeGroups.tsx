@@ -1,4 +1,4 @@
-import { Pagination, PaginationContent, PaginationItem } from "@/components/ui/pagination";
+import { ListPagination } from "@/components/common/ListPagination";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { AlertTriangle, Check, Copy, Trash2, ChevronLeft, ChevronRight, Plus, RefreshCw, Search, ArrowLeft, Edit3, Server, X, Info } from "lucide-react";
+import { AlertTriangle, Check, Copy, Trash2, ChevronRight, Plus, RefreshCw, Search, ArrowLeft, Edit3, Server, X, Info } from "lucide-react";
 import { createNodeGroupResource, deleteNodeGroupResource, getNodeGroup, listNodeGroups, listNodes, updateNodeGroupResource } from "@/api/services/resources";
 import { getNodeGroupSummary } from "@/api/services/product";
 import type { EdgeNodeView, KubeResource } from "@/types/kubeedge";
@@ -170,7 +170,7 @@ export function NodeGroups() {
   const [delConfirmText, setDelConfirmText] = useState("");
   const [delNameCopied, setDelNameCopied] = useState(false);
   const [form, setForm] = useState<NodeGroupForm>({ name: "", nodes: [], matchLabels: [{ ...emptyLabelRow }], selectorType: "", description: "" });
-  const pageSize = 10;
+  const [pageSize, setPageSize] = useState(10);
 
   const loadData = useCallback(async (preserveCurrentRows = false) => {
     if (preserveCurrentRows) setIsRefreshing(true);
@@ -212,7 +212,6 @@ export function NodeGroups() {
     if (search.trim()) r = r.filter(d => d.name.toLowerCase().includes(search.toLowerCase()));
     return r;
   }, [data, search]);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const start = (page - 1) * pageSize;
   const paginated = filtered.slice(start, start + pageSize);
 
@@ -574,7 +573,8 @@ export function NodeGroups() {
         </div>
       </div>
       {error && <div className="rounded-md border border-[#F77234]/20 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{error}</div>}
-      <div className="table-card overflow-x-auto">
+      <div className="table-card overflow-hidden">
+        <div className="overflow-x-auto">
         <Table className="min-w-[700px] table-fixed"><TableHeader><TableRow className="h-12 bg-white hover:bg-white">
           <TableHead className="w-[200px] px-4 text-left text-xs font-medium text-[var(--color-text-tertiary)]">节点组名称</TableHead>
           <TableHead className="w-[120px] px-4 text-xs font-medium text-[var(--color-text-tertiary)]">选择方式</TableHead>
@@ -595,17 +595,9 @@ export function NodeGroups() {
             <TableCell className="px-4 py-3 text-right"><div className="action-group justify-end"><button type="button" className="action-button is-danger" title="删除" onClick={() => openDel(row)}><Trash2 className="h-3.5 w-3.5" /></button></div></TableCell>
           </TableRow>
         ))}</TableBody></Table>
-      </div>
-      {filtered.length > pageSize && (
-        <div className="flex items-center justify-between">
-          <span className="text-sm text-[var(--color-text-tertiary)]">显示 {start + 1}-{Math.min(start + pageSize, filtered.length)}，共 {filtered.length} 条</span>
-          <Pagination><PaginationContent>
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} className="h-7 w-7 p-0"><ChevronLeft className="w-4 h-4" /></Button></PaginationItem>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (<PaginationItem key={p}><Button variant={page === p ? "default" : "outline"} size="sm" onClick={() => setPage(p)} className={cn("h-7 w-7 p-0 text-xs", page === p ? "bg-[var(--color-text-primary)] text-white" : "border-[var(--color-border-strong)] text-[var(--color-text-secondary)]")}>{p}</Button></PaginationItem>))}
-            <PaginationItem><Button variant="outline" size="sm" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages} className="h-7 w-7 p-0"><ChevronRight className="w-4 h-4" /></Button></PaginationItem>
-          </PaginationContent></Pagination>
         </div>
-      )}
+        <ListPagination total={filtered.length} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
+      </div>
       <AlertDialog open={delOpen} onOpenChange={(open) => !open && closeDeleteDialog()}>
         <AlertDialogContent className="max-w-[480px] gap-0 overflow-hidden rounded-2xl border-0 p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)]">
           <AlertDialogHeader className="border-b border-[#f0f1f3] px-6 py-4 text-left">
