@@ -28,9 +28,21 @@ export interface EdgeUnitCreatePayload {
   insightStatus?: "installed" | "notInstalled" | "unknown";
   monitorStatus?: "installed" | "notInstalled" | "unknown";
   description?: string;
+  nodeScale?: "小型" | "中型" | "大型";
+  mqttEnabled?: boolean;
+  protocols?: string[];
+  accessAddresses?: string[];
+  ports?: {
+    websocket: string;
+    quic: string;
+    https: string;
+    cloudStream: string;
+    tunnel: string;
+  };
+  uninstallPolicy?: "保留相关命名空间" | "删除相关命名空间";
 }
 
-export type EdgeUnitUpdatePayload = Omit<EdgeUnitCreatePayload, "name" | "nodeGroupRef">;
+export type EdgeUnitUpdatePayload = Omit<EdgeUnitCreatePayload, "name">;
 
 export interface EdgeUnitResourceRef {
   namespace: string;

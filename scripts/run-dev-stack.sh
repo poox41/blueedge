@@ -71,7 +71,9 @@ start_tunnel() {
   echo "  127.0.0.1:$LOCAL_APISERVER_PORT -> $REMOTE_APISERVER_HOST:$REMOTE_APISERVER_PORT via $SSH_HOST"
   echo "  Enter SSH password if prompted."
 
-  ssh -f -N \
+  # Ignore user-level SSH forwarding rules (for example RemoteForward 7897),
+  # otherwise an unrelated occupied remote port can abort this K8s tunnel.
+  ssh -F /dev/null -f -N \
     -L "${LOCAL_APISERVER_PORT}:${REMOTE_APISERVER_HOST}:${REMOTE_APISERVER_PORT}" \
     -o ExitOnForwardFailure=yes \
     "$SSH_HOST"
@@ -214,7 +216,7 @@ stop_all() {
   echo
   echo "Note: SSH tunnel is not stopped by pid file because ssh -f backgrounds itself."
   echo "If needed, close it manually with:"
-  echo "  pkill -f 'ssh -f -N -L ${LOCAL_APISERVER_PORT}:${REMOTE_APISERVER_HOST}:${REMOTE_APISERVER_PORT} ${SSH_HOST}'"
+  echo "  pkill -f 'ssh -F /dev/null -f -N -L ${LOCAL_APISERVER_PORT}:${REMOTE_APISERVER_HOST}:${REMOTE_APISERVER_PORT} ${SSH_HOST}'"
 }
 
 status_all() {

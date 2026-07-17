@@ -2,6 +2,7 @@ import type { EdgeUnitWarning } from "./warnings.js";
 
 export interface EdgeUnitAuxSources {
   nodes: any[];
+  pods: any[];
   deployments: any[];
   edgeApplications: any[];
   accessConfigs: any[];

@@ -89,8 +89,22 @@ export async function collectNodeGroupDetails(warnings: EdgeUnitWarning[]): Prom
 }
 
 export async function collectEdgeUnitAuxSources(warnings: EdgeUnitWarning[]) {
-  const [nodes, deploymentsRaw, edgeApplicationsRaw, accessConfigs, k8sDeploymentsRaw, k8sEdgeApplicationsRaw] = await Promise.all([
+  const [nodes, podsRaw, deploymentsRaw, edgeApplicationsRaw, accessConfigs, k8sDeploymentsRaw, k8sEdgeApplicationsRaw] = await Promise.all([
     getEdgeUnitNodes(warnings),
+    getK8sJson("/api/v1/pods").catch(async (k8sError) => {
+      const bffPods = await getJson("/pod").catch((bffError) => {
+        warnings.push({
+          source: "pod",
+          message: bffError instanceof Error
+            ? bffError.message
+            : k8sError instanceof Error
+              ? k8sError.message
+              : "Pod list unavailable",
+        });
+        return null;
+      });
+      return bffPods;
+    }),
     getJson("/deployment").then((data) => ({ status: "fulfilled" as const, value: data })).catch((reason) => ({ status: "rejected" as const, reason })),
     getJson("/edgeapplication").then((data) => ({ status: "fulfilled" as const, value: data })).catch((reason) => ({ status: "rejected" as const, reason })),
     listByResourceLabel(accessConfigResourceValue).catch((error) => {
@@ -133,8 +147,9 @@ export async function collectEdgeUnitAuxSources(warnings: EdgeUnitWarning[]) {
 
   const deployments = mergeResourceDetails(deploymentSummaries, k8sDeploymentsRaw, "deployment.detail");
   const edgeApplications = mergeResourceDetails(edgeApplicationSummaries, k8sEdgeApplicationsRaw, "edgeapplication.detail");
+  const pods = itemsOf(podsRaw);
 
-  return { nodes, deployments, edgeApplications, accessConfigs };
+  return { nodes, pods, deployments, edgeApplications, accessConfigs };
 }
 
 export function edgeUnitConfigMapName(configMap: any): string {

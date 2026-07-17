@@ -216,6 +216,23 @@ discover_edgeapp() {
   rm -f "$output"
 }
 
+discover_edge_unit() {
+  local result status output selection
+  result="$(request GET "/blueedge/edge-units")"
+  status="$(printf '%s' "$result" | sed -n '1p')"
+  output="$(printf '%s' "$result" | sed -n '2p')"
+  if [ "$status" = "200" ]; then
+    selection="$(node -e '
+      const fs = require("fs");
+      const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      const item = Array.isArray(payload.items) ? payload.items[0] : null;
+      if (item?.name) process.stdout.write(String(item.name));
+    ' "$output")"
+    printf '%s' "$selection"
+  fi
+  rm -f "$output"
+}
+
 discover_deployment() {
   local result status output selection
   result="$(request GET "/bff/deployment")"
@@ -257,8 +274,15 @@ pass "login POST /auth/login -> 200"
 check_status "health" GET "/healthz"
 check_status "edge-units list" GET "/blueedge/edge-units"
 check_contains "edge-units list structure" GET "/blueedge/edge-units" '"items":['
-check_optional_detail "edge-units detail" GET "/blueedge/edge-units/edge-demo"
-check_optional_contains "edge-units detail structure" GET "/blueedge/edge-units/edge-demo" '"item":'
+edge_unit_ref="$(discover_edge_unit)"
+if [ -n "$edge_unit_ref" ]; then
+  check_optional_detail "edge-units detail" GET "/blueedge/edge-units/$edge_unit_ref"
+  check_optional_contains "edge-units detail structure" GET "/blueedge/edge-units/$edge_unit_ref" '"item":'
+  check_optional_json_fields "edge-units resource scope" "/blueedge/edge-units/$edge_unit_ref/resources" "item.edgeUnit.name" "item.nodeGroupRef" "item.nodeNames" "item.deployments" "item.edgeApplications"
+else
+  skip "edge-units detail no test resource"
+  skip "edge-units resource scope no test resource"
+fi
 check_status "access-configs list" GET "/blueedge/access-configs"
 check_contains "access-configs list structure" GET "/blueedge/access-configs" '"items":['
 check_status "batch-tasks list" GET "/blueedge/batch-tasks"

@@ -22,6 +22,18 @@ export interface EdgeUnitView {
     monitor: EdgeUnitComponentState;
   };
   description?: string;
+  nodeScale?: "小型" | "中型" | "大型";
+  mqttEnabled?: boolean;
+  protocols?: string[];
+  accessAddresses?: string[];
+  ports?: {
+    websocket: string;
+    quic: string;
+    https: string;
+    cloudStream: string;
+    tunnel: string;
+  };
+  uninstallPolicy?: "保留相关命名空间" | "删除相关命名空间";
   rawRef: {
     kind: "NodeGroup" | "EdgeUnitConfigMap";
     name: string;
@@ -79,8 +91,8 @@ export interface WorkbenchEdgeUnitModel {
   cluster: string;
   version: string;
   createdAt: string;
-  nodeScale: "小型" | "中型" | "大型";
-  mqtt: "已启用" | "未启用";
+  nodeScale: "小型" | "中型" | "大型" | "未配置";
+  mqtt: "已启用" | "未启用" | "未配置";
   access: string;
   protocols: string;
   description: string;
@@ -93,7 +105,7 @@ export interface WorkbenchEdgeUnitModel {
     cloudStream: string;
     tunnel: string;
   };
-  uninstallPolicy: "保留相关命名空间" | "删除相关命名空间";
+  uninstallPolicy: "保留相关命名空间" | "删除相关命名空间" | "未配置";
   nodes: [number, number];
   workloads: [number, number];
   apps: [number, number];
@@ -155,12 +167,12 @@ export function toHomeEdgeUnit(item: EdgeUnitView): EdgeUnitUiModel {
     rawRefName: item.rawRef.name,
     nodeGroupRef: item.rawRef.kind === "NodeGroup" ? item.rawRef.name : item.rawRef.nodeGroupRef || undefined,
     description: item.description || (item.rawRef.kind === "NodeGroup" ? `NodeGroup ${item.rawRef.name}` : item.rawRef.nodeGroupRef ? `NodeGroup ${item.rawRef.nodeGroupRef}` : ""),
-    nodeScale: "小型",
-    mqttEnabled: false,
-    protocols: [],
-    accessAddresses: [],
-    ports: defaultPorts,
-    uninstallPolicy: "保留相关命名空间",
+    nodeScale: item.nodeScale,
+    mqttEnabled: item.mqttEnabled,
+    protocols: item.protocols,
+    accessAddresses: item.accessAddresses,
+    ports: item.ports,
+    uninstallPolicy: item.uninstallPolicy,
   };
 }
 
@@ -173,15 +185,15 @@ export function toWorkbenchEdgeUnit(item: EdgeUnitView): WorkbenchEdgeUnitModel 
     cluster: home.cluster,
     version: home.version,
     createdAt: home.createdAt,
-    nodeScale: home.nodeScale || "小型",
-    mqtt: home.mqttEnabled ? "已启用" : "未启用",
+    nodeScale: home.nodeScale || "未配置",
+    mqtt: home.mqttEnabled === undefined ? "未配置" : home.mqttEnabled ? "已启用" : "未启用",
     access: home.accessAddresses?.join("、") || "未配置",
     protocols: home.protocols?.join("、") || "未配置",
     description: home.description || `NodeGroup ${home.name}`,
     accessAddresses: home.accessAddresses || [],
     protocolList: home.protocols || [],
-    ports: home.ports || defaultPorts,
-    uninstallPolicy: home.uninstallPolicy || "保留相关命名空间",
+    ports: home.ports || Object.fromEntries(Object.keys(defaultPorts).map((key) => [key, "未配置"])) as typeof defaultPorts,
+    uninstallPolicy: home.uninstallPolicy || "未配置",
     nodes: home.nodes,
     workloads: home.workloads,
     apps: home.apps,

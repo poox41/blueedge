@@ -19,6 +19,9 @@ import {
   nodeGroupSelectorOf,
   nodeMatchesSelector,
   nodeNameOf,
+  podMatchesSelector,
+  podNamespace,
+  selectorOfWorkload,
 } from "../utils/kubernetes.js";
 import {
   isValidKubernetesName,
@@ -39,6 +42,12 @@ import {
 
 const edgeUnitAccessTypes = new Set(["external", "dedicated", "unknown"]);
 const edgeUnitComponentStates = new Set(["installed", "notInstalled", "unknown"]);
+const edgeUnitNodeScales = new Set(["小型", "中型", "大型"]);
+const edgeUnitProtocols = new Set(["WebSocket", "QUIC"]);
+const edgeUnitUninstallPolicies = new Set(["保留相关命名空间", "删除相关命名空间"]);
+const edgeUnitPortKeys = ["websocket", "quic", "https", "cloudStream", "tunnel"] as const;
+
+type EdgeUnitPorts = Record<(typeof edgeUnitPortKeys)[number], string>;
 
 function normalizeEdgeUnitAccessType(value: string | undefined): string {
   if (!value) return "unknown";
@@ -50,9 +59,85 @@ function normalizeEdgeUnitComponentState(value: string | undefined): string {
   return edgeUnitComponentStates.has(value) ? value : "";
 }
 
-function buildEdgeUnitConfigMapData(body: any, existingData?: Record<string, string>) {
+function hasOwnField(body: any, key: string): boolean {
+  return Boolean(body && typeof body === "object" && !Array.isArray(body) && Object.prototype.hasOwnProperty.call(body, key));
+}
+
+function readBooleanConfig(body: any, key: string, existingValue?: string): string {
+  if (!hasOwnField(body, key)) return existingValue || "";
+  const value = body[key];
+  if (value === true || value === "true") return "true";
+  if (value === false || value === "false") return "false";
+  throw new Error(`${key} must be a boolean`);
+}
+
+function readEnumConfig(body: any, key: string, allowed: Set<string>, existingValue?: string): string {
+  if (!hasOwnField(body, key)) return existingValue || "";
+  const value = readStringField(body, key) || "";
+  if (!allowed.has(value)) throw new Error(`${key} has an unsupported value`);
+  return value;
+}
+
+function readStringArrayConfig(body: any, key: string, existingValue?: string, allowed?: Set<string>): string {
+  if (!hasOwnField(body, key)) return existingValue || "";
+  if (!Array.isArray(body[key])) throw new Error(`${key} must be an array`);
+  const values = Array.from(new Set(body[key].map((item: any) => String(item).trim()).filter(Boolean)));
+  if (allowed && values.some((item) => !allowed.has(item))) throw new Error(`${key} contains an unsupported value`);
+  return JSON.stringify(values);
+}
+
+function readPortsConfig(body: any, existingValue?: string): string {
+  if (!hasOwnField(body, "ports")) return existingValue || "";
+  const source = body.ports;
+  if (!source || typeof source !== "object" || Array.isArray(source)) throw new Error("ports must be an object");
+  const ports = Object.fromEntries(edgeUnitPortKeys.map((key) => {
+    const value = String(source[key] ?? "").trim();
+    const port = Number(value);
+    if (!/^\d+$/.test(value) || !Number.isInteger(port) || port < 0 || port > 65535) {
+      throw new Error(`ports.${key} must be an integer between 0 and 65535`);
+    }
+    return [key, value];
+  })) as EdgeUnitPorts;
+  return JSON.stringify(ports);
+}
+
+function parseJsonArray(value: string | undefined): string[] | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)).filter(Boolean) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function parsePorts(value: string | undefined): EdgeUnitPorts | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    if (edgeUnitPortKeys.some((key) => typeof parsed[key] !== "string")) return undefined;
+    return Object.fromEntries(edgeUnitPortKeys.map((key) => [key, parsed[key]])) as EdgeUnitPorts;
+  } catch {
+    return undefined;
+  }
+}
+
+export function buildEdgeUnitConfiguration(data: Record<string, string>) {
+  return {
+    ...(edgeUnitNodeScales.has(data.nodeScale) ? { nodeScale: data.nodeScale } : {}),
+    ...(data.mqttEnabled === "true" || data.mqttEnabled === "false" ? { mqttEnabled: data.mqttEnabled === "true" } : {}),
+    ...(parseJsonArray(data.protocols) ? { protocols: parseJsonArray(data.protocols) } : {}),
+    ...(parseJsonArray(data.accessAddresses) ? { accessAddresses: parseJsonArray(data.accessAddresses) } : {}),
+    ...(parsePorts(data.ports) ? { ports: parsePorts(data.ports) } : {}),
+    ...(edgeUnitUninstallPolicies.has(data.uninstallPolicy) ? { uninstallPolicy: data.uninstallPolicy } : {}),
+  };
+}
+
+export function buildEdgeUnitConfigMapData(body: any, existingData?: Record<string, string>) {
   const name = readStringField(body, "name") || existingData?.name || "";
-  const nodeGroupRef = readStringField(body, "nodeGroupRef") || existingData?.nodeGroupRef || "";
+  const requestedNodeGroupRef = readStringField(body, "nodeGroupRef");
+  const nodeGroupRef = requestedNodeGroupRef !== undefined ? requestedNodeGroupRef : existingData?.nodeGroupRef || "";
   const accessType = normalizeEdgeUnitAccessType(readStringField(body, "accessType") ?? existingData?.accessType);
   const insightStatus = normalizeEdgeUnitComponentState(readStringField(body, "insightStatus") ?? existingData?.insightStatus);
   const monitorStatus = normalizeEdgeUnitComponentState(readStringField(body, "monitorStatus") ?? existingData?.monitorStatus);
@@ -70,6 +155,12 @@ function buildEdgeUnitConfigMapData(body: any, existingData?: Record<string, str
     insightStatus,
     monitorStatus,
     description: readStringField(body, "description") ?? existingData?.description ?? "",
+    nodeScale: readEnumConfig(body, "nodeScale", edgeUnitNodeScales, existingData?.nodeScale),
+    mqttEnabled: readBooleanConfig(body, "mqttEnabled", existingData?.mqttEnabled),
+    protocols: readStringArrayConfig(body, "protocols", existingData?.protocols, edgeUnitProtocols),
+    accessAddresses: readStringArrayConfig(body, "accessAddresses", existingData?.accessAddresses),
+    ports: readPortsConfig(body, existingData?.ports),
+    uninstallPolicy: readEnumConfig(body, "uninstallPolicy", edgeUnitUninstallPolicies, existingData?.uninstallPolicy),
   };
 }
 
@@ -160,8 +251,36 @@ function deploymentOwnershipValues(deployment: any): string[] {
 
 export function deploymentBelongsToEdgeUnit(deployment: any, edgeUnitName: string, nodeGroupRef: string): boolean {
   const ownershipValues = deploymentOwnershipValues(deployment);
-  if (ownershipValues.length === 0) return true;
+  if (ownershipValues.length === 0) return false;
   return deploymentTargetsEdgeUnit(deployment, edgeUnitName, nodeGroupRef);
+}
+
+export function deploymentRunsOnNodes(deployment: any, pods: any[], nodeNames: Set<string>): boolean {
+  return deploymentPodsOnNodes(deployment, pods, nodeNames).length > 0;
+}
+
+export function deploymentPodsOnNodes(deployment: any, pods: any[], nodeNames: Set<string>): any[] {
+  if (nodeNames.size === 0) return [];
+  const selector = selectorOfWorkload(deployment);
+  if (Object.keys(selector).length === 0) return [];
+  const metadata = metadataOf(deployment);
+  const namespace = String(metadata.namespace || deployment?.namespace || "default");
+  return pods.filter((pod) =>
+    !metadataOf(pod).deletionTimestamp &&
+    nodeNames.has(String(pod?.spec?.nodeName || "")) &&
+    podNamespace(pod) === namespace &&
+    podMatchesSelector(pod, selector),
+  );
+}
+
+export function isPodReady(pod: any): boolean {
+  if (metadataOf(pod).deletionTimestamp || String(pod?.status?.phase || "") !== "Running") return false;
+  const conditions = Array.isArray(pod?.status?.conditions) ? pod.status.conditions : [];
+  return conditions.some((condition: any) => condition?.type === "Ready" && condition?.status === "True");
+}
+
+export function isDeploymentHealthyOnNodes(deployment: any, pods: any[], nodeNames: Set<string>): boolean {
+  return deploymentPodsOnNodes(deployment, pods, nodeNames).some(isPodReady);
 }
 
 function resourceDirectlyTargetsEdgeUnit(resource: any, edgeUnitName: string): boolean {
@@ -200,30 +319,14 @@ export function edgeApplicationTargetsEdgeUnit(app: any, edgeUnitName: string, n
     (Boolean(nodeGroupName) && edgeApplicationTargetsNodeGroup(app, nodeGroupName));
 }
 
-function edgeApplicationDirectlyOwned(app: any): boolean {
-  const workloadTemplate = app?.spec?.workloadTemplate;
-  const manifests = Array.isArray(workloadTemplate?.manifests) ? workloadTemplate.manifests : [];
-  return [app, workloadTemplate, ...manifests].some((resource) => {
-    const candidates = [labelsOf(resource), annotationsOf(resource)];
-    return candidates.some((record) => [record["blueedge.io/edge-unit"], record.edgeUnit].some((value) => Boolean(String(value || ""))));
-  });
-}
-
 export function edgeApplicationBelongsToEdgeUnit(
   app: any,
   edgeUnitName: string,
   nodeGroupName: string,
-  knownNodeGroupNames: Set<string>,
+  _knownNodeGroupNames: Set<string>,
 ): boolean {
-  if (edgeApplicationTargetsEdgeUnit(app, edgeUnitName, nodeGroupName)) return true;
-  if (edgeApplicationDirectlyOwned(app)) return false;
-  const targetNodeGroups = Array.isArray(app?.spec?.workloadScope?.targetNodeGroups)
-    ? app.spec.workloadScope.targetNodeGroups
-      .map((group: any) => String(typeof group === "string" ? group : group?.name || ""))
-      .filter(Boolean)
-    : [];
-  if (targetNodeGroups.length === 0) return true;
-  return targetNodeGroups.every((groupName: string) => !knownNodeGroupNames.has(groupName));
+  if (!nodeGroupName) return false;
+  return edgeApplicationTargetsEdgeUnit(app, edgeUnitName, nodeGroupName);
 }
 
 export function isEdgeApplicationHealthy(app: any): boolean {
@@ -242,31 +345,31 @@ function uniqueResources(items: any[]): any[] {
   });
 }
 
-function buildEdgeUnitResourceSet(
+export function buildEdgeUnitResourceSet(
   nodeGroup: any | null,
   aux: EdgeUnitAuxSources,
   edgeUnitName: string,
   nodeGroupRef: string,
   knownNodeGroupNames: Set<string> = new Set(),
 ) {
+  if (!nodeGroupRef || !nodeGroup) {
+    return { nodes: [], deployments: [], edgeApplications: [] };
+  }
+
   const nodeGroupNodes = nodeGroup ? nodesForNodeGroup(nodeGroup, aux.nodes) : [];
-  const accessConfigNodeNames = new Set(aux.accessConfigs
-    .map(dataOf)
-    .filter((data) => data.edgeUnitRef === edgeUnitName)
-    .map((data) => data.nodeName)
-    .filter(Boolean));
-  const directlyAssignedNodes = aux.nodes.filter((item) =>
-    nodeTargetsEdgeUnit(item, edgeUnitName) || accessConfigNodeNames.has(nodeNameOf(item)),
+  const nodes = uniqueResources(nodeGroupNodes);
+  const nodeNames = new Set(nodes.map(nodeNameOf).filter(Boolean));
+  const deployments = aux.deployments.filter((item) =>
+    deploymentBelongsToEdgeUnit(item, edgeUnitName, nodeGroupRef) ||
+    deploymentRunsOnNodes(item, aux.pods, nodeNames),
   );
-  const nodes = uniqueResources([...nodeGroupNodes, ...directlyAssignedNodes]);
-  const deployments = aux.deployments.filter((item) => deploymentBelongsToEdgeUnit(item, edgeUnitName, nodeGroupRef));
   const edgeApplications = aux.edgeApplications.filter((item) =>
     edgeApplicationBelongsToEdgeUnit(item, edgeUnitName, nodeGroupRef, knownNodeGroupNames),
   );
   return { nodes, deployments, edgeApplications };
 }
 
-function buildEdgeUnitRuntime(
+export function buildEdgeUnitRuntime(
   nodeGroup: any | null,
   aux: EdgeUnitAuxSources,
   edgeUnitName: string,
@@ -277,6 +380,7 @@ function buildEdgeUnitRuntime(
   const explicitNodeNames = nodeGroup ? explicitNodeNamesOf(nodeGroup) : [];
   const nodeTotal = explicitNodeNames.length > 0 ? explicitNodeNames.length : resources.nodes.length;
   const nodeReady = resources.nodes.filter(isNodeReady).length;
+  const nodeNames = new Set(resources.nodes.map(nodeNameOf).filter(Boolean));
   const status = nodeTotal === 0 ? "unknown" : nodeReady === nodeTotal ? "running" : "abnormal";
 
   return {
@@ -286,7 +390,7 @@ function buildEdgeUnitRuntime(
       total: nodeTotal,
     },
     workloads: {
-      healthy: resources.deployments.filter(isDeploymentHealthy).length,
+      healthy: resources.deployments.filter((deployment) => isDeploymentHealthyOnNodes(deployment, aux.pods, nodeNames)).length,
       total: resources.deployments.length,
     },
     applications: {
@@ -352,6 +456,7 @@ function buildConfigMapEdgeUnitView(configMap: any, nodeGroup: any | null, aux: 
       monitor: normalizeComponentState(data.monitorStatus || "unknown"),
     },
     description: data.description || "",
+    ...buildEdgeUnitConfiguration(data),
     rawRef: {
       kind: "EdgeUnitConfigMap",
       name: metadata.name || "",
@@ -452,7 +557,6 @@ export async function createEdgeUnit(body: any) {
   if (duplicated) {
     return { status: 409, body: { message: `EdgeUnit ${data.name} already exists`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
-
   await ensureNamespace();
   const created = await create(configMap);
   return { status: 201, body: await buildConfigMapEdgeUnitResponse(created, warnings) };
@@ -560,8 +664,8 @@ export async function getEdgeUnitResources(name: string) {
 export async function updateEdgeUnit(name: string, body: any) {
   const warnings: EdgeUnitWarning[] = [];
 
-  if (Object.prototype.hasOwnProperty.call(body || {}, "name") || Object.prototype.hasOwnProperty.call(body || {}, "nodeGroupRef")) {
-    return { status: 400, body: { message: "name and nodeGroupRef are immutable" } };
+  if (Object.prototype.hasOwnProperty.call(body || {}, "name")) {
+    return { status: 400, body: { message: "name is immutable" } };
   }
 
   const existing = await findEdgeUnitConfigMap(name, warnings);
@@ -587,6 +691,13 @@ export async function updateEdgeUnit(name: string, body: any) {
     return validationError(error);
   }
 
+  const data = dataOf(configMap);
+  if (data.nodeGroupRef) {
+    const nodeGroup = await getNodeGroupByName(data.nodeGroupRef);
+    if (!nodeGroup) {
+      return { status: 400, body: { message: `NodeGroup ${data.nodeGroupRef} does not exist` } };
+    }
+  }
   const updated = await update(metadataOf(existing).name, configMap);
   return { status: 200, body: await buildConfigMapEdgeUnitResponse(updated, warnings) };
 }
