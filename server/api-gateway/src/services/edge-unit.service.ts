@@ -256,16 +256,7 @@ export function deploymentBelongsToEdgeUnit(deployment: any, edgeUnitName: strin
   return deploymentTargetsEdgeUnit(deployment, edgeUnitName, nodeGroupRef);
 }
 
-function deploymentSchedulingForNodeGroup(nodeGroup: any) {
-  const explicitNodes = explicitNodeNamesOf(nodeGroup);
-  const matchLabels = nodeGroupSelectorOf(nodeGroup);
-  if (explicitNodes.length === 0 && Object.keys(matchLabels).length === 0) {
-    throw new Error("绑定的 NodeGroup 没有配置节点或节点标签选择器");
-  }
-  return { explicitNodes, matchLabels };
-}
-
-export function bindDeploymentToEdgeUnitNodeGroup(resource: any, edgeUnitName: string, nodeGroupRef: string, nodeGroup: any) {
+export function bindDeploymentToEdgeUnit(resource: any, edgeUnitName: string) {
   if (!resource || typeof resource !== "object" || Array.isArray(resource)) throw new Error("Deployment 请求体无效");
   if (String(resource.apiVersion || "apps/v1") !== "apps/v1" || String(resource.kind || "Deployment") !== "Deployment") {
     throw new Error("只支持 apps/v1 Deployment");
@@ -274,7 +265,7 @@ export function bindDeploymentToEdgeUnitNodeGroup(resource: any, edgeUnitName: s
   const name = String(metadata.name || "").trim();
   const namespace = String(metadata.namespace || "default").trim();
   if (!name) throw new Error("Deployment metadata.name 不能为空");
-  if (!nodeGroupRef || !nodeGroup) throw new Error(`EdgeUnit ${edgeUnitName} 未绑定有效的 NodeGroup`);
+  if (!resource?.spec?.template?.spec) throw new Error("Deployment spec.template.spec 不能为空");
 
   const next = structuredClone(resource);
   next.apiVersion = "apps/v1";
@@ -283,57 +274,17 @@ export function bindDeploymentToEdgeUnitNodeGroup(resource: any, edgeUnitName: s
     ...(next.metadata || {}),
     name,
     namespace,
-    labels: {
-      ...(next.metadata?.labels || {}),
-      "blueedge.io/edge-unit": edgeUnitName,
-      "blueedge.io/node-group": nodeGroupRef,
-    },
+    labels: { ...(next.metadata?.labels || {}), "blueedge.io/edge-unit": edgeUnitName },
   };
-  if (!next.spec?.template?.spec) throw new Error("Deployment spec.template.spec 不能为空");
   next.spec.template.metadata = {
     ...(next.spec.template.metadata || {}),
-    labels: {
-      ...(next.spec.template.metadata?.labels || {}),
-      "blueedge.io/edge-unit": edgeUnitName,
-      "blueedge.io/node-group": nodeGroupRef,
-    },
+    labels: { ...(next.spec.template.metadata?.labels || {}), "blueedge.io/edge-unit": edgeUnitName },
   };
-
-  const podSpec = next.spec.template.spec;
-  const { explicitNodes, matchLabels } = deploymentSchedulingForNodeGroup(nodeGroup);
-  if (explicitNodes.length > 0) {
-    if (podSpec.nodeName && !explicitNodes.includes(String(podSpec.nodeName))) {
-      throw new Error(`指定节点 ${podSpec.nodeName} 不属于 NodeGroup ${nodeGroupRef}`);
-    }
-    const required = podSpec.affinity?.nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution;
-    const terms = Array.isArray(required?.nodeSelectorTerms) && required.nodeSelectorTerms.length > 0
-      ? required.nodeSelectorTerms
-      : [{}];
-    const nodeSelectorTerms = terms.map((term: any) => ({
-      ...term,
-      matchExpressions: [
-        ...(Array.isArray(term?.matchExpressions) ? term.matchExpressions : []),
-        { key: "kubernetes.io/hostname", operator: "In", values: explicitNodes },
-      ],
-    }));
-    podSpec.affinity = {
-      ...(podSpec.affinity || {}),
-      nodeAffinity: {
-        ...(podSpec.affinity?.nodeAffinity || {}),
-        requiredDuringSchedulingIgnoredDuringExecution: {
-          ...(required || {}),
-          nodeSelectorTerms,
-        },
-      },
+  if (!String(next.spec.template.spec.nodeName || "").trim()) {
+    next.spec.template.spec.nodeSelector = {
+      ...(next.spec.template.spec.nodeSelector || {}),
+      "blueedge.io/node-role": "edge",
     };
-  } else {
-    const existingSelector = podSpec.nodeSelector && typeof podSpec.nodeSelector === "object" ? podSpec.nodeSelector : {};
-    for (const [key, value] of Object.entries(matchLabels)) {
-      if (existingSelector[key] !== undefined && String(existingSelector[key]) !== value) {
-        throw new Error(`节点选择器 ${key} 与 NodeGroup ${nodeGroupRef} 冲突`);
-      }
-    }
-    podSpec.nodeSelector = { ...existingSelector, ...matchLabels };
   }
   return next;
 }
@@ -408,7 +359,6 @@ export function edgeApplicationBelongsToEdgeUnit(
   nodeGroupName: string,
   _knownNodeGroupNames: Set<string>,
 ): boolean {
-  if (!nodeGroupName) return false;
   return edgeApplicationTargetsEdgeUnit(app, edgeUnitName, nodeGroupName);
 }
 
@@ -435,12 +385,9 @@ export function buildEdgeUnitResourceSet(
   nodeGroupRef: string,
   knownNodeGroupNames: Set<string> = new Set(),
 ) {
-  if (!nodeGroupRef || !nodeGroup) {
-    return { nodes: [], deployments: [], edgeApplications: [] };
-  }
-
   const nodeGroupNodes = nodeGroup ? nodesForNodeGroup(nodeGroup, aux.nodes) : [];
-  const nodes = uniqueResources(nodeGroupNodes);
+  const directlyOwnedNodes = aux.nodes.filter((item) => nodeTargetsEdgeUnit(item, edgeUnitName));
+  const nodes = uniqueResources([...directlyOwnedNodes, ...nodeGroupNodes]);
   const nodeNames = new Set(nodes.map(nodeNameOf).filter(Boolean));
   const deployments = aux.deployments.filter((item) =>
     deploymentBelongsToEdgeUnit(item, edgeUnitName, nodeGroupRef) ||
@@ -759,8 +706,7 @@ export async function resolveEdgeUnitNodeGroup(edgeUnitName: string) {
 
 export async function createEdgeUnitDeployment(edgeUnitName: string, resource: any) {
   try {
-    const { nodeGroupRef, nodeGroup } = await resolveEdgeUnitNodeGroup(edgeUnitName);
-    const deployment = bindDeploymentToEdgeUnitNodeGroup(resource, edgeUnitName, nodeGroupRef, nodeGroup);
+    const deployment = bindDeploymentToEdgeUnit(resource, edgeUnitName);
     const namespace = String(deployment.metadata.namespace || "default");
     const created = await requestK8sJson(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments`, {
       method: "POST",
@@ -778,8 +724,7 @@ export async function updateEdgeUnitDeployment(edgeUnitName: string, namespace: 
   try {
     const path = `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(name)}`;
     const existing = await getK8sJson(path);
-    const { nodeGroupRef, nodeGroup } = await resolveEdgeUnitNodeGroup(edgeUnitName);
-    const deployment = bindDeploymentToEdgeUnitNodeGroup({
+    const deployment = bindDeploymentToEdgeUnit({
       ...resource,
       metadata: {
         ...(resource?.metadata || {}),
@@ -787,7 +732,7 @@ export async function updateEdgeUnitDeployment(edgeUnitName: string, namespace: 
         namespace,
         resourceVersion: metadataOf(existing).resourceVersion,
       },
-    }, edgeUnitName, nodeGroupRef, nodeGroup);
+    }, edgeUnitName);
     const updated = await requestK8sJson(path, { method: "PUT", body: deployment });
     return { status: 200, body: updated };
   } catch (error) {

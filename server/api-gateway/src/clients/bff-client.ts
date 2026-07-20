@@ -6,6 +6,24 @@ function timeoutSignal() {
   return AbortSignal.timeout(config.requestTimeoutMs);
 }
 
+export function normalizeBffProxyStatus(status: number, body: Buffer, contentType: string | null): number {
+  if (status !== 500) return status;
+
+  const text = body.toString("utf8").trim();
+  if (/^[a-z][a-z0-9.-]* "[^"]+" not found$/i.test(text)) return 404;
+
+  if (contentType?.includes("application/json")) {
+    try {
+      const payload = JSON.parse(text) as { kind?: unknown; reason?: unknown; code?: unknown };
+      if (payload.kind === "Status" && payload.reason === "NotFound" && payload.code === 404) return 404;
+    } catch {
+      // Keep the upstream status when the response is not valid Kubernetes Status JSON.
+    }
+  }
+
+  return status;
+}
+
 export async function getJson(path: string) {
   const authorization = getServerK8sAuthorization();
   const response = await fetch(`${config.bffBaseUrl}${path}`, {
@@ -73,5 +91,5 @@ export async function proxyBffRequest(req: express.Request, res: express.Respons
     res.status(502).json({ message: "上游 BFF 鉴权失败，请检查服务器访问凭证" });
     return;
   }
-  res.status(response.status).send(body);
+  res.status(normalizeBffProxyStatus(response.status, body, contentType)).send(body);
 }

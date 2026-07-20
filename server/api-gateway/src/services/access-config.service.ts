@@ -8,7 +8,7 @@ import {
   remove,
   update,
 } from "../repositories/blueedge-configmap.repository.js";
-import { getK8sJson } from "../clients/k8s-client.js";
+import { getK8sJson, requestK8sJson } from "../clients/k8s-client.js";
 import { config } from "../config.js";
 import type { EdgeUnitWarning } from "../types/warnings.js";
 import {
@@ -34,6 +34,10 @@ const accessConfigArchitectures = new Set(["amd64", "arm64", "arm"]);
 const accessConfigProtocols = new Set(["https", "websocket", "quic", "QUIC"]);
 const accessConfigDrivers = new Set(["systemd", "cgroups"]);
 const accessConfigStatuses = new Set(["pending", "registered", "ready", "abnormal", "expired", "unknown"]);
+const blueedgeNodeLabels = {
+  "blueedge.io/managed-by": "blueedge",
+  "blueedge.io/node-role": "edge",
+};
 
 function accessConfigResourceName(name: string): string {
   return `access-config-${name}`;
@@ -45,7 +49,7 @@ function normalizeAccessConfigProtocol(value: string | undefined): string {
   return accessConfigProtocols.has(value) ? value : "";
 }
 
-function buildAccessConfigData(body: any, nodeGroupRef: string, existingData?: Record<string, string>, options: { allowNodeName?: boolean } = {}) {
+export function buildAccessConfigData(body: any, existingData?: Record<string, string>, options: { allowNodeName?: boolean } = {}) {
   const name = readStringField(body, "name") || existingData?.name || "";
   const nodeName = options.allowNodeName === false ? existingData?.nodeName || "" : readStringField(body, "nodeName") || existingData?.nodeName || name;
   const edgeUnitRef = readStringField(body, "edgeUnitRef") || existingData?.edgeUnitRef || "";
@@ -56,9 +60,10 @@ function buildAccessConfigData(body: any, nodeGroupRef: string, existingData?: R
   const protocol = normalizeAccessConfigProtocol(readStringField(body, "protocol") ?? existingData?.protocol);
   const driver = readStringField(body, "driver") ?? existingData?.driver ?? "";
   const criAddress = readStringField(body, "criAddress") ?? existingData?.criAddress ?? "";
-  const labels = body?.labels && typeof body.labels === "object" && !Array.isArray(body.labels)
+  const customLabels = body?.labels && typeof body.labels === "object" && !Array.isArray(body.labels)
     ? Object.fromEntries(Object.entries(body.labels).map(([key, value]) => [key.trim(), String(value).trim()]).filter(([key]) => key))
     : parseJsonField<Record<string, string>>(existingData?.labelsJson, {});
+  const labels = { ...customLabels, ...blueedgeNodeLabels };
   const status = existingData?.status && accessConfigStatuses.has(existingData.status) ? existingData.status : "pending";
   const createdAt = existingData?.createdAt || new Date().toISOString();
 
@@ -90,7 +95,10 @@ function buildAccessConfigData(body: any, nodeGroupRef: string, existingData?: R
   return {
     name,
     edgeUnitRef,
-    nodeGroupRef,
+    // NodeGroup is an EdgeApplication deployment target, not a node ownership field.
+    // Keep the serialized field empty so older clients can continue reading the shape
+    // without implicitly coupling an AccessConfig to the EdgeUnit's NodeGroup.
+    nodeGroupRef: "",
     nodeName,
     architecture,
     os,
@@ -107,9 +115,9 @@ function buildAccessConfigData(body: any, nodeGroupRef: string, existingData?: R
   };
 }
 
-function buildAccessConfigMap(body: any, nodeGroupRef: string, existing?: any, options: { allowNodeName?: boolean } = {}) {
+function buildAccessConfigMap(body: any, existing?: any, options: { allowNodeName?: boolean } = {}) {
   const existingMetadata = metadataOf(existing);
-  const data = buildAccessConfigData(body, nodeGroupRef, dataOf(existing), options);
+  const data = buildAccessConfigData(body, dataOf(existing), options);
   return {
     apiVersion: "v1",
     kind: "ConfigMap",
@@ -189,6 +197,31 @@ async function collectAccessConfigSources(warnings: EdgeUnitWarning[]) {
   return { configMaps, nodes };
 }
 
+async function syncRegisteredNodeLabels(configMaps: any[], nodes: any[], warnings: EdgeUnitWarning[]) {
+  const registeredNames = new Set(nodes.map((node) => String(metadataOf(node).name || "")).filter(Boolean));
+  for (const configMap of configMaps) {
+    if (!isValidAccessConfigMap(configMap, warnings)) continue;
+    const data = dataOf(configMap);
+    const nodeName = String(data.nodeName || "");
+    if (!nodeName || !registeredNames.has(nodeName)) continue;
+    const desiredLabels = {
+      ...parseJsonField<Record<string, string>>(data.labelsJson, {}),
+      ...blueedgeNodeLabels,
+      ...(data.edgeUnitRef ? { "blueedge.io/edge-unit": data.edgeUnitRef } : {}),
+    };
+    try {
+      const path = `/api/v1/nodes/${encodeURIComponent(nodeName)}`;
+      const node = await getK8sJson(path);
+      const currentLabels = labelsOf(node);
+      if (Object.entries(desiredLabels).every(([key, value]) => currentLabels[key] === value)) continue;
+      node.metadata = { ...(node.metadata || {}), labels: { ...currentLabels, ...desiredLabels } };
+      await requestK8sJson(path, { method: "PUT", body: node });
+    } catch (error) {
+      warnings.push({ source: "access-config.node-labels", message: `Node ${nodeName} 的 BlueEdge 标签同步失败：${error instanceof Error ? error.message : "unknown error"}` });
+    }
+  }
+}
+
 function validationError(error: unknown, fallback: string) {
   return { status: 400, body: { message: error instanceof Error ? error.message : fallback } };
 }
@@ -248,7 +281,7 @@ function buildPrepareCommand(version: string, architecture: string): string {
   ].join("\n");
 }
 
-function buildJoinCommand(item: ReturnType<typeof buildAccessConfigView>, token: string, nodeName = item.nodeName): string {
+export function buildJoinCommand(item: ReturnType<typeof buildAccessConfigView>, token: string, nodeName = item.nodeName): string {
   const runtimeEndpoint = item.criAddress
     ? item.criAddress.includes("://") ? item.criAddress : `unix://${item.criAddress}`
     : "";
@@ -258,6 +291,7 @@ function buildJoinCommand(item: ReturnType<typeof buildAccessConfigView>, token:
     `  --token=${token}`,
     `  --kubeedge-version=${normalizeVersion(item.kubeEdgeVersion)}`,
     ...(nodeName ? [`  --edgenode-name=${nodeName}`] : []),
+    `  --labels=blueedge.io/managed-by=blueedge,blueedge.io/node-role=edge,blueedge.io/edge-unit=${item.edgeUnitRef}`,
     ...(item.protocol === "websocket" || item.protocol === "quic" ? [`  --hub-protocol=${item.protocol}`] : []),
     ...(runtimeEndpoint ? [`  --remote-runtime-endpoint=${runtimeEndpoint}`] : []),
     ...(item.driver ? [`  --cgroupdriver=${item.driver === "cgroups" ? "cgroupfs" : "systemd"}`] : []),
@@ -295,14 +329,13 @@ export async function createAccessConfig(body: any) {
   if (existing) {
     return { status: 409, body: { message: `AccessConfig ${name} already exists`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
-  const edgeUnit = await resolveEdgeUnitReference(edgeUnitRef, warnings);
-  if (!edgeUnit) {
+  if (!await resolveEdgeUnitReference(edgeUnitRef, warnings)) {
     return { status: 400, body: { message: `EdgeUnit ${edgeUnitRef} does not exist`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
 
   let configMap;
   try {
-    configMap = buildAccessConfigMap(body, edgeUnit.nodeGroupRef);
+    configMap = buildAccessConfigMap(body);
   } catch (error) {
     return validationError(error, "Invalid EdgeUnit payload");
   }
@@ -310,6 +343,7 @@ export async function createAccessConfig(body: any) {
   await ensureNamespace();
   const created = await create(configMap);
   const nodes = await getEdgeUnitNodes(warnings);
+  await syncRegisteredNodeLabels([created], nodes, warnings);
   return { status: 201, body: { item: buildAccessConfigView(created, nodes), ...(warnings.length > 0 ? { warnings } : {}) } };
 }
 
@@ -335,19 +369,19 @@ export async function updateAccessConfig(name: string, body: any) {
   }
 
   const nextEdgeUnitRef = readStringField(body, "edgeUnitRef") || dataOf(existing).edgeUnitRef;
-  const edgeUnit = await resolveEdgeUnitReference(nextEdgeUnitRef, warnings);
-  if (!edgeUnit) {
+  if (!await resolveEdgeUnitReference(nextEdgeUnitRef, warnings)) {
     return { status: 400, body: { message: `EdgeUnit ${nextEdgeUnitRef} does not exist`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
 
   let configMap;
   try {
-    configMap = buildAccessConfigMap(body, edgeUnit.nodeGroupRef, existing, { allowNodeName: !existingView.registered });
+    configMap = buildAccessConfigMap(body, existing, { allowNodeName: !existingView.registered });
   } catch (error) {
     return validationError(error, "Invalid EdgeUnit payload");
   }
 
   const updated = await update(metadataOf(existing).name, configMap);
+  await syncRegisteredNodeLabels([updated], nodes, warnings);
   return { status: 200, body: { item: buildAccessConfigView(updated, nodes), ...(warnings.length > 0 ? { warnings } : {}) } };
 }
 

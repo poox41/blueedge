@@ -15,7 +15,7 @@ import type { BatchWorkloadPlan, BatchWorkloadPlanContainer } from "../types/bat
 import type { EdgeUnitWarning } from "../types/warnings.js";
 import { dataOf, getResourceEvents, itemsOf, labelsOf, metadataOf } from "../utils/kubernetes.js";
 import { readStringArrayField, readStringField } from "../utils/validation.js";
-import { bindDeploymentToEdgeUnitNodeGroup, resolveEdgeUnitNodeGroup } from "./edge-unit.service.js";
+import { bindDeploymentToEdgeUnit, resolveEdgeUnitNodeGroup } from "./edge-unit.service.js";
 
 const batchTaskNameLabel = "blueedge.io/batch-task";
 const batchTaskTypeLabel = "blueedge.io/task-type";
@@ -46,6 +46,13 @@ function controlConfigMapName(id: string) {
 
 function deploymentPath(namespace: string, name?: string) {
   const base = `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments`;
+  return name ? `${base}/${encodeURIComponent(name)}` : base;
+}
+
+function edgeApplicationPath(namespace?: string, name?: string) {
+  const base = namespace
+    ? `/apis/apps.kubeedge.io/v1alpha1/namespaces/${encodeURIComponent(namespace)}/edgeapplications`
+    : "/apis/apps.kubeedge.io/v1alpha1/edgeapplications";
   return name ? `${base}/${encodeURIComponent(name)}` : base;
 }
 
@@ -224,6 +231,78 @@ export function buildBatchDeployment(plan: BatchWorkloadPlan, id: string, target
   };
 }
 
+function buildBatchWorkloadManifest(plan: BatchWorkloadPlan, id: string, targetGroup: any) {
+  const resource: any = buildBatchDeployment(plan, id, targetGroup);
+  resource.metadata.name = plan.name;
+  delete resource.metadata.labels[targetGroupLabel];
+  delete resource.metadata.labels["blueedge.io/node-group"];
+  delete resource.metadata.annotations["blueedge.io/target-group-name"];
+  delete resource.spec.selector.matchLabels[targetGroupLabel];
+  delete resource.spec.template.metadata.labels[targetGroupLabel];
+  delete resource.spec.template.metadata.labels["blueedge.io/node-group"];
+  delete resource.spec.template.spec.affinity;
+  delete resource.spec.template.spec.nodeSelector;
+  return resource;
+}
+
+export function buildBatchEdgeApplication(
+  plan: BatchWorkloadPlan,
+  id: string,
+  targetGroups: any[],
+  source?: any,
+) {
+  if (targetGroups.length === 0) throw new Error("至少选择一个 NodeGroup");
+  const next = source && typeof source === "object" && !Array.isArray(source)
+    ? structuredClone(source)
+    : {
+        apiVersion: "apps.kubeedge.io/v1alpha1",
+        kind: "EdgeApplication",
+        metadata: { name: plan.name, namespace: plan.namespace },
+        spec: {
+          workloadTemplate: {
+            manifests: [buildBatchWorkloadManifest(plan, id, targetGroups[0])],
+          },
+        },
+      };
+
+  if (next.apiVersion !== "apps.kubeedge.io/v1alpha1" || next.kind !== "EdgeApplication") {
+    throw new Error("批量工作负载 YAML 必须是 apps.kubeedge.io/v1alpha1 EdgeApplication");
+  }
+  const manifests = next?.spec?.workloadTemplate?.manifests;
+  if (!Array.isArray(manifests) || manifests.length === 0) {
+    throw new Error("EdgeApplication spec.workloadTemplate.manifests 不能为空");
+  }
+
+  next.metadata = {
+    ...(next.metadata || {}),
+    name: plan.name,
+    namespace: plan.namespace,
+    labels: {
+      ...(next.metadata?.labels || {}),
+      [managedByLabel]: managedByValue,
+      [workloadIdLabel]: id,
+      ...(plan.edgeUnitRef ? { "blueedge.io/edge-unit": plan.edgeUnitRef } : {}),
+    },
+  };
+  next.spec = {
+    ...(next.spec || {}),
+    workloadScope: {
+      ...(next.spec?.workloadScope || {}),
+      targetNodeGroups: plan.targetGroups.map((name) => {
+        const existing = Array.isArray(next.spec?.workloadScope?.targetNodeGroups)
+          ? next.spec.workloadScope.targetNodeGroups.find((item: any) => String(item?.name || "") === name)
+          : null;
+        return { ...(existing || {}), name, overrides: existing?.overrides || {} };
+      }),
+    },
+    workloadTemplate: {
+      ...(next.spec?.workloadTemplate || {}),
+      manifests,
+    },
+  };
+  return next;
+}
+
 async function listNodeGroups() {
   const data = await getK8sJson("/apis/apps.kubeedge.io/v1alpha1/nodegroups");
   return itemsOf(data);
@@ -249,12 +328,7 @@ async function validateTargets(plan: BatchWorkloadPlan) {
 }
 
 async function bindPlanToEdgeUnit(plan: BatchWorkloadPlan): Promise<BatchWorkloadPlan> {
-  if (!plan.edgeUnitRef) return plan;
-  const { nodeGroupRef } = await resolveEdgeUnitNodeGroup(plan.edgeUnitRef);
-  if (plan.targetGroups.some((name) => name !== nodeGroupRef)) {
-    throw new Error(`EdgeUnit ${plan.edgeUnitRef} 只能部署到绑定的 NodeGroup ${nodeGroupRef}`);
-  }
-  return { ...plan, targetGroups: [nodeGroupRef] };
+  return plan;
 }
 
 function controlMatches(resource: any, id: string) {
@@ -264,7 +338,7 @@ function controlMatches(resource: any, id: string) {
 
 async function listControls() {
   const items = await listByResourceLabel(batchTaskResourceValue);
-  return items.filter((item) => dataOf(item).type === "batchWorkload" && dataOf(item).executionMode === "deployment");
+  return items.filter((item) => dataOf(item).type === "batchWorkload" && ["deployment", "edgeapplication"].includes(dataOf(item).executionMode));
 }
 
 async function findControl(id: string) {
@@ -274,6 +348,11 @@ async function findControl(id: string) {
 async function listManagedDeployments() {
   const selector = encodeURIComponent(`${managedByLabel}=${managedByValue}`);
   return itemsOf(await getK8sJson(`/apis/apps/v1/deployments?labelSelector=${selector}`));
+}
+
+async function listManagedEdgeApplications() {
+  const selector = encodeURIComponent(`${managedByLabel}=${managedByValue}`);
+  return itemsOf(await getK8sJson(`${edgeApplicationPath()}?labelSelector=${selector}`));
 }
 
 function deploymentStatus(item: any) {
@@ -301,15 +380,70 @@ function cleanDeployment(resource: any) {
   return { apiVersion: "apps/v1", kind: "Deployment", ...copy };
 }
 
+function cleanEdgeApplication(resource: any) {
+  const copy = structuredClone(resource);
+  if (copy?.metadata) {
+    delete copy.metadata.managedFields;
+    delete copy.metadata.resourceVersion;
+    delete copy.metadata.uid;
+    delete copy.metadata.generation;
+    delete copy.metadata.creationTimestamp;
+  }
+  delete copy.status;
+  return copy;
+}
+
+function edgeApplicationManifests(resource: any): any[] {
+  return Array.isArray(resource?.spec?.workloadTemplate?.manifests)
+    ? resource.spec.workloadTemplate.manifests
+    : [];
+}
+
+function edgeApplicationTargetGroups(resource: any): string[] {
+  const groups = resource?.spec?.workloadScope?.targetNodeGroups;
+  return Array.isArray(groups) ? groups.map((item: any) => String(item?.name || "")).filter(Boolean) : [];
+}
+
+function edgeApplicationStatus(resource: any) {
+  const value = String(resource?.status?.phase || resource?.status?.status || resource?.status?.state || "").toLowerCase();
+  if (["failed", "error", "abnormal"].includes(value)) return "failed";
+  if (["ready", "running", "success", "succeeded", "available"].includes(value)) return "succeeded";
+  const workloadStatus = Array.isArray(resource?.status?.workloadStatus) ? resource.status.workloadStatus : [];
+  if (workloadStatus.some((item: any) => String(item?.conditions || "").toLowerCase() === "available")) return "succeeded";
+  if (workloadStatus.some((item: any) => ["failed", "error"].includes(String(item?.conditions || "").toLowerCase()))) return "failed";
+  return "running";
+}
+
 function controlPlan(control: any): BatchWorkloadPlan | null {
   return parseJson<BatchWorkloadPlan | null>(dataOf(control).planJson, null);
 }
 
-function workloadView(control: any, deployments: any[]) {
+function workloadView(control: any, deployments: any[], edgeApplications: any[] = []) {
   const data = dataOf(control);
   const plan = controlPlan(control);
   const id = data.id || labelsOf(control)[batchTaskNameLabel] || metadataOf(control).name;
-  const instances = deployments.filter((item) => labelsOf(item)[workloadIdLabel] === id).map((item) => {
+  const edgeApplicationMode = data.executionMode === "edgeapplication";
+  const instances = edgeApplicationMode
+    ? edgeApplications.filter((item) => labelsOf(item)[workloadIdLabel] === id).map((item) => {
+        const manifests = edgeApplicationManifests(item);
+        const deployment = manifests.find((manifest) => manifest?.kind === "Deployment") || manifests[0] || {};
+        const desired = Number(deployment?.spec?.replicas ?? plan?.replicas ?? 1);
+        const containers = Array.isArray(deployment?.spec?.template?.spec?.containers) ? deployment.spec.template.spec.containers : [];
+        const status = edgeApplicationStatus(item);
+        return {
+          name: String(metadataOf(item).name || ""),
+          namespace: String(metadataOf(item).namespace || plan?.namespace || "default"),
+          nodeGroup: edgeApplicationTargetGroups(item).join(", "),
+          replicas: desired,
+          readyReplicas: status === "succeeded" ? desired : 0,
+          status,
+          image: containers.map((container: any) => String(container?.image || "")).filter(Boolean).join(", "),
+          createdAt: String(metadataOf(item).creationTimestamp || ""),
+          uid: String(metadataOf(item).uid || ""),
+          resourceKind: "EdgeApplication",
+        };
+      })
+    : deployments.filter((item) => labelsOf(item)[workloadIdLabel] === id).map((item) => {
     const desired = Number(item?.spec?.replicas ?? 1);
     const ready = Number(item?.status?.readyReplicas ?? 0);
     const containers = Array.isArray(item?.spec?.template?.spec?.containers) ? item.spec.template.spec.containers : [];
@@ -323,12 +457,20 @@ function workloadView(control: any, deployments: any[]) {
       image: containers.map((container: any) => String(container?.image || "")).filter(Boolean).join(", "),
       createdAt: String(metadataOf(item).creationTimestamp || ""),
       uid: String(metadataOf(item).uid || ""),
+      resourceKind: "Deployment",
     };
   });
-  const failedCount = instances.filter((item) => item.status === "failed").length;
-  const successCount = instances.filter((item) => item.status === "succeeded").length;
-  const status = instances.length === 0 ? "pending" : failedCount > 0 ? (successCount > 0 ? "partialSuccess" : "failed") : successCount === instances.length ? "succeeded" : "running";
-  const liveTargetGroups = [...new Set(instances.map((item) => item.nodeGroup).filter(Boolean))];
+  const targetCount = edgeApplicationMode ? (plan?.targetGroups.length || edgeApplications.flatMap(edgeApplicationTargetGroups).length) : instances.length;
+  const failedCount = edgeApplicationMode
+    ? (instances.some((item) => item.status === "failed") ? targetCount : 0)
+    : instances.filter((item) => item.status === "failed").length;
+  const successCount = edgeApplicationMode
+    ? (instances.length > 0 && instances.every((item) => item.status === "succeeded") ? targetCount : 0)
+    : instances.filter((item) => item.status === "succeeded").length;
+  const status = instances.length === 0 ? "pending" : failedCount > 0 ? (successCount > 0 ? "partialSuccess" : "failed") : successCount === targetCount ? "succeeded" : "running";
+  const liveTargetGroups = edgeApplicationMode
+    ? [...new Set(edgeApplications.flatMap(edgeApplicationTargetGroups))]
+    : [...new Set(instances.map((item) => item.nodeGroup).filter(Boolean))];
   const liveImages = [...new Set(instances.flatMap((item) => item.image.split(", ")).filter(Boolean))];
   return {
     id,
@@ -336,24 +478,26 @@ function workloadView(control: any, deployments: any[]) {
     type: "batchWorkload",
     status,
     namespace: plan?.namespace || data.namespace || "default",
-    targetType: "deployment",
+    targetType: edgeApplicationMode ? "edgeapplication" : "deployment",
     targetRefs: liveTargetGroups.length ? liveTargetGroups : plan?.targetGroups || parseJson<string[]>(data.targetRefs, []),
     targetGroups: liveTargetGroups.length ? liveTargetGroups : plan?.targetGroups || [],
     image: liveImages.join(", ") || plan?.podTemplate.containers.map((container) => container.image).join(", ") || data.image || "",
     description: data.description || "",
     createdAt: data.createdAt || metadataOf(control).creationTimestamp || "",
-    executionMode: "deployment",
+    executionMode: edgeApplicationMode ? "edgeapplication" : "deployment",
     progress: instances.length ? Math.round((successCount + failedCount) / instances.length * 100) : 0,
-    totalTargets: instances.length,
+    totalTargets: targetCount,
     successCount,
     failedCount,
     plan,
     workloads: instances,
-    rawRef: { kind: "ConfigMap", namespace: blueedgeNamespace(), name: metadataOf(control).name },
+    rawRef: edgeApplicationMode && instances[0]
+      ? { kind: "EdgeApplication", namespace: instances[0].namespace, name: instances[0].name }
+      : { kind: "ConfigMap", namespace: blueedgeNamespace(), name: metadataOf(control).name },
   };
 }
 
-function controlResource(id: string, body: any, plan: BatchWorkloadPlan, deploymentNames: string[]) {
+function controlResource(id: string, body: any, plan: BatchWorkloadPlan, edgeApplicationNames: string[]) {
   const now = new Date().toISOString();
   return {
     apiVersion: "v1",
@@ -369,16 +513,16 @@ function controlResource(id: string, body: any, plan: BatchWorkloadPlan, deploym
       namespace: plan.namespace,
       type: "batchWorkload",
       status: "running",
-      targetType: "deployment",
+      targetType: "edgeapplication",
       targetRefs: JSON.stringify(plan.targetGroups),
       image: plan.podTemplate.containers.map((container) => container.image).join(", "),
       description: readStringField(body, "description"),
       createdAt: now,
-      executionMode: "deployment",
+      executionMode: "edgeapplication",
       planJson: JSON.stringify(plan),
-      deploymentsJson: JSON.stringify(deploymentNames),
+      edgeApplicationsJson: JSON.stringify(edgeApplicationNames),
       eventsJson: "[]",
-      auditJson: JSON.stringify([{ time: now, actor: "blueedge-api-gateway", action: "create", result: "success", message: `创建 ${deploymentNames.length} 个真实 Deployment` }]),
+      auditJson: JSON.stringify([{ time: now, actor: "blueedge-api-gateway", action: "create", result: "success", message: `创建 ${edgeApplicationNames.length} 个真实 EdgeApplication` }]),
       stepsJson: "[]",
       resultsJson: "[]",
       errorsJson: "[]",
@@ -390,7 +534,7 @@ function controlResource(id: string, body: any, plan: BatchWorkloadPlan, deploym
       resourceChecksJson: "[]",
       userConfirm: "false",
       progress: "0",
-      totalTargets: String(deploymentNames.length),
+      totalTargets: String(plan.targetGroups.length),
       successCount: "0",
       failedCount: "0",
       targetsJson: "[]",
@@ -417,17 +561,22 @@ async function createDeployments(plan: BatchWorkloadPlan, id: string, groups: an
   }
 }
 
+async function createEdgeApplication(plan: BatchWorkloadPlan, id: string, groups: any[], source?: any) {
+  const resource = buildBatchEdgeApplication(plan, id, groups, source);
+  return requestK8sJson(edgeApplicationPath(plan.namespace), { method: "POST", body: resource });
+}
+
 export async function listBatchWorkloads(edgeUnitRef = "") {
-  const [controls, deployments] = await Promise.all([listControls(), listManagedDeployments()]);
-  let items = controls.map((control) => workloadView(control, deployments));
+  const [controls, deployments, edgeApplications] = await Promise.all([
+    listControls(),
+    listManagedDeployments(),
+    listManagedEdgeApplications().catch(() => []),
+  ]);
+  let items = controls.map((control) => workloadView(control, deployments, edgeApplications));
   if (edgeUnitRef) {
-    let nodeGroupRef = "";
-    try { ({ nodeGroupRef } = await resolveEdgeUnitNodeGroup(edgeUnitRef)); }
-    catch (error) {
-      if (error instanceof Error && /未绑定 NodeGroup/.test(error.message)) return { items: [] };
-      throw error;
-    }
-    items = items.filter((item) => item.plan?.edgeUnitRef === edgeUnitRef || item.targetGroups.includes(nodeGroupRef));
+    let legacyNodeGroupRef = "";
+    try { ({ nodeGroupRef: legacyNodeGroupRef } = await resolveEdgeUnitNodeGroup(edgeUnitRef)); } catch { /* legacy fallback only */ }
+    items = items.filter((item) => item.plan?.edgeUnitRef === edgeUnitRef || (!item.plan?.edgeUnitRef && legacyNodeGroupRef && item.targetGroups.includes(legacyNodeGroupRef)));
   }
   return { items: items.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))) };
 }
@@ -440,12 +589,17 @@ export async function createBatchWorkload(body: any) {
   let groups: any[];
   try { groups = plan.targetGroups.length > 0 ? await validateTargets(plan) : []; } catch (error) { return { status: 400, body: { message: error instanceof Error ? error.message : "目标校验失败" } }; }
   await ensureNamespace();
-  const deployments = await createDeployments(plan, id, groups).catch((error) => { throw error; });
+  let edgeApplication: any;
   try {
-    const control = await createConfigMap(controlResource(id, body, plan, deployments.map((item) => metadataOf(item).name)));
-    return { status: 201, body: { item: workloadView(control, deployments) } };
+    edgeApplication = await createEdgeApplication(plan, id, groups, body?.edgeApplication);
   } catch (error) {
-    await Promise.allSettled(deployments.map((item) => requestK8sJson(deploymentPath(plan.namespace, metadataOf(item).name), { method: "DELETE" })));
+    return { status: 409, body: { message: error instanceof Error ? error.message : "EdgeApplication 创建失败" } };
+  }
+  try {
+    const control = await createConfigMap(controlResource(id, body, plan, [String(metadataOf(edgeApplication).name)]));
+    return { status: 201, body: { item: workloadView(control, [], [edgeApplication]) } };
+  } catch (error) {
+    await requestK8sJson(edgeApplicationPath(plan.namespace, metadataOf(edgeApplication).name), { method: "DELETE" }).catch(() => undefined);
     throw error;
   }
 }
@@ -455,15 +609,21 @@ async function detail(id: string) {
   if (!control) return null;
   const plan = controlPlan(control);
   const selector = encodeURIComponent(`${workloadIdLabel}=${dataOf(control).id}`);
-  const deployments = plan ? itemsOf(await getK8sJson(`${deploymentPath(plan.namespace)}?labelSelector=${selector}`)) : [];
-  return { control, plan, deployments, item: workloadView(control, deployments) };
+  const edgeApplicationMode = dataOf(control).executionMode === "edgeapplication";
+  const deployments = plan && !edgeApplicationMode ? itemsOf(await getK8sJson(`${deploymentPath(plan.namespace)}?labelSelector=${selector}`)) : [];
+  const edgeApplications = plan && edgeApplicationMode ? itemsOf(await getK8sJson(`${edgeApplicationPath(plan.namespace)}?labelSelector=${selector}`)) : [];
+  return { control, plan, deployments, edgeApplications, item: workloadView(control, deployments, edgeApplications) };
 }
 
 export async function getBatchWorkload(id: string) {
   const found = await detail(id);
   if (!found) return { status: 404, body: { message: `BatchWorkload ${id} not found` } };
-  const definitions = found.deployments.map(cleanDeployment);
-  const yamlText = definitions.map((deployment) => yaml.dump(deployment, { noRefs: true, lineWidth: -1 })).join("---\n");
+  const edgeApplicationMode = dataOf(found.control).executionMode === "edgeapplication";
+  const definitions = edgeApplicationMode
+    ? found.edgeApplications.flatMap(edgeApplicationManifests)
+    : found.deployments.map(cleanDeployment);
+  const yamlResources = edgeApplicationMode ? found.edgeApplications.map(cleanEdgeApplication) : definitions;
+  const yamlText = yamlResources.map((resource) => yaml.dump(resource, { noRefs: true, lineWidth: -1 })).join("---\n");
   return { status: 200, body: { item: { ...found.item, definitions, yaml: yamlText } } };
 }
 
@@ -482,6 +642,14 @@ export async function getBatchWorkloadEvents(id: string) {
   if (!found) return { status: 404, body: { message: `BatchWorkload ${id} not found` } };
   const warnings: EdgeUnitWarning[] = [];
   const namespace = found.plan?.namespace || "default";
+  if (dataOf(found.control).executionMode === "edgeapplication") {
+    const rows = (await Promise.all(found.edgeApplications.map(async (resource) => {
+      const name = String(metadataOf(resource).name);
+      const events = await getResourceEvents(namespace, "EdgeApplication", name, warnings);
+      return events.map((event) => ({ ...event, component: "EdgeApplication", object: name, time: event.lastTimestamp }));
+    }))).flat().sort((a, b) => String(b.time).localeCompare(String(a.time)));
+    return { status: 200, body: { items: rows, summary: { total: rows.length, warning: rows.filter((item) => item.type === "Warning").length }, ...(warnings.length ? { warnings } : {}) } };
+  }
   const selector = encodeURIComponent(`${workloadIdLabel}=${id}`);
   const pods = itemsOf(await getK8sJson(`/api/v1/namespaces/${encodeURIComponent(namespace)}/pods?labelSelector=${selector}`).catch((error) => {
     warnings.push({ source: "batch-workload-pods", message: error instanceof Error ? error.message : "Pods API is unavailable" });
@@ -504,7 +672,11 @@ export async function getBatchWorkloadEvents(id: string) {
 export async function getBatchWorkloadAudit(id: string) {
   const found = await detail(id);
   if (!found) return { status: 404, body: { message: `BatchWorkload ${id} not found` } };
-  const resources = [{ resource: found.control, kind: "ConfigMap" }, ...found.deployments.map((resource) => ({ resource, kind: "Deployment" }))];
+  const resources = [
+    { resource: found.control, kind: "ConfigMap" },
+    ...found.deployments.map((resource) => ({ resource, kind: "Deployment" })),
+    ...found.edgeApplications.map((resource) => ({ resource, kind: "EdgeApplication" })),
+  ];
   const items = resources.flatMap(({ resource, kind }) => {
     const fields = Array.isArray(resource?.metadata?.managedFields) ? resource.metadata.managedFields : [];
     return fields.map((field: any) => ({
@@ -526,6 +698,28 @@ export async function addBatchWorkloadDeployments(id: string, body: any) {
   try {
     patchPlan = await bindPlanToEdgeUnit(normalizePlan({ ...body, plan: { ...found.plan, ...(body?.plan || {}), namespace: found.plan.namespace, name: found.plan.name } }));
   } catch (error) { return { status: 400, body: { message: error instanceof Error ? error.message : "Invalid deployment payload" } }; }
+  if (dataOf(found.control).executionMode === "edgeapplication") {
+    const edgeApplication = found.edgeApplications[0];
+    if (!edgeApplication) return { status: 409, body: { message: "受管 EdgeApplication 不存在，无法追加目标节点组" } };
+    const existingGroups = new Set(edgeApplicationTargetGroups(edgeApplication));
+    const newGroups = patchPlan.targetGroups.filter((name) => !existingGroups.has(name));
+    if (!newGroups.length) return { status: 409, body: { message: "所选 NodeGroup 已存在于 EdgeApplication" } };
+    const targetPlan = { ...patchPlan, targetGroups: newGroups };
+    try { await validateTargets(targetPlan); }
+    catch (error) { return { status: 400, body: { message: error instanceof Error ? error.message : "目标校验失败" } }; }
+    const mergedPlan: BatchWorkloadPlan = { ...found.plan, targetGroups: [...new Set([...found.plan.targetGroups, ...newGroups])] };
+    const document = buildBatchEdgeApplication(mergedPlan, id, await validateTargets(mergedPlan), edgeApplication);
+    document.metadata.resourceVersion = metadataOf(edgeApplication).resourceVersion;
+    try {
+      await requestK8sJson(edgeApplicationPath(found.plan.namespace, metadataOf(edgeApplication).name), { method: "PUT", body: document });
+      found.control.data.planJson = JSON.stringify(mergedPlan);
+      found.control.data.targetRefs = JSON.stringify(mergedPlan.targetGroups);
+      await updateConfigMap(metadataOf(found.control).name, found.control);
+      return getBatchWorkload(id);
+    } catch (error) {
+      return { status: 409, body: { message: error instanceof Error ? error.message : "EdgeApplication 目标节点组更新失败" } };
+    }
+  }
   const existingGroups = new Set(found.deployments.map((item) => String(item?.metadata?.annotations?.["blueedge.io/target-group-name"] || "")));
   const newGroups = patchPlan.targetGroups.filter((name) => !existingGroups.has(name));
   if (!newGroups.length) return { status: 409, body: { message: "所选 NodeGroup 已存在对应 Deployment" } };
@@ -552,6 +746,32 @@ export async function updateBatchWorkloadYaml(id: string, yamlText: string) {
   const documents: any[] = [];
   try { yaml.loadAll(yamlText, (document) => { if (document) documents.push(document); }); }
   catch (error) { return { status: 400, body: { message: error instanceof Error ? error.message : "YAML 解析失败" } }; }
+  if (dataOf(found.control).executionMode === "edgeapplication") {
+    if (documents.length !== 1 || documents[0]?.apiVersion !== "apps.kubeedge.io/v1alpha1" || documents[0]?.kind !== "EdgeApplication") {
+      return { status: 400, body: { message: "YAML 必须且只能包含一个 apps.kubeedge.io/v1alpha1 EdgeApplication" } };
+    }
+    const existing = found.edgeApplications[0];
+    if (!existing) return { status: 409, body: { message: "受管 EdgeApplication 不存在，无法更新 YAML" } };
+    const document = documents[0];
+    if (String(document?.metadata?.name || "") !== String(metadataOf(existing).name)) {
+      return { status: 400, body: { message: "编辑 YAML 不能重命名 EdgeApplication" } };
+    }
+    const targetGroups = edgeApplicationTargetGroups(document);
+    if (!targetGroups.length) return { status: 400, body: { message: "EdgeApplication 至少需要一个 targetNodeGroup" } };
+    const nextPlan: BatchWorkloadPlan = { ...found.plan, targetGroups };
+    try {
+      const groups = await validateTargets(nextPlan);
+      const next = buildBatchEdgeApplication(nextPlan, id, groups, document);
+      next.metadata.resourceVersion = metadataOf(existing).resourceVersion;
+      await requestK8sJson(edgeApplicationPath(found.plan.namespace, metadataOf(existing).name), { method: "PUT", body: next });
+      found.control.data.planJson = JSON.stringify(nextPlan);
+      found.control.data.targetRefs = JSON.stringify(targetGroups);
+      await updateConfigMap(metadataOf(found.control).name, found.control);
+      return getBatchWorkload(id);
+    } catch (error) {
+      return { status: 409, body: { message: error instanceof Error ? error.message : "EdgeApplication YAML 更新失败" } };
+    }
+  }
   if (!documents.length || documents.some((document) => document?.apiVersion !== "apps/v1" || document?.kind !== "Deployment")) {
     return { status: 400, body: { message: "YAML 只能包含 apps/v1 Deployment" } };
   }
@@ -572,8 +792,7 @@ export async function updateBatchWorkloadYaml(id: string, yamlText: string) {
       document.spec.template.metadata = document.spec.template.metadata || {};
       document.spec.template.metadata.labels = { ...(existing?.spec?.template?.metadata?.labels || {}), ...(document.spec.template.metadata.labels || {}), [workloadIdLabel]: id };
       if (found.plan.edgeUnitRef) {
-        const { nodeGroupRef, nodeGroup } = await resolveEdgeUnitNodeGroup(found.plan.edgeUnitRef);
-        document = bindDeploymentToEdgeUnitNodeGroup(document, found.plan.edgeUnitRef, nodeGroupRef, nodeGroup);
+        document = bindDeploymentToEdgeUnit(document, found.plan.edgeUnitRef);
         document.metadata.resourceVersion = metadataOf(existing).resourceVersion;
       }
       await requestK8sJson(deploymentPath(found.plan.namespace, name), { method: "PUT", body: document });
@@ -587,6 +806,9 @@ export async function updateBatchWorkloadYaml(id: string, yamlText: string) {
 export async function deleteBatchWorkloadDeployment(id: string, deploymentName: string) {
   const found = await detail(id);
   if (!found || !found.plan) return { status: 404, body: { message: `BatchWorkload ${id} not found` } };
+  if (dataOf(found.control).executionMode === "edgeapplication") {
+    return { status: 400, body: { message: "EdgeApplication 模式不支持单独删除内嵌 Deployment，请编辑 EdgeApplication YAML 或删除整个批量工作负载" } };
+  }
   const deployment = found.deployments.find((item) => metadataOf(item).name === deploymentName);
   if (!deployment) return { status: 404, body: { message: `Deployment ${deploymentName} not found in BatchWorkload ${id}` } };
   await requestK8sJson(deploymentPath(found.plan.namespace, deploymentName), { method: "DELETE" });
@@ -602,6 +824,11 @@ export async function deleteBatchWorkloadDeployment(id: string, deploymentName: 
 export async function deleteBatchWorkload(id: string) {
   const found = await detail(id);
   if (!found || !found.plan) return { status: 404, body: { message: `BatchWorkload ${id} not found` } };
+  if (dataOf(found.control).executionMode === "edgeapplication") {
+    await Promise.all(found.edgeApplications.map((resource) => requestK8sJson(edgeApplicationPath(found.plan!.namespace, metadataOf(resource).name), { method: "DELETE" })));
+    await removeConfigMap(metadataOf(found.control).name);
+    return { status: 200, body: { message: `BatchWorkload ${id} and ${found.edgeApplications.length} managed EdgeApplication deleted` } };
+  }
   await Promise.all(found.deployments.map((deployment) => requestK8sJson(deploymentPath(found.plan!.namespace, metadataOf(deployment).name), { method: "DELETE" })));
   await removeConfigMap(metadataOf(found.control).name);
   return { status: 200, body: { message: `BatchWorkload ${id} and ${found.deployments.length} managed Deployments deleted` } };

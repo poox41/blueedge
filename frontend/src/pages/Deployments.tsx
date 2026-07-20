@@ -55,6 +55,7 @@ import {
   getDeployment,
   listDeployments,
   listNamespaces,
+  listNodes,
   listPods,
   updateEdgeUnitDeploymentResource,
 } from "@/api/services/resources";
@@ -71,7 +72,7 @@ import {
 import type { DeploymentAuditRecord, DeploymentRevision } from "@/api/services/product";
 import { observabilityUnavailableText } from "@/api/adapters/observability.adapter";
 import type { ObservabilityEvent, ObservabilitySummary } from "@/api/adapters/observability.adapter";
-import type { KubeResource, WorkloadView } from "@/types/kubeedge";
+import type { EdgeNodeView, KubeResource, WorkloadView } from "@/types/kubeedge";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 
@@ -248,8 +249,8 @@ const defaultForm: WorkloadForm = {
   runAsGroup: "",
   readOnlyRootFilesystem: false,
   allowPrivilegeEscalation: false,
-  schedulingMode: "all",
-  nodeSelectors: [{ id: "node-selector-1", key: "", value: "" }],
+  schedulingMode: "nodeSelector",
+  nodeSelectors: [{ id: "node-selector-1", key: "blueedge.io/node-role", value: "edge" }],
   nodeSelectorValue: "",
   workloadLabels: "app=my-app",
   podLabels: "app=my-app",
@@ -626,12 +627,29 @@ const buildDeploymentResource = (form: WorkloadForm): KubeResource => {
     podSpec.hostNetwork = true;
     podSpec.dnsPolicy = "ClusterFirstWithHostNet";
   }
+  if (form.schedulingMode === "all") {
+    podSpec.nodeSelector = { "blueedge.io/node-role": "edge" };
+  }
   if (form.schedulingMode === "nodeSelector") {
-    const nodeSelector = draftListToRecord(form.nodeSelectors);
+    const nodeSelector = { ...draftListToRecord(form.nodeSelectors), "blueedge.io/node-role": "edge" };
     if (Object.keys(nodeSelector).length > 0) podSpec.nodeSelector = nodeSelector;
   }
   if (form.schedulingMode === "nodeName" && form.nodeSelectorValue.trim()) {
     podSpec.nodeName = form.nodeSelectorValue.trim();
+  }
+  if (form.schedulingMode === "podAntiAffinity") {
+    podSpec.nodeSelector = { "blueedge.io/node-role": "edge" };
+    podSpec.affinity = {
+      podAntiAffinity: {
+        preferredDuringSchedulingIgnoredDuringExecution: [{
+          weight: 100,
+          podAffinityTerm: {
+            topologyKey: "kubernetes.io/hostname",
+            labelSelector: { matchLabels: workloadLabels },
+          },
+        }],
+      },
+    };
   }
 
   return {
@@ -669,7 +687,7 @@ const buildDeploymentResource = (form: WorkloadForm): KubeResource => {
 
 export function Deployments() {
   const { selectedNamespace } = useNamespace();
-  const { selectedEdgeUnit, selectedEdgeUnitName } = useEdgeUnits();
+  const { selectedEdgeUnitName } = useEdgeUnits();
   const [items, setItems] = useState<Workload[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -997,7 +1015,6 @@ export function Deployments() {
         open={wizardOpen}
         onOpenChange={setWizardOpen}
         onCreate={createFromForm}
-        nodeGroupRef={selectedEdgeUnit?.rawRef.nodeGroupRef || (selectedEdgeUnit?.rawRef.kind === "NodeGroup" ? selectedEdgeUnit.name : "")}
       />
       <WorkloadActionModal
         panel={actionPanel}
@@ -2483,14 +2500,25 @@ function YamlCreateModal({
   );
 }
 
-function CreateWorkloadWizard({ open, onOpenChange, onCreate, nodeGroupRef }: { open: boolean; onOpenChange: (open: boolean) => void; onCreate: (form: WorkloadForm) => void; nodeGroupRef: string }) {
+function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean; onOpenChange: (open: boolean) => void; onCreate: (form: WorkloadForm) => void }) {
   const [step, setStep] = useState(0);
   const [form, setForm] = useState(defaultForm);
   const [containers, setContainers] = useState<ContainerDraft[]>([createContainerDraft(0)]);
   const [activeContainerIndex, setActiveContainerIndex] = useState(0);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState(false);
+  const [edgeNodes, setEdgeNodes] = useState<EdgeNodeView[]>([]);
+  const [nodeLoadError, setNodeLoadError] = useState("");
   const clearError = (field: string) => setErrors((current) => ({ ...current, [field]: "" }));
+
+  useEffect(() => {
+    if (!open) return;
+    setNodeLoadError("");
+    void listNodes().then((items) => setEdgeNodes(items.filter((item) => item.role === "edge"))).catch((error) => {
+      setEdgeNodes([]);
+      setNodeLoadError(error instanceof Error ? error.message : "边缘节点加载失败");
+    });
+  }, [open]);
 
   const close = () => {
     setStep(0);
@@ -2509,6 +2537,8 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate, nodeGroupRef }: { 
     if (Number(form.replicas) < 1) next.replicas = "实例数必须大于 0";
     if (step >= 1 && containers.some((container) => !container.image.trim())) next.image = "请输入镜像地址";
     if (step >= 1 && containers.some((container) => !container.name.trim())) next.containerName = "请输入容器名称";
+    if (step >= 2 && form.schedulingMode === "nodeName" && !form.nodeSelectorValue.trim()) next.scheduling = "请选择边缘节点";
+    if (step >= 2 && form.schedulingMode === "nodeSelector" && !form.nodeSelectors.some((item) => item.key.trim() && item.value.trim())) next.scheduling = "请填写节点标签选择器";
     setErrors(next);
     let firstErrorId = "";
     if (next.name) firstErrorId = "workload-name";
@@ -2589,8 +2619,8 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate, nodeGroupRef }: { 
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
           {step === 0 && (
             <div className="space-y-4">
-              <div className={cn("rounded-xl border px-4 py-3 text-sm", nodeGroupRef ? "border-[#bfdbfe] bg-[#eff6ff] text-[#1d4ed8]" : "border-[#fecaca] bg-[#fef2f2] text-[#dc2626]") }>
-                {nodeGroupRef ? `目标节点组：${nodeGroupRef}。创建后由后端自动写入归属标签和节点调度约束。` : "当前边缘单元尚未绑定 NodeGroup，无法创建工作负载。"}
+              <div className="rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3 text-sm text-[#1d4ed8]">
+                工作负载将创建为 Kubernetes Deployment；请在高级配置中按边缘节点或节点标签设置调度对象。
               </div>
               <BasicStep form={form} setForm={setForm} errors={errors} clearError={clearError} />
             </div>
@@ -2605,7 +2635,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate, nodeGroupRef }: { 
               clearError={clearError}
             />
           )}
-          {step === 2 && <AdvancedStep form={form} setForm={setForm} />}
+          {step === 2 && <AdvancedStep form={form} setForm={setForm} edgeNodes={edgeNodes} nodeLoadError={nodeLoadError} schedulingError={errors.scheduling || ""} />}
         </div>
 
         <DialogFooter className="h-16 shrink-0 border-t border-[#f0f1f3] bg-white px-6 py-0">
@@ -2619,7 +2649,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate, nodeGroupRef }: { 
               {step < 2 ? (
                 <button type="button" onClick={next} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">下一步</button>
               ) : (
-                <button type="button" disabled={!nodeGroupRef} onClick={create} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033] disabled:cursor-not-allowed disabled:opacity-50">创建</button>
+                <button type="button" onClick={create} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">创建</button>
               )}
             </div>
           </div>
@@ -2946,7 +2976,7 @@ function ProbeToggle({ label, checked, onChange }: { label: string; checked: boo
   );
 }
 
-function AdvancedStep({ form, setForm }: { form: WorkloadForm; setForm: (form: WorkloadForm) => void }) {
+function AdvancedStep({ form, setForm, edgeNodes, nodeLoadError, schedulingError }: { form: WorkloadForm; setForm: (form: WorkloadForm) => void; edgeNodes: EdgeNodeView[]; nodeLoadError: string; schedulingError: string }) {
   const [activeTab, setActiveTab] = useState(0);
   const [labels, setLabels] = useState<KeyValueDraft[]>([{ id: `label-${Date.now()}`, key: "", value: "" }]);
   const [annotations, setAnnotations] = useState<KeyValueDraft[]>([{ id: `annotation-${Date.now()}`, key: "", value: "" }]);
@@ -2970,11 +3000,12 @@ function AdvancedStep({ form, setForm }: { form: WorkloadForm; setForm: (form: W
       {activeTab === 0 && (
         <section className="space-y-3">
           <h3 className="text-sm font-medium text-[#111827]">调度策略</h3>
+          {schedulingError && <p className="rounded-lg border border-[#fecaca] bg-[#fef2f2] px-3 py-2 text-xs text-[#dc2626]">{schedulingError}</p>}
           <div className="grid grid-cols-2 gap-2">
           {([
-            ["all", "部署到全部节点"],
+            ["all", "自动调度到边缘节点"],
             ["nodeSelector", "节点标签选择"],
-            ["nodeName", "节点亲和性"],
+            ["nodeName", "指定边缘节点"],
             ["podAntiAffinity", "Pod反亲和性"],
           ] as const).map(([value, title]) => (
             <button key={value} type="button" onClick={() => setForm({ ...form, schedulingMode: value })} className={cn("flex items-center gap-2 rounded-lg border p-3 text-left text-sm text-[#111827]", form.schedulingMode === value ? "border-[#1a73e8] bg-[#f0f6ff]" : "border-[#e5e7eb] bg-white")}>
@@ -3027,6 +3058,17 @@ function AdvancedStep({ form, setForm }: { form: WorkloadForm; setForm: (form: W
               <Plus className="h-4 w-4" />
               添加
             </button>
+          </div>
+        )}
+        {form.schedulingMode === "nodeName" && (
+          <div className="space-y-2 pt-1">
+            <h3 className="text-sm font-medium text-[#111827]">选择边缘节点</h3>
+            <select value={form.nodeSelectorValue} onChange={(event) => setForm({ ...form, nodeSelectorValue: event.target.value })} className="blueedge-native-select h-11 w-full rounded-xl border border-[#e2e8f0] px-3 text-sm">
+              <option value="">请选择边缘节点</option>
+              {edgeNodes.map((node) => <option key={node.name} value={node.name}>{node.name}（{node.status}）</option>)}
+            </select>
+            {nodeLoadError && <p className="text-xs text-[#dc2626]">{nodeLoadError}</p>}
+            {!nodeLoadError && edgeNodes.length === 0 && <p className="text-xs text-[var(--color-text-tertiary)]">当前集群没有识别到边缘节点</p>}
           </div>
         )}
         </section>

@@ -118,6 +118,8 @@ kubeEdgeVersion, cloudCoreAddress, protocol, driver, criAddress,
 registry, description, labelsJson, status, createdAt
 ```
 
+`nodeGroupRef` 仅作为旧数据结构兼容字段保留，新建和更新 AccessConfig 时固定为空；边缘节点不再从 EdgeUnit 继承 NodeGroup。
+
 - `driver=systemd` 在安装命令中映射为 `--cgroupdriver=systemd`。
 - `driver=cgroups` 在安装命令中映射为 `--cgroupdriver=cgroupfs`。
 - `criAddress` 是绝对 Unix Socket 路径，并进入 `--remote-runtime-endpoint`。
@@ -155,7 +157,7 @@ GET    /product-api/blueedge/devices/:namespace/:name/summary
 
 删除 Device 时同步清理扩展 ConfigMap，并由 ownerReference 提供垃圾回收兜底。
 
-### BatchWorkload Plan
+### BatchWorkload / EdgeApplication
 
 接口：
 
@@ -165,7 +167,11 @@ GET  /product-api/blueedge/workloads/batch/:taskId
 GET  /product-api/blueedge/batch-tasks
 ```
 
-BatchTask 仍为 `executionMode=planOnly`，不会创建 Deployment。计划使用以下结构：
+新建批量工作负载会创建真实的 `apps.kubeedge.io/v1alpha1 EdgeApplication`，并以 `spec.workloadScope.targetNodeGroups` 指定目标节点组。`spec.workloadTemplate.manifests` 中保存实际的 `apps/v1 Deployment` 模板；平台同时保留下列内部计划结构用于列表展示和表单回填：
+
+普通“工作负载”仍创建 `apps/v1 Deployment`，由用户通过 `spec.template.spec.nodeName` 或 `nodeSelector` 选择边缘节点，不再继承或强制绑定 EdgeUnit 的唯一 NodeGroup。EdgeUnit 仅通过 `blueedge.io/edge-unit` 标签记录平台归属。
+
+平台接入的边缘节点使用 `blueedge.io/managed-by=blueedge` 和 `blueedge.io/node-role=edge` 标识产品归属和节点角色。接入命令通过 `keadm join --labels` 写入产品标签；修改已注册节点的接入配置时也会同步标签。只读列表接口不会修改 Kubernetes Node。Deployment 创建表单和服务端默认使用 `blueedge.io/node-role=edge` 约束边缘节点。
 
 ```ts
 interface BatchWorkloadPlan {
@@ -214,8 +220,10 @@ interface BatchWorkloadPlan {
 }
 ```
 
-存储模型：`blueedge-system` Namespace 下 BatchTask ConfigMap 的 `data.planJson`。`list/detail` 同时返回解析后的 `plan`。旧数据仍保留 `targetsJson`，服务在创建新计划时可从旧 `targets` 输入转换为标准 `plan`。
+存储模型：真实工作负载保存在业务 Namespace 的 EdgeApplication CR 中；`blueedge-system` Namespace 下的 BatchTask ConfigMap 保存 `data.planJson` 和 EdgeApplication 引用。`list/detail` 同时返回解析后的 `plan`。历史 `executionMode=deployment` 数据继续兼容读取和清理。
 
-正式支持：多容器、镜像拉取策略、env、command、args、CPU/内存资源、生命周期文本、健康检查开关、安全上下文、卷、标签、注解、网络端口和 Deployment 策略。
+正式支持：EdgeApplication YAML 导入与编辑、目标 NodeGroup 追加、多容器、镜像拉取策略、env、command、args、CPU/内存资源、生命周期文本、健康检查开关、安全上下文、卷、标签、注解、网络端口和内嵌 Deployment 策略。
 
-暂不支持：GPU 资源字段、ConfigMap/Secret 环境变量引用的结构化解析、真实 Deployment 下发、已创建计划 PUT 编辑。对应 UI 已禁用或不再提供可编辑入口。
+追加目标 NodeGroup 只更新现有 EdgeApplication 的 `workloadScope.targetNodeGroups`，并复用原 `workloadTemplate`；当前版本不在该操作中生成 NodeGroup 差异化 overrides。
+
+暂不支持：GPU 资源字段、ConfigMap/Secret 环境变量引用的结构化解析，以及 EdgeApplication 模式下单独删除某个内嵌 Deployment。

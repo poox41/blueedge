@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildBatchDeployment } from "../dist/services/batch-workload.service.js";
+import { buildBatchDeployment, buildBatchEdgeApplication } from "../dist/services/batch-workload.service.js";
 
 const plan = {
   edgeUnitRef: "unit-a",
@@ -55,5 +55,55 @@ test("renders NodeGroup matchLabels as a real pod nodeSelector", () => {
   assert.deepEqual(
     Object.fromEntries(Object.keys(resource.spec.selector.matchLabels).map((key) => [key, resource.spec.template.metadata.labels[key]])),
     resource.spec.selector.matchLabels,
+  );
+});
+
+test("renders a real KubeEdge EdgeApplication with an embedded Deployment", () => {
+  const resource = buildBatchEdgeApplication(plan, "bw-default-batch-nginx", [{
+    metadata: { name: "edge-group" },
+    spec: { nodes: ["k8s-worker01"] },
+  }]);
+
+  assert.equal(resource.apiVersion, "apps.kubeedge.io/v1alpha1");
+  assert.equal(resource.kind, "EdgeApplication");
+  assert.equal(resource.metadata.name, "batch-nginx");
+  assert.equal(resource.metadata.namespace, "default");
+  assert.equal(resource.metadata.labels["blueedge.io/managed-by"], "blueedge-batch-workload");
+  assert.equal(resource.metadata.labels["blueedge.io/batch-workload-id"], "bw-default-batch-nginx");
+  assert.deepEqual(resource.spec.workloadScope.targetNodeGroups, [{ name: "edge-group", overrides: {} }]);
+  assert.equal(resource.spec.workloadTemplate.manifests[0].apiVersion, "apps/v1");
+  assert.equal(resource.spec.workloadTemplate.manifests[0].kind, "Deployment");
+  assert.equal(resource.spec.workloadTemplate.manifests[0].spec.template.spec.containers[0].image, "nginx:1.25-alpine");
+  assert.equal(resource.spec.workloadTemplate.manifests[0].spec.template.spec.affinity, undefined);
+  assert.equal(resource.spec.workloadTemplate.manifests[0].metadata.labels["blueedge.io/node-group"], undefined);
+});
+
+test("preserves imported EdgeApplication manifests and matching NodeGroup overrides", () => {
+  const source = {
+    apiVersion: "apps.kubeedge.io/v1alpha1",
+    kind: "EdgeApplication",
+    metadata: { name: "source-name", labels: { source: "yaml" } },
+    spec: {
+      workloadScope: {
+        targetNodeGroups: [{ name: "edge-group", overrides: { replicas: 3 } }],
+      },
+      workloadTemplate: {
+        manifests: [{ apiVersion: "apps/v1", kind: "Deployment", metadata: { name: "from-yaml" }, spec: { replicas: 3 } }],
+      },
+    },
+  };
+  const resource = buildBatchEdgeApplication(plan, "bw-default-batch-nginx", [{ metadata: { name: "edge-group" } }], source);
+
+  assert.equal(resource.metadata.name, "batch-nginx");
+  assert.equal(resource.metadata.labels.source, "yaml");
+  assert.deepEqual(resource.spec.workloadScope.targetNodeGroups, [{ name: "edge-group", overrides: { replicas: 3 } }]);
+  assert.equal(resource.spec.workloadTemplate.manifests[0].metadata.name, "from-yaml");
+  assert.equal(source.metadata.name, "source-name");
+});
+
+test("rejects non-EdgeApplication imports", () => {
+  assert.throws(
+    () => buildBatchEdgeApplication(plan, "bw-default-batch-nginx", [{ metadata: { name: "edge-group" } }], { apiVersion: "apps/v1", kind: "Deployment" }),
+    /必须是 apps.kubeedge.io\/v1alpha1 EdgeApplication/,
   );
 });

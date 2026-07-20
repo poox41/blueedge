@@ -94,7 +94,10 @@ const defaultAccessForm: AccessConfigForm = {
   protocol: "websocket",
   registry: "registry.cn-beijing.aliyuncs.com/kubeedge",
   description: "",
-  labelRules: [{ key: "", value: "" }],
+  labelRules: [
+    { key: "blueedge.io/managed-by", value: "blueedge" },
+    { key: "blueedge.io/node-role", value: "edge" },
+  ],
 };
 
 function statusText(status: EdgeNodeView["status"]) {

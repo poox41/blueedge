@@ -131,7 +131,7 @@ export interface BatchWorkloadPlan {
 export interface BatchTaskPayload {
   edgeUnitRef?: string;
   name: string;
-  targetType: "node" | "nodeGroup" | "edgeUnit" | "deployment";
+  targetType: "node" | "nodeGroup" | "edgeUnit" | "deployment" | "edgeapplication";
   targetRefs: string[];
   labelSelector?: Record<string, string>;
   targetVersion?: string;
@@ -149,6 +149,7 @@ export interface BatchTaskPayload {
   description?: string;
   targets?: Array<Record<string, unknown>>;
   plan?: BatchWorkloadPlan;
+  edgeApplication?: Record<string, unknown>;
 }
 
 export interface BatchWorkloadEvent {

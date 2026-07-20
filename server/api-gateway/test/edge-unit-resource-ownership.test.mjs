@@ -4,7 +4,7 @@ import {
   buildEdgeUnitConfiguration,
   buildEdgeUnitConfigMapData,
   buildEdgeUnitRuntime,
-  bindDeploymentToEdgeUnitNodeGroup,
+  bindDeploymentToEdgeUnit,
   deploymentBelongsToEdgeUnit,
   deploymentTargetsEdgeUnit,
   edgeApplicationBelongsToEdgeUnit,
@@ -12,49 +12,55 @@ import {
   nodeTargetsEdgeUnit,
 } from "../dist/services/edge-unit.service.js";
 
-test("EdgeUnit workload creation injects ownership and explicit NodeGroup scheduling", () => {
-  const resource = bindDeploymentToEdgeUnitNodeGroup({
+test("EdgeUnit workload creation injects ownership without forcing NodeGroup scheduling", () => {
+  const resource = bindDeploymentToEdgeUnit({
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: "edge-app", namespace: "default" },
+    spec: { template: { metadata: { labels: { app: "edge-app" } }, spec: { nodeSelector: { "blueedge.io/node-role": "edge" }, containers: [{ name: "app", image: "nginx" }] } } },
+  }, "unit-a");
+
+  assert.equal(resource.metadata.labels["blueedge.io/edge-unit"], "unit-a");
+  assert.equal(resource.metadata.labels["blueedge.io/node-group"], undefined);
+  assert.equal(resource.spec.template.metadata.labels["blueedge.io/edge-unit"], "unit-a");
+  assert.deepEqual(resource.spec.template.spec.nodeSelector, { "blueedge.io/node-role": "edge" });
+  assert.equal(resource.spec.template.spec.affinity, undefined);
+});
+
+test("EdgeUnit workload creation preserves an explicitly selected edge node", () => {
+  const resource = {
+    apiVersion: "apps/v1",
+    kind: "Deployment",
+    metadata: { name: "edge-app", namespace: "default", labels: {} },
+    spec: { template: { metadata: {}, spec: { nodeName: "edge-02", containers: [{ name: "app", image: "nginx" }] } } },
+  };
+  assert.equal(bindDeploymentToEdgeUnit(resource, "unit-a").spec.template.spec.nodeName, "edge-02");
+});
+
+test("EdgeUnit workload creation defaults scheduler-managed pods to BlueEdge edge nodes", () => {
+  const resource = bindDeploymentToEdgeUnit({
     apiVersion: "apps/v1",
     kind: "Deployment",
     metadata: { name: "edge-app", namespace: "default" },
     spec: { template: { metadata: { labels: { app: "edge-app" } }, spec: { containers: [{ name: "app", image: "nginx" }] } } },
-  }, "unit-a", "group-a", { metadata: { name: "group-a" }, spec: { nodes: ["edge-01"] } });
+  }, "unit-a");
 
-  assert.equal(resource.metadata.labels["blueedge.io/edge-unit"], "unit-a");
-  assert.equal(resource.metadata.labels["blueedge.io/node-group"], "group-a");
-  assert.equal(resource.spec.template.metadata.labels["blueedge.io/edge-unit"], "unit-a");
-  assert.deepEqual(
-    resource.spec.template.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.nodeSelectorTerms[0].matchExpressions[0],
-    { key: "kubernetes.io/hostname", operator: "In", values: ["edge-01"] },
-  );
+  assert.deepEqual(resource.spec.template.spec.nodeSelector, { "blueedge.io/node-role": "edge" });
 });
 
-test("EdgeUnit workload creation rejects scheduling outside the bound NodeGroup", () => {
-  const resource = {
+test("EdgeUnit workload creation cannot override the BlueEdge edge-node constraint", () => {
+  const resource = bindDeploymentToEdgeUnit({
     apiVersion: "apps/v1",
     kind: "Deployment",
     metadata: { name: "edge-app", namespace: "default" },
-    spec: { template: { spec: { nodeName: "cloud-01", containers: [{ name: "app", image: "nginx" }] } } },
-  };
-  assert.throws(
-    () => bindDeploymentToEdgeUnitNodeGroup(resource, "unit-a", "group-a", { metadata: { name: "group-a" }, spec: { nodes: ["edge-01"] } }),
-    /不属于 NodeGroup group-a/,
-  );
+    spec: { template: { metadata: {}, spec: { nodeSelector: { region: "east", "blueedge.io/node-role": "cloud" }, containers: [{ name: "app", image: "nginx" }] } } },
+  }, "unit-a");
+
+  assert.deepEqual(resource.spec.template.spec.nodeSelector, { region: "east", "blueedge.io/node-role": "edge" });
 });
 
-test("EdgeUnit workload creation merges NodeGroup matchLabels and rejects conflicts", () => {
-  const resource = {
-    apiVersion: "apps/v1",
-    kind: "Deployment",
-    metadata: { name: "edge-app", namespace: "default" },
-    spec: { template: { spec: { nodeSelector: { region: "east" }, containers: [{ name: "app", image: "nginx" }] } } },
-  };
-  const group = { metadata: { name: "group-a" }, spec: { matchLabels: { nodeType: "edge", region: "east" } } };
-  assert.deepEqual(bindDeploymentToEdgeUnitNodeGroup(resource, "unit-a", "group-a", group).spec.template.spec.nodeSelector, { region: "east", nodeType: "edge" });
-  assert.throws(
-    () => bindDeploymentToEdgeUnitNodeGroup({ ...resource, spec: { template: { spec: { ...resource.spec.template.spec, nodeSelector: { region: "west" } } } } }, "unit-a", "group-a", group),
-    /冲突/,
-  );
+test("EdgeUnit workload creation validates the Deployment resource shape", () => {
+  assert.throws(() => bindDeploymentToEdgeUnit({ apiVersion: "v1", kind: "Pod" }, "unit-a"), /只支持 apps\/v1 Deployment/);
 });
 
 test("EdgeUnit update can bind and explicitly unbind nodeGroupRef", () => {

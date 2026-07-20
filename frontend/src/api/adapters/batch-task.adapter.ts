@@ -16,7 +16,7 @@ export interface BatchTaskApiItem {
   name: string;
   type: BatchTaskApiType;
   status: BatchTaskApiStatus;
-  targetType: "node" | "nodeGroup" | "edgeUnit" | "deployment";
+  targetType: "node" | "nodeGroup" | "edgeUnit" | "deployment" | "edgeapplication";
   targetRefs: string[];
   targetVersion?: string;
   image?: string;
@@ -160,8 +160,8 @@ export function toBatchWorkloadRow(item: BatchTaskApiItem) {
           : "待执行",
     createTime: formatBatchTime(item.createdAt),
     description: item.description || "",
-    rolloutPolicy: "Kubernetes Deployment 滚动更新",
-    rollbackPolicy: "由 Deployment revision 管理",
+    rolloutPolicy: item.executionMode === "edgeapplication" ? "KubeEdge EdgeApplication 下发" : "Kubernetes Deployment 滚动更新",
+    rollbackPolicy: item.executionMode === "edgeapplication" ? "由 EdgeApplication 控制器管理" : "由 Deployment revision 管理",
     raw: item,
   };
 }

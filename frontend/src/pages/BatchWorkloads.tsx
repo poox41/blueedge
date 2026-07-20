@@ -191,8 +191,6 @@ const defaultBatchImageForm = (): BatchImageCreateForm => ({
 
 const keyValueRecord = (items: BatchKeyValue[]): Record<string, string> => Object.fromEntries(items.filter((item) => item.key.trim()).map((item) => [item.key.trim(), item.value.trim()]));
 const optionalNumber = (value: string): number | undefined => value.trim() === "" || !Number.isFinite(Number(value)) ? undefined : Number(value);
-const compactStringList = (value: string): string[] => value.split(/\s+/).map((item) => item.trim()).filter(Boolean);
-
 function toPlanContainer(container: BatchContainerForm): BatchWorkloadPlanContainer {
   const gpuResource = container.gpuEnabled ? (container.gpuType.trim() || "nvidia.com/gpu") : "";
   const gpuCount = String(Math.max(1, Math.floor(Number(container.gpuCount) || 1)));
@@ -247,20 +245,37 @@ function toBatchWorkloadPlan(form: BatchImageCreateForm, targetGroups: string[] 
   };
 }
 
-const defaultBatchYaml = `# BlueEdge 平台批量工作负载定义；目标 NodeGroup 自动继承当前 EdgeUnit 绑定
-apiVersion: blueedge.io/v1alpha1
-kind: BatchWorkloadPlan
+const defaultBatchYaml = `# KubeEdge EdgeApplication；请填写真实 NodeGroup 名称
+apiVersion: apps.kubeedge.io/v1alpha1
+kind: EdgeApplication
 metadata:
   name: batch-app
   namespace: default
 spec:
-  replicas: 1
-  template:
-    spec:
-      containers:
-        - name: nginx
-          image: nginx:1.25-alpine
-          imagePullPolicy: IfNotPresent
+  workloadScope:
+    targetNodeGroups:
+      - name: edge-group
+        overrides: {}
+  workloadTemplate:
+    manifests:
+      - apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: batch-app
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: batch-app
+          template:
+            metadata:
+              labels:
+                app: batch-app
+            spec:
+              containers:
+                - name: nginx
+                  image: nginx:1.25-alpine
+                  imagePullPolicy: IfNotPresent
 `;
 
 const escapeHtml = (value: string): string => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -298,8 +313,7 @@ const highlightYaml = (code: string): string => code.split("\n").map(highlightYa
 
 export function BatchWorkloads() {
   const { selectedNamespace } = useNamespace();
-  const { selectedEdgeUnit, selectedEdgeUnitName } = useEdgeUnits();
-  const nodeGroupRef = selectedEdgeUnit?.rawRef.nodeGroupRef || (selectedEdgeUnit?.rawRef.kind === "NodeGroup" ? selectedEdgeUnit.name : "");
+  const { selectedEdgeUnitName } = useEdgeUnits();
   const [items, setItems] = useState<BatchWorkload[]>([]);
   const [search, setSearch] = useState("");
   const [yamlOpen, setYamlOpen] = useState(false);
@@ -349,35 +363,60 @@ export function BatchWorkloads() {
   const createFromYaml = async (yamlText: string) => {
     try {
       const document = yaml.load(yamlText) as any;
-      if (!document || typeof document !== "object" || document.kind !== "BatchWorkloadPlan") throw new Error("YAML kind 必须是 BatchWorkloadPlan");
+      if (!document || typeof document !== "object" || document.apiVersion !== "apps.kubeedge.io/v1alpha1" || document.kind !== "EdgeApplication") throw new Error("YAML 必须是 apps.kubeedge.io/v1alpha1 EdgeApplication");
       const metadata = document.metadata || {};
       const spec = document.spec || {};
-      const containers = Array.isArray(spec?.template?.spec?.containers) ? spec.template.spec.containers : [];
+      const manifests = Array.isArray(spec?.workloadTemplate?.manifests) ? spec.workloadTemplate.manifests : [];
+      const deployment = manifests.find((manifest: any) => manifest?.apiVersion === "apps/v1" && manifest?.kind === "Deployment");
+      const containers = Array.isArray(deployment?.spec?.template?.spec?.containers) ? deployment.spec.template.spec.containers : [];
       const name = String(metadata.name || `batch-workload-${Date.now().toString().slice(-5)}`).trim();
       const namespace = String(metadata.namespace || "default").trim();
-      if (!selectedEdgeUnitName || !nodeGroupRef) throw new Error("当前边缘单元尚未绑定 NodeGroup");
-      const requestedTargetGroups = Array.isArray(spec.targetGroups) ? spec.targetGroups.map(String).filter(Boolean) : [];
-      if (requestedTargetGroups.some((group: string) => group !== nodeGroupRef)) throw new Error(`当前边缘单元只能部署到 NodeGroup ${nodeGroupRef}`);
-      const targetGroups = [nodeGroupRef];
-      if (!containers.length || containers.some((container: any) => !container?.name || !container?.image)) throw new Error("YAML 中至少需要一个包含 name 和 image 的容器");
+      if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
+      const requestedTargetGroups: string[] = Array.isArray(spec?.workloadScope?.targetNodeGroups) ? spec.workloadScope.targetNodeGroups.map((item: any) => String(item?.name || "")).filter(Boolean) : [];
+      if (!requestedTargetGroups.length) throw new Error("请在 EdgeApplication YAML 中填写真实的 targetNodeGroups");
+      const targetGroups = [...new Set(requestedTargetGroups)];
+      if (!deployment) throw new Error("EdgeApplication workloadTemplate.manifests 中至少需要一个 apps/v1 Deployment");
+      if (!containers.length || containers.some((container: any) => !container?.name || !container?.image)) throw new Error("Deployment 中至少需要一个包含 name 和 image 的容器");
       const image = String(containers[0].image);
+      const edgeApplication = structuredClone(document);
+      edgeApplication.metadata = { ...metadata, name, namespace };
+      edgeApplication.spec = {
+        ...spec,
+        workloadScope: { ...(spec.workloadScope || {}), targetNodeGroups: targetGroups.map((group) => ({ name: group, overrides: {} })) },
+      };
       await createBatchWorkloadTask({
         edgeUnitRef: selectedEdgeUnitName,
         name,
-        targetType: "deployment",
+        targetType: "edgeapplication",
         targetRefs: targetGroups,
         image,
         failurePolicy: "continue",
-        description: "YAML 批量工作负载计划",
+        description: "YAML 创建 EdgeApplication",
         targets: [{ namespace, image, yaml: yamlText }],
+        edgeApplication,
         plan: {
           edgeUnitRef: selectedEdgeUnitName,
           namespace,
           name,
           targetGroups,
-          replicas: Math.max(1, Number(spec.replicas || 1)),
+          replicas: Math.max(1, Number(deployment.spec?.replicas || 1)),
           workloadType: "Deployment",
-          podTemplate: { containers },
+          metadata: { labels: deployment.metadata?.labels || {}, annotations: deployment.metadata?.annotations || {} },
+          podTemplate: {
+            labels: deployment.spec?.template?.metadata?.labels || {},
+            annotations: deployment.spec?.template?.metadata?.annotations || {},
+            containers: containers.map((container: any) => ({
+              name: String(container.name),
+              image: String(container.image),
+              imagePullPolicy: container.imagePullPolicy,
+              command: Array.isArray(container.command) ? container.command.map(String) : [],
+              args: Array.isArray(container.args) ? container.args.map(String) : [],
+              env: Array.isArray(container.env) ? container.env.filter((entry: any) => entry?.name && Object.prototype.hasOwnProperty.call(entry, "value")).map((entry: any) => ({ name: String(entry.name), value: String(entry.value) })) : [],
+              resources: container.resources || {},
+              securityContext: container.securityContext || {},
+            })),
+            terminationGracePeriodSeconds: Number(deployment.spec?.template?.spec?.terminationGracePeriodSeconds ?? 30),
+          },
         },
       });
       setYamlOpen(false);
@@ -390,12 +429,13 @@ export function BatchWorkloads() {
   const createFromImage = async (form: BatchImageCreateForm) => {
     const primaryImage = form.containers[0]?.image.trim() || "nginx:1.25-alpine";
     try {
-      if (!selectedEdgeUnitName || !nodeGroupRef) throw new Error("当前边缘单元尚未绑定 NodeGroup");
+      if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
+      if (!form.targetGroups.length) throw new Error("请至少选择一个 NodeGroup");
       await createBatchWorkloadTask({
         edgeUnitRef: selectedEdgeUnitName,
         name: form.name.trim() || `batch-image-${Date.now().toString().slice(-5)}`,
-        targetType: "deployment",
-        targetRefs: [nodeGroupRef],
+        targetType: "edgeapplication",
+        targetRefs: form.targetGroups,
         image: primaryImage,
         failurePolicy: "continue",
         description: form.description || "镜像批量工作负载计划",
@@ -412,7 +452,7 @@ export function BatchWorkloads() {
           ports: form.ports,
           strategy: form.strategy,
         }],
-        plan: { ...toBatchWorkloadPlan(form, [nodeGroupRef]), edgeUnitRef: selectedEdgeUnitName },
+        plan: { ...toBatchWorkloadPlan(form), edgeUnitRef: selectedEdgeUnitName },
       });
       setImageOpen(false);
       await loadItems();
@@ -451,7 +491,7 @@ export function BatchWorkloads() {
             await loadItems();
           }}
         />
-        <ImageCreateDialog open={imageOpen} onOpenChange={setImageOpen} onCreate={createFromImage} nodeGroupRef={nodeGroupRef} />
+        <ImageCreateDialog open={imageOpen} onOpenChange={setImageOpen} onCreate={createFromImage} />
       </div>
     );
   }
@@ -555,7 +595,7 @@ export function BatchWorkloads() {
       <BatchYamlEditor
         open={!!editYamlTarget}
         title="编辑 YAML"
-        defaultValue={editYamlTarget?.raw?.yaml || "# 暂无 Deployment YAML"}
+        defaultValue={editYamlTarget?.raw?.yaml || "# 暂无 EdgeApplication YAML"}
         onSubmit={async (value) => {
           if (!editYamlTarget) return;
           try {
@@ -568,7 +608,7 @@ export function BatchWorkloads() {
         }}
         onCancel={() => setEditYamlTarget(null)}
       />
-      <ImageCreateDialog open={imageOpen} onOpenChange={setImageOpen} onCreate={createFromImage} nodeGroupRef={nodeGroupRef} />
+      <ImageCreateDialog open={imageOpen} onOpenChange={setImageOpen} onCreate={createFromImage} />
       <DeployDialog
         item={deployTarget}
         onOpenChange={(open) => !open && setDeployTarget(null)}
@@ -585,7 +625,7 @@ export function BatchWorkloads() {
           <AlertDialogHeader>
             <AlertDialogTitle className="text-base">确认删除批量工作负载？</AlertDialogTitle>
             <AlertDialogDescription className="text-sm">
-              即将删除 <span className="font-medium text-[var(--color-text-primary)]">{deleteTarget?.name}</span> 以及所有由它创建的真实 Deployment。此操作不可恢复。
+              即将删除 <span className="font-medium text-[var(--color-text-primary)]">{deleteTarget?.name}</span> 对应的真实 EdgeApplication 和平台控制记录。此操作不可恢复。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -774,8 +814,8 @@ function BatchYamlEditor({ open, title, defaultValue, onSubmit, onCancel }: { op
   );
 }
 
-function ImageCreateDialog({ open, onOpenChange, onCreate, nodeGroupRef }: { open: boolean; onOpenChange: (open: boolean) => void; onCreate: (form: BatchImageCreateForm) => void; nodeGroupRef: string }) {
-  const formValidation = useRequiredFieldValidation<"name" | "namespace" | "replicas" | "containerName" | "containerImage">();
+function ImageCreateDialog({ open, onOpenChange, onCreate }: { open: boolean; onOpenChange: (open: boolean) => void; onCreate: (form: BatchImageCreateForm) => void }) {
+  const formValidation = useRequiredFieldValidation<"name" | "namespace" | "replicas" | "targetGroups" | "containerName" | "containerImage">();
   const [step, setStep] = useState(0);
   const [advancedTab, setAdvancedTab] = useState(0);
   const [activeContainerIndex, setActiveContainerIndex] = useState(0);
@@ -783,6 +823,8 @@ function ImageCreateDialog({ open, onOpenChange, onCreate, nodeGroupRef }: { ope
   const [namespaceOptions, setNamespaceOptions] = useState<Array<{ value: string; label: string }>>([{ value: "default", label: "default" }]);
   const [refreshingNamespaces, setRefreshingNamespaces] = useState(false);
   const [namespaceError, setNamespaceError] = useState("");
+  const [nodeGroupOptions, setNodeGroupOptions] = useState<string[]>([]);
+  const [nodeGroupError, setNodeGroupError] = useState("");
 
   const refreshNamespaces = async () => {
     setRefreshingNamespaces(true);
@@ -807,10 +849,17 @@ function ImageCreateDialog({ open, onOpenChange, onCreate, nodeGroupRef }: { ope
     setStep(0);
     setAdvancedTab(0);
     setActiveContainerIndex(0);
-    setForm({ ...defaultBatchImageForm(), targetGroups: nodeGroupRef ? [nodeGroupRef] : [] });
+    setForm({ ...defaultBatchImageForm(), targetGroups: [] });
     formValidation.resetErrors();
     void refreshNamespaces();
-  }, [nodeGroupRef, open]);
+    setNodeGroupError("");
+    void listNodeGroups().then((groups) => {
+      setNodeGroupOptions(groups.map((group: any) => String(group?.metadata?.name || group?.name || "")).filter(Boolean));
+    }).catch((error) => {
+      setNodeGroupOptions([]);
+      setNodeGroupError(error instanceof Error ? error.message : "NodeGroup 加载失败");
+    });
+  }, [open]);
 
   const close = () => onOpenChange(false);
   const activeContainer = form.containers[activeContainerIndex] || form.containers[0];
@@ -821,6 +870,7 @@ function ImageCreateDialog({ open, onOpenChange, onCreate, nodeGroupRef }: { ope
         { field: "name", valid: Boolean(form.name.trim()), message: "请输入批量工作负载名称", elementId: "batch-workload-name" },
         { field: "namespace", valid: Boolean(form.namespace.trim()), message: "请选择命名空间", elementId: "batch-workload-namespace" },
         { field: "replicas", valid: Number(form.replicas) > 0, message: "请输入大于 0 的实例数", elementId: "batch-workload-replicas" },
+        { field: "targetGroups", valid: form.targetGroups.length > 0, message: "请至少选择一个 NodeGroup", elementId: "batch-workload-target-groups" },
       ])) return;
     }
     if (step === 1) {
@@ -881,8 +931,8 @@ function ImageCreateDialog({ open, onOpenChange, onCreate, nodeGroupRef }: { ope
         <div className="min-h-0 flex-1 overflow-y-auto p-6">
           {step === 0 && (
             <div className="space-y-4">
-              <div className={cn("rounded-xl border px-4 py-3 text-sm", nodeGroupRef ? "border-[#bfdbfe] bg-[#eff6ff] text-[#1d4ed8]" : "border-[#fecaca] bg-[#fef2f2] text-[#dc2626]") }>
-                {nodeGroupRef ? `目标节点组：${nodeGroupRef}。创建计划时会立即生成绑定该节点组的真实 Deployment。` : "当前边缘单元尚未绑定 NodeGroup，无法创建批量工作负载。"}
+              <div className="rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3 text-sm text-[#1d4ed8]">
+                批量工作负载将创建为 KubeEdge EdgeApplication，请选择一个或多个 NodeGroup 作为部署对象。
               </div>
               <CreateField label="名称" required error={formValidation.errors.name} errorId="batch-workload-name-error">
                 <Input id="batch-workload-name" value={form.name} onChange={(event) => { setForm({ ...form, name: event.target.value }); formValidation.clearError("name"); }} placeholder="batch-nginx" aria-invalid={Boolean(formValidation.errors.name)} aria-describedby={formValidation.errors.name ? "batch-workload-name-error" : undefined} className="h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0" />
@@ -901,6 +951,13 @@ function ImageCreateDialog({ open, onOpenChange, onCreate, nodeGroupRef }: { ope
               <CreateField label="实例" required error={formValidation.errors.replicas} errorId="batch-workload-replicas-error">
                 <Input id="batch-workload-replicas" type="number" min={1} value={form.replicas} onChange={(event) => { setForm({ ...form, replicas: event.target.value }); formValidation.clearError("replicas"); }} aria-invalid={Boolean(formValidation.errors.replicas)} aria-describedby={formValidation.errors.replicas ? "batch-workload-replicas-error" : undefined} className="h-9 rounded-[10px] border border-[#dfe5ee] px-3 text-sm shadow-sm focus-visible:ring-0" />
                 <p className="mt-1.5 text-xs text-[var(--color-text-tertiary)]">任务完成可以容忍拉取镜像失败的节点数量占比</p>
+              </CreateField>
+              <CreateField label="部署对象（NodeGroup）" required error={formValidation.errors.targetGroups} errorId="batch-workload-target-groups-error">
+                <div id="batch-workload-target-groups" className="max-h-36 space-y-2 overflow-auto rounded-xl border border-[#dfe5ee] bg-white p-3" tabIndex={-1}>
+                  {nodeGroupOptions.map((name) => <label key={name} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm hover:bg-[#f8fafc]"><input type="checkbox" checked={form.targetGroups.includes(name)} onChange={() => { setForm((current) => ({ ...current, targetGroups: current.targetGroups.includes(name) ? current.targetGroups.filter((item) => item !== name) : [...current.targetGroups, name] })); formValidation.clearError("targetGroups"); }} />{name}</label>)}
+                  {!nodeGroupError && nodeGroupOptions.length === 0 && <p className="py-3 text-center text-xs text-[var(--color-text-tertiary)]">当前集群没有可用的 NodeGroup</p>}
+                  {nodeGroupError && <p className="py-3 text-center text-xs text-[#dc2626]">{nodeGroupError}</p>}
+                </div>
               </CreateField>
               <CreateField label="描述">
                 <Textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="批量工作负载用途描述（可选）" className="h-[120px] min-h-[120px] rounded-[10px] border border-[#dfe5ee] px-3 py-2 text-sm shadow-sm focus-visible:ring-0" />
@@ -1205,7 +1262,7 @@ function ImageCreateDialog({ open, onOpenChange, onCreate, nodeGroupRef }: { ope
               {step < 2 ? (
                 <button type="button" onClick={goToNextStep} className="btn-black text-sm">下一步</button>
               ) : (
-                <button type="button" disabled={!nodeGroupRef} onClick={() => onCreate(form)} className="btn-black text-sm disabled:cursor-not-allowed disabled:opacity-50">创建</button>
+                <button type="button" disabled={!form.targetGroups.length} onClick={() => onCreate(form)} className="btn-black text-sm disabled:cursor-not-allowed disabled:opacity-50">创建</button>
               )}
             </div>
           </div>
@@ -1472,11 +1529,11 @@ function BatchWorkloadDetailPage({ item, openDefinitionInitially, onBack, onChan
         <DefinitionSection title="工作负载实例">
           <div className="page-toolbar mb-4">
             <div className="toolbar-search relative"><Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索工作负载实例" className="h-9 rounded-[10px] pl-9 text-sm" /></div>
-            <div className="flex gap-2"><button type="button" onClick={() => void loadDetail()} className="action-button" title="刷新"><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /></button><button type="button" onClick={() => setDeployOpen(true)} className="btn-black flex items-center gap-1.5 text-xs"><Plus className="h-3.5 w-3.5" />新增部署</button></div>
+            <div className="flex gap-2"><button type="button" onClick={() => void loadDetail()} className="action-button" title="刷新"><RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} /></button><button type="button" onClick={() => setDeployOpen(true)} className="btn-black flex items-center gap-1.5 text-xs"><Plus className="h-3.5 w-3.5" />新增目标节点组</button></div>
           </div>
           <div className="overflow-hidden rounded-2xl border border-[#e8ebf0]">
             <Table><TableHeader><TableRow className="bg-[#fafbfc]"><TableHead className="px-5">工作负载名称</TableHead><TableHead>节点组名称</TableHead><TableHead>实例</TableHead><TableHead>状态</TableHead><TableHead>镜像</TableHead><TableHead className="w-[88px] text-right">操作</TableHead></TableRow></TableHeader>
-              <TableBody>{filteredWorkloads.length ? filteredWorkloads.map((workload) => <TableRow key={workload.name} className="h-[76px]"><TableCell className="px-5 font-semibold text-[#1e6bff]">{workload.name}</TableCell><TableCell>{workload.nodeGroup || "-"}</TableCell><TableCell>{workload.readyReplicas}/{workload.replicas}</TableCell><TableCell><LiveStatusBadge status={workload.status} /></TableCell><TableCell><ImageChip text={workload.image} /></TableCell><TableCell className="text-right"><button type="button" title="删除这个 Deployment" onClick={() => setDeploymentToDelete(workload.name)} className="action-button h-9 w-9"><Trash2 className="h-4 w-4" /></button></TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="py-14 text-center text-sm text-[var(--color-text-tertiary)]">暂无工作负载实例</TableCell></TableRow>}</TableBody>
+              <TableBody>{filteredWorkloads.length ? filteredWorkloads.map((workload) => <TableRow key={workload.name} className="h-[76px]"><TableCell className="px-5 font-semibold text-[#1e6bff]">{workload.name}</TableCell><TableCell>{workload.nodeGroup || "-"}</TableCell><TableCell>{workload.readyReplicas}/{workload.replicas}</TableCell><TableCell><LiveStatusBadge status={workload.status} /></TableCell><TableCell><ImageChip text={workload.image} /></TableCell><TableCell className="text-right">{raw?.executionMode !== "edgeapplication" && <button type="button" title="删除这个 Deployment" onClick={() => setDeploymentToDelete(workload.name)} className="action-button h-9 w-9"><Trash2 className="h-4 w-4" /></button>}</TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="py-14 text-center text-sm text-[var(--color-text-tertiary)]">暂无工作负载实例</TableCell></TableRow>}</TableBody>
             </Table>
           </div>
         </DefinitionSection>
@@ -1484,7 +1541,7 @@ function BatchWorkloadDetailPage({ item, openDefinitionInitially, onBack, onChan
 
       {activeTab === "events" && (
         <DefinitionSection title="事件">
-          <div className="mb-4 flex items-center justify-between"><p className="text-sm text-[var(--color-text-secondary)]">展示真实 Kubernetes Deployment 事件</p><div className="flex gap-2"><span className="rounded-full bg-[#f3f4f6] px-3 py-1 text-xs">总数 {eventSummary.total}</span><span className="rounded-full bg-[#fef2f2] px-3 py-1 text-xs text-[#dc2626]">异常 {eventSummary.warning}</span></div></div>
+          <div className="mb-4 flex items-center justify-between"><p className="text-sm text-[var(--color-text-secondary)]">展示真实 KubeEdge EdgeApplication 事件</p><div className="flex gap-2"><span className="rounded-full bg-[#f3f4f6] px-3 py-1 text-xs">总数 {eventSummary.total}</span><span className="rounded-full bg-[#fef2f2] px-3 py-1 text-xs text-[#dc2626]">异常 {eventSummary.warning}</span></div></div>
           <div className="overflow-hidden rounded-2xl border"><Table><TableHeader><TableRow><TableHead className="px-5">事件级别</TableHead><TableHead>组件</TableHead><TableHead>对象</TableHead><TableHead>事件名称</TableHead><TableHead>详细描述</TableHead><TableHead>时间</TableHead></TableRow></TableHeader><TableBody>{events.length ? events.map((event) => <TableRow key={`${event.name}-${event.time}`} className="h-[72px]"><TableCell className="px-5"><span className={cn("rounded-full px-3 py-1 text-xs", event.type === "Warning" ? "bg-[#fef2f2] text-[#dc2626]" : "bg-[#f3f4f6] text-[#64748b]")}>{event.type}</span></TableCell><TableCell>{event.component}</TableCell><TableCell>{event.object}</TableCell><TableCell className="font-semibold">{event.reason}</TableCell><TableCell className="max-w-[360px] truncate">{event.message}</TableCell><TableCell className="text-[var(--color-text-tertiary)]">{displayTime(event.time)}</TableCell></TableRow>) : <TableRow><TableCell colSpan={6} className="py-14 text-center text-sm text-[var(--color-text-tertiary)]">暂无 Kubernetes 事件</TableCell></TableRow>}</TableBody></Table></div>
         </DefinitionSection>
       )}
@@ -1498,14 +1555,14 @@ function BatchWorkloadDetailPage({ item, openDefinitionInitially, onBack, onChan
 
       {activeTab === "yaml" && (
         <DefinitionSection title="YAML">
-          <div className="mb-5 flex items-start justify-between"><div><p className="text-sm text-[var(--color-text-secondary)]">当前展示由平台真实创建的 apps/v1 Deployment 定义</p><div className="mt-5 grid grid-cols-4 gap-10"><InfoField label="资源类型" value="Deployment 集合" /><InfoField label="资源名称" value={detail.name} /><InfoField label="命名空间" value={detail.namespace} /><InfoField label="版本状态" value={<LiveStatusBadge status={raw?.status || "pending"} />} /></div></div><button type="button" onClick={() => setYamlEditorOpen(true)} className="inline-flex h-11 items-center gap-2 rounded-xl bg-[#0f172a] px-5 text-sm font-semibold text-white"><Pencil className="h-4 w-4" />编辑 YAML</button></div>
-          <pre className="max-h-[620px] overflow-auto rounded-2xl bg-[#0f1a2d] p-6 font-mono text-sm leading-6 text-[#d4d9e2]">{raw?.yaml || "# 暂无 Deployment YAML"}</pre>
+          <div className="mb-5 flex items-start justify-between"><div><p className="text-sm text-[var(--color-text-secondary)]">当前展示由平台真实创建的 KubeEdge EdgeApplication 定义</p><div className="mt-5 grid grid-cols-4 gap-10"><InfoField label="资源类型" value="EdgeApplication" /><InfoField label="资源名称" value={detail.name} /><InfoField label="命名空间" value={detail.namespace} /><InfoField label="版本状态" value={<LiveStatusBadge status={raw?.status || "pending"} />} /></div></div><button type="button" onClick={() => setYamlEditorOpen(true)} className="inline-flex h-11 items-center gap-2 rounded-xl bg-[#0f172a] px-5 text-sm font-semibold text-white"><Pencil className="h-4 w-4" />编辑 YAML</button></div>
+          <pre className="max-h-[620px] overflow-auto rounded-2xl bg-[#0f1a2d] p-6 font-mono text-sm leading-6 text-[#d4d9e2]">{raw?.yaml || "# 暂无 EdgeApplication YAML"}</pre>
         </DefinitionSection>
       )}
 
       <DeployDialog item={deployOpen ? detail : null} onOpenChange={setDeployOpen} onCreatePlan={async (plan) => { await addBatchWorkloadDeployments(item.id, plan); setDeployOpen(false); await loadDetail(); await onChanged(); }} />
       <BatchYamlEditor open={yamlEditorOpen} title="编辑 YAML" defaultValue={raw?.yaml || ""} onSubmit={async (value) => { try { await updateBatchWorkloadYaml(item.id, value); setYamlEditorOpen(false); await loadDetail(); await onChanged(); } catch (err) { setError(err instanceof Error ? err.message : "YAML 更新失败"); } }} onCancel={() => setYamlEditorOpen(false)} />
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>确认删除批量工作负载？</AlertDialogTitle><AlertDialogDescription>将删除该批次下所有真实 Deployment 和平台控制记录，操作不可恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction className="bg-[#ef4444] hover:bg-[#dc2626]" onClick={() => void onDelete()}>确认删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>确认删除批量工作负载？</AlertDialogTitle><AlertDialogDescription>将删除该批次对应的真实 EdgeApplication 和平台控制记录，操作不可恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction className="bg-[#ef4444] hover:bg-[#dc2626]" onClick={() => void onDelete()}>确认删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
       <AlertDialog open={!!deploymentToDelete} onOpenChange={(open) => !open && setDeploymentToDelete(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>确认删除 Deployment？</AlertDialogTitle><AlertDialogDescription>将从 Kubernetes 删除真实资源 <span className="font-semibold text-[#111827]">{deploymentToDelete}</span>，对应节点组之后可以重新新增部署。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>取消</AlertDialogCancel><AlertDialogAction className="bg-[#ef4444] hover:bg-[#dc2626]" onClick={async () => { if (!deploymentToDelete) return; try { await deleteBatchWorkloadDeployment(item.id, deploymentToDelete); setDeploymentToDelete(null); await loadDetail(); await onChanged(); } catch (err) { setError(err instanceof Error ? err.message : "Deployment 删除失败"); } }}>确认删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
     </div>
   );
@@ -1741,34 +1798,6 @@ function DefinitionGrid({ items }: { items: [string, ReactNode][] }) {
   );
 }
 
-type DeployContainerForm = {
-  id: string;
-  name: string;
-  image: string;
-  imagePullPolicy: "Always" | "IfNotPresent" | "Never";
-  cpuRequest: string;
-  cpuLimit: string;
-  memoryRequest: string;
-  memoryLimit: string;
-  envs: BatchKeyValue[];
-  command: string;
-  args: string;
-};
-
-const createDeployContainer = (index: number, image = ""): DeployContainerForm => ({
-  id: `container-${Date.now()}-${index}`,
-  name: `container-${index + 1}`,
-  image,
-  imagePullPolicy: "IfNotPresent",
-  cpuRequest: "100m",
-  cpuLimit: "500m",
-  memoryRequest: "128Mi",
-  memoryLimit: "256Mi",
-  envs: [],
-  command: "",
-  args: "",
-});
-
 function DeployDialog({ item, onOpenChange, onCreatePlan }: {
   item: BatchWorkload | null;
   onOpenChange: (open: boolean) => void;
@@ -1776,14 +1805,9 @@ function DeployDialog({ item, onOpenChange, onCreatePlan }: {
 }) {
   const [selectedGroups, setSelectedGroups] = useState<string[]>([]);
   const [groupPickerOpen, setGroupPickerOpen] = useState(false);
-  const [replicas, setReplicas] = useState("2");
-  const [replicaEditable, setReplicaEditable] = useState(false);
-  const [activeContainerIndex, setActiveContainerIndex] = useState(0);
-  const [containers, setContainers] = useState<DeployContainerForm[]>([createDeployContainer(0)]);
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
-  const [yamlPreview, setYamlPreview] = useState<{ title: string; yaml: string } | null>(null);
   const [availableNodeGroups, setAvailableNodeGroups] = useState<{ id: string; name: string; nodes: string[]; description: string }[]>([]);
   const [groupsLoading, setGroupsLoading] = useState(false);
 
@@ -1791,26 +1815,9 @@ function DeployDialog({ item, onOpenChange, onCreatePlan }: {
     if (!item) return;
     let active = true;
     setSelectedGroups([]);
-    setReplicas(String(item.raw?.plan?.replicas || 1));
-    setReplicaEditable(false);
-    setActiveContainerIndex(0);
-    const originalContainers = item.raw?.plan?.podTemplate?.containers || [];
-    setContainers(originalContainers.length ? originalContainers.map((container, index) => ({
-      ...createDeployContainer(index, container.image),
-      name: container.name,
-      imagePullPolicy: container.imagePullPolicy || "IfNotPresent",
-      command: (container.command || []).join(" "),
-      args: (container.args || []).join(" "),
-      cpuRequest: container.resources?.requests?.cpu || "",
-      cpuLimit: container.resources?.limits?.cpu || "",
-      memoryRequest: container.resources?.requests?.memory || "",
-      memoryLimit: container.resources?.limits?.memory || "",
-      envs: (container.env || []).map((env, envIndex) => ({ id: `env-${index}-${envIndex}`, key: env.name, value: env.value })),
-    })) : [createDeployContainer(0, item.image)]);
     setSubmitted(false);
     setSubmitting(false);
     setSubmitError("");
-    setYamlPreview(null);
     setGroupsLoading(true);
     void listNodeGroups().then((groups) => {
       if (!active) return;
@@ -1832,72 +1839,31 @@ function DeployDialog({ item, onOpenChange, onCreatePlan }: {
   if (!item) return null;
 
   const selectedNodeGroups = availableNodeGroups.filter((group) => selectedGroups.includes(group.name));
-  const activeContainer = containers[activeContainerIndex] || containers[0];
   const showErrors = submitted;
-  const updateActiveContainer = (patch: Partial<DeployContainerForm>) => setContainers((current) => current.map((container, index) => index === activeContainerIndex ? { ...container, ...patch } : container));
   const toggleGroup = (name: string) => setSelectedGroups((current) => current.includes(name) ? current.filter((group) => group !== name) : [...current, name]);
-  const addContainer = () => {
-    const nextIndex = containers.length + 1;
-    setContainers((current) => [...current, createDeployContainer(nextIndex - 1)]);
-    setActiveContainerIndex(containers.length);
-  };
-  const removeContainer = (index: number) => {
-    if (containers.length <= 1) return;
-    setContainers((current) => current.filter((_, currentIndex) => currentIndex !== index));
-    setActiveContainerIndex((current) => Math.max(0, Math.min(current, containers.length - 2)));
-  };
   const handleSubmit = async () => {
     setSubmitted(true);
-    const count = Number(replicas);
-    if (selectedGroups.length === 0 || !Number.isInteger(count) || count <= 0 || containers.some((container) => !container.name.trim() || !container.image.trim())) return;
+    if (selectedGroups.length === 0) return;
+    const currentPlan = item.raw?.plan;
+    if (!currentPlan) {
+      setSubmitError("当前批量工作负载缺少可复用的工作负载模板");
+      return;
+    }
     setSubmitting(true);
     setSubmitError("");
     try {
       await onCreatePlan({
-        namespace: item.namespace,
-        name: `${item.name}-deployment-plan`,
+        ...currentPlan,
+        namespace: currentPlan.namespace || item.namespace,
+        name: currentPlan.name || item.name,
         targetGroups: selectedGroups,
-        replicas: count,
-        workloadType: "Deployment",
-        podTemplate: {
-          containers: containers.map((container) => ({
-            name: container.name.trim(),
-            image: container.image.trim(),
-            imagePullPolicy: container.imagePullPolicy,
-            command: compactStringList(container.command),
-            args: compactStringList(container.args),
-            env: container.envs.filter((env) => env.key.trim()).map((env) => ({ name: env.key.trim(), value: env.value })),
-            resources: {
-              requests: { cpu: container.cpuRequest.trim(), memory: container.memoryRequest.trim() },
-              limits: { cpu: container.cpuLimit.trim(), memory: container.memoryLimit.trim() },
-            },
-          })),
-        },
       });
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : "创建 Deployment 失败");
+      setSubmitError(err instanceof Error ? err.message : "新增目标节点组失败");
     } finally {
       setSubmitting(false);
     }
   };
-  const buildDeployPatchYaml = (moduleTitle: string) => `# ${moduleTitle}预览；提交后由后端补齐 selector、节点组调度约束和平台管理标签
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  generateName: ${item.name}-
-  namespace: ${item.namespace}
-spec:
-  replicas: ${replicas || 0}
-  template:
-    metadata:
-      annotations:
-        blueedge.io/target-groups: ${selectedGroups.join(",") || "<请选择 NodeGroup>"}
-    spec:
-      containers:
-        - name: ${activeContainer?.name || ""}
-          image: ${activeContainer?.image || ""}
-`;
-
   return (
     <>
       <Dialog open={!!item} onOpenChange={onOpenChange}>
@@ -1905,7 +1871,7 @@ spec:
           <DialogHeader className="h-[68px] shrink-0 border-b border-[#eef1f5] px-6 py-0">
             <div className="flex h-full items-center justify-between">
               <div className="min-w-0">
-                <DialogTitle className="text-base font-semibold text-[#111827]">新增部署</DialogTitle>
+                <DialogTitle className="text-base font-semibold text-[#111827]">新增目标节点组</DialogTitle>
                 <p className="mt-1 truncate text-xs text-[var(--color-text-secondary)]">{item.name}</p>
               </div>
               <button type="button" onClick={() => onOpenChange(false)} className="action-button h-9 w-9"><X className="h-4 w-4" /></button>
@@ -1914,7 +1880,7 @@ spec:
 
           <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-6">
             <div className="rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3 text-sm leading-6 text-[#1d4ed8]">
-              提交后会为每个所选 NodeGroup 创建真实的 Kubernetes apps/v1 Deployment。
+              提交后会把所选 NodeGroup 追加到当前真实 EdgeApplication 的 workloadScope。
             </div>
             {submitError && <div className="rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#dc2626]">{submitError}</div>}
             <section className="rounded-xl border border-[#e5e7eb] bg-white p-4">
@@ -1960,6 +1926,7 @@ spec:
               </div>
             </section>
 
+            {/* EdgeApplication 追加目标组只修改 workloadScope；不展示不会落入 CRD 的伪差异配置。
             <section className="space-y-3">
               <div>
                 <h3 className="text-sm font-semibold text-[#111827]">差异化配置 <span className="text-[#ff4d4f]">*</span></h3>
@@ -2060,12 +2027,19 @@ spec:
                 </div>
               </DeployDiffModule>
             </section>
+            */}
+            <section className="rounded-xl border border-[#dbeafe] bg-[#f8fbff] p-4">
+              <h3 className="text-sm font-semibold text-[#111827]">工作负载模板保持不变</h3>
+              <p className="mt-2 text-xs leading-5 text-[var(--color-text-secondary)]">
+                新增节点组将复用当前 EdgeApplication 的 workloadTemplate；本操作只追加 workloadScope.targetNodeGroups。
+              </p>
+            </section>
           </div>
 
           <DialogFooter className="h-[68px] shrink-0 border-t border-[#eef1f5] px-6 py-0">
             <div className="flex w-full justify-end gap-3">
               <button type="button" disabled={submitting} onClick={() => onOpenChange(false)} className="h-9 rounded-xl border border-[#e2e8f0] bg-white px-5 text-sm font-semibold text-[#111827] hover:bg-[#f8fafc] disabled:opacity-50">取消</button>
-              <button type="button" disabled={submitting} onClick={() => void handleSubmit()} className="h-9 rounded-xl bg-[#0f172a] px-5 text-sm font-semibold text-white hover:bg-[#172033] disabled:opacity-50">{submitting ? "正在创建 Deployment..." : "创建真实部署"}</button>
+              <button type="button" disabled={submitting} onClick={() => void handleSubmit()} className="h-9 rounded-xl bg-[#0f172a] px-5 text-sm font-semibold text-white hover:bg-[#172033] disabled:opacity-50">{submitting ? "正在更新 EdgeApplication..." : "确认新增"}</button>
             </div>
           </DialogFooter>
         </DialogContent>
@@ -2081,7 +2055,7 @@ spec:
           </DialogHeader>
           <div className="min-h-0 flex-1 overflow-y-auto p-6">
             <div className="mb-4 rounded-lg border border-[#bfdbfe] bg-[#eff6ff] px-3 py-2">
-              <p className="text-xs leading-5 text-[#1d4ed8]">这里只显示尚未部署的真实 NodeGroup；可多选并一次创建对应的 Deployment。</p>
+              <p className="text-xs leading-5 text-[#1d4ed8]">这里只显示尚未加入当前 EdgeApplication 的真实 NodeGroup，可多选后一次追加。</p>
             </div>
             <div className="overflow-hidden rounded-xl border border-[#eef1f5]">
               <table className="w-full table-fixed border-collapse">
@@ -2118,50 +2092,8 @@ spec:
         </DialogContent>
       </Dialog>
 
-      {yamlPreview && (
-        <BatchYamlEditor
-          open={!!yamlPreview}
-          title={yamlPreview.title}
-          defaultValue={yamlPreview.yaml}
-          onSubmit={() => setYamlPreview(null)}
-          onCancel={() => setYamlPreview(null)}
-        />
-      )}
     </>
   );
-}
-
-function DeployDiffModule({ title, children, error, defaultOpen = false, onViewYaml }: { title: string; children: ReactNode; error?: string; defaultOpen?: boolean; onViewYaml?: () => void }) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <div className={cn("overflow-hidden rounded-xl border bg-white", error ? "border-[#ef4444]" : "border-[#e5e7eb]")}>
-      <div className={cn("flex items-center justify-between gap-3 px-4 py-3", open && "border-b border-[#f1f5f9]")}>
-        <button type="button" onClick={() => setOpen((current) => !current)} className="flex min-w-0 items-center gap-2 text-left">
-          <ChevronDown className={cn("h-[15px] w-[15px] shrink-0 text-[#64748b] transition-transform", open && "rotate-180")} />
-          <span className="truncate text-sm font-semibold text-[#111827]">{title}</span>
-        </button>
-        {onViewYaml && (
-          <button type="button" onClick={onViewYaml} className="btn-secondary inline-flex shrink-0 items-center gap-1.5 text-xs">
-            <FileCode2 className="h-3 w-3" />
-            查看 YAML
-          </button>
-        )}
-      </div>
-      {error && <p className="-mt-1 px-4 pb-2 text-xs text-[#ef4444]">{error}</p>}
-      {open && (
-        <div className="px-4 pb-4 pt-3">
-          {children}
-          <div className="mt-4 flex items-center justify-end">
-            <button type="button" onClick={() => setOpen(false)} className="btn-black text-xs" style={{ height: 32, padding: "0 14px" }}>确认</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function DeployFieldLabel({ label }: { label: string }) {
-  return <Label className="mb-1.5 block text-xs font-normal text-[var(--color-text-secondary)]">{label}</Label>;
 }
 
 function CreateField({ label, required, children, compact = false, error, errorId }: { label: string; required?: boolean; children: ReactNode; compact?: boolean; error?: string; errorId?: string }) {
