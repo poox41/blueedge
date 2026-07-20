@@ -13,9 +13,6 @@ export interface AccessConfigPayload {
   name?: string;
   edgeUnitRef: string;
   nodeName?: string;
-  architecture: "amd64" | "arm64" | "arm";
-  os?: string;
-  kubeEdgeVersion: string;
   cloudCoreAddress: string;
   protocol?: "https" | "websocket" | "quic";
   driver?: "systemd" | "cgroups";

@@ -48,9 +48,6 @@ interface AccessConfig extends AccessConfigUiModel {
 
 type AccessConfigForm = {
   name: string;
-  architecture: "amd64" | "arm64" | "arm";
-  os: string;
-  kubeEdgeVersion: string;
   driver: "systemd" | "cgroups";
   criAddress: string;
   address: string;
@@ -66,11 +63,10 @@ type AccessLabelDraft = {
   value: string;
 };
 
-type AccessRequiredField = "name" | "kubeEdgeVersion" | "criAddress" | "address" | "registry";
+type AccessRequiredField = "name" | "criAddress" | "address" | "registry";
 
 const accessRequiredMessages: Record<AccessRequiredField, string> = {
   name: "请输入配置名称",
-  kubeEdgeVersion: "请输入实际 KubeEdge 版本",
   criAddress: "请选择 CRI 服务地址",
   address: "请输入访问地址",
   registry: "请输入镜像仓库地址",
@@ -78,9 +74,6 @@ const accessRequiredMessages: Record<AccessRequiredField, string> = {
 
 const defaultAccessForm: AccessConfigForm = {
   name: "",
-  architecture: "amd64",
-  os: "linux",
-  kubeEdgeVersion: "",
   driver: "systemd",
   criAddress: "",
   address: "",
@@ -333,19 +326,6 @@ export function Nodes() {
     }
   }, [searchParams, setSearchParams]);
 
-  useEffect(() => {
-    if (!accessCreateOpen) return;
-    const inheritedVersion = selectedEdgeUnit?.kubeEdgeVersion === "unknown" ? "" : selectedEdgeUnit?.kubeEdgeVersion || "";
-    if (!inheritedVersion) return;
-    setAccessForm((current) => current.kubeEdgeVersion ? current : { ...current, kubeEdgeVersion: inheritedVersion });
-    setAccessFormErrors((current) => {
-      if (!current.kubeEdgeVersion) return current;
-      const next = { ...current };
-      delete next.kubeEdgeVersion;
-      return next;
-    });
-  }, [accessCreateOpen, selectedEdgeUnit]);
-
   const filtered = useMemo(() => {
     let result = data;
     if (nodeSearch.trim()) {
@@ -407,9 +387,6 @@ export function Nodes() {
       await updateAccessConfig(accessLabelTarget.name, {
         edgeUnitRef: accessLabelTarget.edgeUnitRef,
         nodeName: accessLabelTarget.nodeName,
-        architecture: accessLabelTarget.architecture,
-        os: accessLabelTarget.os,
-        kubeEdgeVersion: accessLabelTarget.kubeEdgeVersion,
         cloudCoreAddress: accessLabelTarget.cloudCoreAddress,
         protocol: accessLabelTarget.protocol,
         ...(accessLabelTarget.driver ? { driver: accessLabelTarget.driver } : {}),
@@ -477,9 +454,6 @@ export function Nodes() {
     const payload: AccessConfigPayload = {
       name,
       edgeUnitRef: selectedEdgeUnitName,
-      architecture: accessForm.architecture,
-      os: accessForm.os,
-      kubeEdgeVersion: accessForm.kubeEdgeVersion,
       cloudCoreAddress: accessForm.address,
       protocol: accessForm.protocol === "QUIC" ? "quic" : accessForm.protocol,
       driver: accessForm.driver,
@@ -780,19 +754,7 @@ export function Nodes() {
               <Input id="access-config-name" value={accessForm.name} onChange={(event) => updateAccessFormField("name", event.target.value)} placeholder="请输入配置名称" aria-invalid={Boolean(accessFormErrors.name)} aria-describedby={accessFormErrors.name ? "access-config-name-error" : undefined} className={cn("h-11 rounded-xl", accessFormErrors.name && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")} />
             </AccessField>
             <div className="rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3 text-sm leading-6 text-[#1d4ed8]">
-              接入配置将自动关联当前边缘单元 <span className="font-semibold">{selectedEdgeUnitName || "未选择"}</span>，注册节点名称默认与配置名称一致。
-            </div>
-            <div className="grid gap-4 md:grid-cols-2">
-              <AccessField label="节点架构" required>
-                <select value={accessForm.architecture} onChange={(event) => setAccessForm({ ...accessForm, architecture: event.target.value as AccessConfigForm["architecture"] })} className="h-11 w-full rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm outline-none focus:border-[var(--color-brand)]">
-                  <option value="amd64">amd64</option>
-                  <option value="arm64">arm64</option>
-                  <option value="arm">arm</option>
-                </select>
-              </AccessField>
-              <AccessField label="KubeEdge 版本" required error={accessFormErrors.kubeEdgeVersion} errorId="access-config-kubeEdgeVersion-error">
-                <Input id="access-config-kubeEdgeVersion" value={accessForm.kubeEdgeVersion} onChange={(event) => updateAccessFormField("kubeEdgeVersion", event.target.value)} placeholder="请输入实际 KubeEdge 版本" aria-invalid={Boolean(accessFormErrors.kubeEdgeVersion)} aria-describedby={accessFormErrors.kubeEdgeVersion ? "access-config-kubeEdgeVersion-error" : undefined} className={cn("h-11 rounded-xl", accessFormErrors.kubeEdgeVersion && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")} />
-              </AccessField>
+              接入配置将自动关联当前边缘单元 <span className="font-semibold">{selectedEdgeUnitName || "未选择"}</span>，KubeEdge 版本自动继承为 <span className="font-semibold">{selectedEdgeUnit?.kubeEdgeVersion && selectedEdgeUnit.kubeEdgeVersion !== "unknown" ? selectedEdgeUnit.kubeEdgeVersion : "未配置"}</span>；注册节点名称默认与配置名称一致，节点架构由接入脚本自动检测。
             </div>
             <AccessField label="驱动方式" required>
               <SegmentedChoice

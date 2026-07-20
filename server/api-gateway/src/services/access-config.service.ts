@@ -30,7 +30,6 @@ import {
 } from "./edge-unit-source.service.js";
 
 const accessConfigNameLabel = "blueedge.io/access-config";
-const accessConfigArchitectures = new Set(["amd64", "arm64", "arm"]);
 const accessConfigProtocols = new Set(["https", "websocket", "quic", "QUIC"]);
 const accessConfigDrivers = new Set(["systemd", "cgroups"]);
 const accessConfigStatuses = new Set(["pending", "registered", "ready", "abnormal", "expired", "unknown"]);
@@ -53,7 +52,9 @@ export function buildAccessConfigData(body: any, existingData?: Record<string, s
   const name = readStringField(body, "name") || existingData?.name || "";
   const nodeName = options.allowNodeName === false ? existingData?.nodeName || "" : readStringField(body, "nodeName") || existingData?.nodeName || name;
   const edgeUnitRef = readStringField(body, "edgeUnitRef") || existingData?.edgeUnitRef || "";
-  const architecture = readStringField(body, "architecture") || existingData?.architecture || "";
+  // The installation script detects the target machine architecture at runtime.
+  // Keep legacy stored values readable, while new records explicitly use auto.
+  const architecture = existingData?.architecture || "auto";
   const os = readStringField(body, "os") || existingData?.os || "linux";
   const kubeEdgeVersion = readStringField(body, "kubeEdgeVersion") || existingData?.kubeEdgeVersion || "";
   const cloudCoreAddress = readStringField(body, "cloudCoreAddress") || existingData?.cloudCoreAddress || "";
@@ -67,14 +68,11 @@ export function buildAccessConfigData(body: any, existingData?: Record<string, s
   const status = existingData?.status && accessConfigStatuses.has(existingData.status) ? existingData.status : "pending";
   const createdAt = existingData?.createdAt || new Date().toISOString();
 
-  if (!name || !nodeName || !edgeUnitRef || !architecture || !kubeEdgeVersion) {
-    throw new Error("name, nodeName, edgeUnitRef, architecture and kubeEdgeVersion are required");
+  if (!name || !nodeName || !edgeUnitRef || !kubeEdgeVersion) {
+    throw new Error("name, nodeName, edgeUnitRef and kubeEdgeVersion are required");
   }
   if (!isValidKubernetesName(name) || !isValidKubernetesName(nodeName)) {
     throw new Error("name and nodeName must be valid Kubernetes resource names");
-  }
-  if (!accessConfigArchitectures.has(architecture)) {
-    throw new Error("architecture must be one of amd64, arm64, arm");
   }
   if (os !== "linux") {
     throw new Error("os must be linux");
@@ -144,7 +142,7 @@ function accessConfigMatches(configMap: any, name: string): boolean {
 
 function isValidAccessConfigMap(configMap: any, warnings: EdgeUnitWarning[]): boolean {
   const data = dataOf(configMap);
-  if (data.name && data.edgeUnitRef && data.nodeName && data.architecture && data.kubeEdgeVersion) return true;
+  if (data.name && data.edgeUnitRef && data.nodeName && data.kubeEdgeVersion) return true;
   warnings.push({
     source: "access-config.configmap",
     message: `Invalid AccessConfig ConfigMap ${metadataOf(configMap).namespace || blueedgeNamespace()}/${metadataOf(configMap).name || "-"}: missing required data fields`,
@@ -165,7 +163,7 @@ function buildAccessConfigView(configMap: any, nodes: any[]) {
     edgeUnitRef: data.edgeUnitRef,
     nodeGroupRef: data.nodeGroupRef,
     nodeName: data.nodeName,
-    architecture: data.architecture,
+    architecture: data.architecture || "auto",
     os: data.os || "linux",
     kubeEdgeVersion: data.kubeEdgeVersion,
     cloudCoreAddress: data.cloudCoreAddress || "",
@@ -264,15 +262,22 @@ function normalizeVersion(value: string): string {
   return value.startsWith("v") ? value : `v${value}`;
 }
 
-function buildPrepareCommand(version: string, architecture: string): string {
+export function buildPrepareCommand(version: string): string {
   const normalizedVersion = normalizeVersion(version);
-  const archive = `keadm-${normalizedVersion}-linux-${architecture}.tar.gz`;
-  const url = `https://github.com/kubeedge/kubeedge/releases/download/${normalizedVersion}/${archive}`;
   return [
     "set -euo pipefail",
+    'machine_arch="$(uname -m)"',
+    'case "$machine_arch" in',
+    '  x86_64|amd64) keadm_arch="amd64" ;;',
+    '  aarch64|arm64) keadm_arch="arm64" ;;',
+    '  armv7l|armv6l|arm) keadm_arch="arm" ;;',
+    '  *) echo "Unsupported system architecture: $machine_arch" >&2; exit 1 ;;',
+    "esac",
+    `archive="keadm-${normalizedVersion}-linux-\${keadm_arch}.tar.gz"`,
+    `download_url="https://github.com/kubeedge/kubeedge/releases/download/${normalizedVersion}/\${archive}"`,
     'workdir="$(mktemp -d)"',
-    `curl -fL ${url} -o \"$workdir/${archive}\"`,
-    `tar -xzf \"$workdir/${archive}\" -C \"$workdir\"`,
+    'curl -fL "$download_url" -o "$workdir/$archive"',
+    'tar -xzf "$workdir/$archive" -C "$workdir"',
     'keadm_bin="$(find "$workdir" -type f -name keadm -print -quit)"',
     'test -n "$keadm_bin"',
     'install -m 0755 "$keadm_bin" /usr/local/bin/keadm',
@@ -329,13 +334,17 @@ export async function createAccessConfig(body: any) {
   if (existing) {
     return { status: 409, body: { message: `AccessConfig ${name} already exists`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
-  if (!await resolveEdgeUnitReference(edgeUnitRef, warnings)) {
+  const edgeUnit = await resolveEdgeUnitReference(edgeUnitRef, warnings);
+  if (!edgeUnit) {
     return { status: 400, body: { message: `EdgeUnit ${edgeUnitRef} does not exist`, ...(warnings.length > 0 ? { warnings } : {}) } };
+  }
+  if (!edgeUnit.kubeEdgeVersion || edgeUnit.kubeEdgeVersion === "unknown") {
+    return { status: 400, body: { message: `EdgeUnit ${edgeUnitRef} does not have a configured KubeEdge version`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
 
   let configMap;
   try {
-    configMap = buildAccessConfigMap(body);
+    configMap = buildAccessConfigMap({ ...body, kubeEdgeVersion: edgeUnit.kubeEdgeVersion });
   } catch (error) {
     return validationError(error, "Invalid EdgeUnit payload");
   }
@@ -369,13 +378,17 @@ export async function updateAccessConfig(name: string, body: any) {
   }
 
   const nextEdgeUnitRef = readStringField(body, "edgeUnitRef") || dataOf(existing).edgeUnitRef;
-  if (!await resolveEdgeUnitReference(nextEdgeUnitRef, warnings)) {
+  const edgeUnit = await resolveEdgeUnitReference(nextEdgeUnitRef, warnings);
+  if (!edgeUnit) {
     return { status: 400, body: { message: `EdgeUnit ${nextEdgeUnitRef} does not exist`, ...(warnings.length > 0 ? { warnings } : {}) } };
+  }
+  if (!edgeUnit.kubeEdgeVersion || edgeUnit.kubeEdgeVersion === "unknown") {
+    return { status: 400, body: { message: `EdgeUnit ${nextEdgeUnitRef} does not have a configured KubeEdge version`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
 
   let configMap;
   try {
-    configMap = buildAccessConfigMap(body, existing, { allowNodeName: !existingView.registered });
+    configMap = buildAccessConfigMap({ ...body, kubeEdgeVersion: edgeUnit.kubeEdgeVersion }, existing, { allowNodeName: !existingView.registered });
   } catch (error) {
     return validationError(error, "Invalid EdgeUnit payload");
   }
@@ -423,7 +436,7 @@ export async function getInstallCommand(name: string, nodeNameOverride: string |
     return { status: 400, body: { message: "nodeName must be a valid Kubernetes resource name" } };
   }
   const commandTemplate = buildJoinCommand(item, "<short-lived-token>", nodeName);
-  const prepareCommand = buildPrepareCommand(item.kubeEdgeVersion, item.architecture);
+  const prepareCommand = buildPrepareCommand(item.kubeEdgeVersion);
   try {
     const { token, expiresAt } = await getKubeEdgeJoinToken();
     return {

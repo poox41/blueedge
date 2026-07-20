@@ -677,7 +677,7 @@ function BatchWorkloadActions({ open, onOpenChange, onView, onEditYaml, onDeploy
             <div className="px-1.5">
               <BatchActionMenuItem icon={<Eye className="h-3.5 w-3.5" />} label="查看定义" onClick={onView} />
               <BatchActionMenuItem icon={<Pencil className="h-3.5 w-3.5" />} label="编辑 YAML" onClick={onEditYaml} />
-              <BatchActionMenuItem icon={<Upload className="h-3.5 w-3.5" />} label="部署" onClick={onDeploy} />
+              <BatchActionMenuItem icon={<Upload className="h-3.5 w-3.5" />} label="添加部署" onClick={onDeploy} />
             </div>
             <div className="my-1.5 border-t border-[#eef2f7]" />
             <div className="px-1.5"><BatchActionMenuItem danger icon={<Trash2 className="h-3.5 w-3.5" />} label="删除" onClick={onDelete} /></div>

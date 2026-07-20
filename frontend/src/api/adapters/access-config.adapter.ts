@@ -1,5 +1,5 @@
 export type AccessConfigStatus = "pending" | "registered" | "ready" | "abnormal" | "expired" | "unknown";
-export type AccessConfigArchitecture = "amd64" | "arm64" | "arm";
+export type AccessConfigArchitecture = "auto" | "amd64" | "arm64" | "arm";
 
 export interface AccessConfigWarning {
   source: string;

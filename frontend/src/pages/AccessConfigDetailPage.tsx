@@ -152,9 +152,6 @@ export function AccessConfigDetailPage() {
       const result = await updateAccessConfig(config.name, {
         edgeUnitRef: config.edgeUnitRef,
         nodeName: config.nodeName,
-        architecture: config.architecture,
-        os: config.os,
-        kubeEdgeVersion: config.kubeEdgeVersion,
         cloudCoreAddress: form.address.trim(),
         protocol: form.protocol,
         driver: form.driver,

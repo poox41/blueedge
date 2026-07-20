@@ -220,11 +220,17 @@ export async function getNodeGroupByName(name: string): Promise<any | null> {
   }
 }
 
-export async function resolveEdgeUnitReference(edgeUnitRef: string, warnings: EdgeUnitWarning[]): Promise<{ name: string } | null> {
+export async function resolveEdgeUnitReference(
+  edgeUnitRef: string,
+  warnings: EdgeUnitWarning[],
+): Promise<{ name: string; kubeEdgeVersion: string } | null> {
   const { edgeUnitConfigMaps } = await collectEdgeUnitSources(warnings, { includeNodeGroups: false });
   const matchedConfigMap = edgeUnitConfigMaps.find((configMap) => edgeUnitConfigMapMatches(configMap, edgeUnitRef));
   if (matchedConfigMap && isValidEdgeUnitConfigMap(matchedConfigMap, warnings)) {
-    return { name: edgeUnitConfigMapName(matchedConfigMap) };
+    return {
+      name: edgeUnitConfigMapName(matchedConfigMap),
+      kubeEdgeVersion: dataOf(matchedConfigMap).kubeEdgeVersion || "",
+    };
   }
   return null;
 }

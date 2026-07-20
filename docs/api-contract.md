@@ -109,9 +109,6 @@ interface AccessConfigPayload {
   name?: string;
   edgeUnitRef: string;
   nodeName?: string;
-  architecture: "amd64" | "arm64" | "arm";
-  os?: string;
-  kubeEdgeVersion: string;
   cloudCoreAddress: string;
   protocol?: "https" | "websocket" | "quic";
   driver?: "systemd" | "cgroups";
@@ -133,6 +130,8 @@ registry, description, labelsJson, status, createdAt
 `nodeGroupRef` 仅作为旧数据结构兼容字段保留，新建和更新 AccessConfig 时固定为空；边缘节点不再从 EdgeUnit 继承 NodeGroup。
 
 工作台内创建接入配置时，`edgeUnitRef` 自动继承当前选择的 EdgeUnit；前端无需重复选择。`nodeName` 可省略，服务端默认使用 `name` 作为未来注册的节点名称。
+
+`kubeEdgeVersion` 由服务端从所属 EdgeUnit 强制继承，客户端不能自行指定。新配置的 `architecture` 保存为 `auto`；准备 keadm 的脚本在目标机器执行时通过 `uname -m` 识别架构，并将 `x86_64/amd64`、`aarch64/arm64`、`armv7l/armv6l/arm` 分别映射为 KubeEdge 发布包使用的 `amd64`、`arm64`、`arm`。
 
 - `driver=systemd` 在安装命令中映射为 `--cgroupdriver=systemd`。
 - `driver=cgroups` 在安装命令中映射为 `--cgroupdriver=cgroupfs`。
