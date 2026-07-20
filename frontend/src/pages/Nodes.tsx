@@ -4,6 +4,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -68,7 +69,7 @@ type AccessRequiredField = "name" | "criAddress" | "address" | "registry";
 const accessRequiredMessages: Record<AccessRequiredField, string> = {
   name: "请输入配置名称",
   criAddress: "请选择 CRI 服务地址",
-  address: "请输入访问地址",
+  address: "请选择访问地址",
   registry: "请输入镜像仓库地址",
 };
 
@@ -78,7 +79,7 @@ const defaultAccessForm: AccessConfigForm = {
   criAddress: "",
   address: "",
   protocol: "websocket",
-  registry: "registry.cn-beijing.aliyuncs.com/kubeedge",
+  registry: "registry.cn-shanghai.aliyuncs.com/kubeedge",
   description: "",
   labelRules: [
     { key: "blueedge.io/managed-by", value: "blueedge" },
@@ -90,6 +91,20 @@ function statusText(status: EdgeNodeView["status"]) {
   if (status === "Ready") return "就绪";
   if (status === "NotReady") return "未就绪";
   return "未知";
+}
+
+function formatCloudCoreEndpoint(address: string, port: string): string {
+  const trimmedAddress = address.trim();
+  const trimmedPort = port.trim();
+  if (!trimmedAddress || !/^\d+$/.test(trimmedPort)) return "";
+  const bracketedIpv6 = trimmedAddress.match(/^\[([^\]]+)](?::\d+)?$/);
+  if (bracketedIpv6) return `[${bracketedIpv6[1]}]:${trimmedPort}`;
+  if (trimmedAddress.includes(":")) {
+    const hostWithPort = trimmedAddress.match(/^([^:]+):\d+$/);
+    if (hostWithPort) return `${hostWithPort[1]}:${trimmedPort}`;
+    return `[${trimmedAddress}]:${trimmedPort}`;
+  }
+  return `${trimmedAddress}:${trimmedPort}`;
 }
 
 function statusColor(status: EdgeNodeView["status"]) {
@@ -262,6 +277,21 @@ export function Nodes() {
   const [accessForm, setAccessForm] = useState<AccessConfigForm>(defaultAccessForm);
   const [accessFormErrors, setAccessFormErrors] = useState<Partial<Record<AccessRequiredField, string>>>({});
   const [pageSize, setPageSize] = useState(10);
+  const accessAddressOptions = useMemo(
+    () => Array.from(new Set((selectedEdgeUnit?.accessAddresses || []).map((address) => address.trim()).filter(Boolean))),
+    [selectedEdgeUnit?.accessAddresses],
+  );
+  const selectedProtocolPort = accessForm.protocol === "QUIC"
+    ? selectedEdgeUnit?.ports?.quic || ""
+    : selectedEdgeUnit?.ports?.websocket || "";
+
+  useEffect(() => {
+    if (!accessCreateOpen) return;
+    setAccessForm((current) => {
+      if (accessAddressOptions.includes(current.address)) return current;
+      return { ...current, address: accessAddressOptions[0] || "" };
+    });
+  }, [accessAddressOptions, accessCreateOpen]);
 
   const loadAccessConfigs = useCallback(async () => {
     setAccessError("");
@@ -424,6 +454,9 @@ export function Nodes() {
       const value = accessForm[field];
       if (typeof value !== "string" || !value.trim()) nextErrors[field] = accessRequiredMessages[field];
     });
+    if (accessForm.address.trim() && !/^\d+$/.test(selectedProtocolPort)) {
+      nextErrors.address = `当前边缘单元未配置${accessForm.protocol === "QUIC" ? "QUIC" : "WebSocket"}端口`;
+    }
     setAccessFormErrors(nextErrors);
     const firstInvalidField = (Object.keys(accessRequiredMessages) as AccessRequiredField[]).find((field) => nextErrors[field]);
     if (firstInvalidField) {
@@ -454,7 +487,7 @@ export function Nodes() {
     const payload: AccessConfigPayload = {
       name,
       edgeUnitRef: selectedEdgeUnitName,
-      cloudCoreAddress: accessForm.address,
+      cloudCoreAddress: formatCloudCoreEndpoint(accessForm.address, selectedProtocolPort),
       protocol: accessForm.protocol === "QUIC" ? "quic" : accessForm.protocol,
       driver: accessForm.driver,
       criAddress: accessForm.criAddress,
@@ -764,14 +797,28 @@ export function Nodes() {
               />
             </AccessField>
             <AccessField label="CRI 服务地址" required error={accessFormErrors.criAddress} errorId="access-config-criAddress-error">
-              <select id="access-config-criAddress" value={accessForm.criAddress} onChange={(event) => updateAccessFormField("criAddress", event.target.value)} aria-invalid={Boolean(accessFormErrors.criAddress)} aria-describedby={accessFormErrors.criAddress ? "access-config-criAddress-error" : undefined} className={cn("h-11 w-full rounded-xl border-2 bg-white px-4 text-sm outline-none", accessFormErrors.criAddress ? "border-[var(--color-danger)] focus:border-[var(--color-danger)]" : "border-[var(--color-input-border)] focus:border-[var(--color-brand)]")}>
-                <option value="">点击读取现有 CRI 服务地址</option>
-                <option value="/run/containerd/containerd.sock">/run/containerd/containerd.sock</option>
-                <option value="/var/run/dockershim.sock">/var/run/dockershim.sock</option>
-              </select>
+              <Select value={accessForm.criAddress || undefined} onValueChange={(value) => updateAccessFormField("criAddress", value)}>
+                <SelectTrigger id="access-config-criAddress" aria-invalid={Boolean(accessFormErrors.criAddress)} aria-describedby={accessFormErrors.criAddress ? "access-config-criAddress-error" : undefined} className="h-11 w-full rounded-xl px-4 text-sm">
+                  <SelectValue placeholder="点击读取现有 CRI 服务地址" />
+                </SelectTrigger>
+                <SelectContent position="popper" align="start" className="z-[100] rounded-2xl p-2 shadow-[0_16px_36px_rgba(15,23,42,0.14)]" viewportClassName="h-auto">
+                  <SelectItem value="/run/containerd/containerd.sock" className="min-h-11 rounded-xl px-4 py-3 text-sm">/run/containerd/containerd.sock</SelectItem>
+                  <SelectItem value="/var/run/dockershim.sock" className="min-h-11 rounded-xl px-4 py-3 text-sm">/var/run/dockershim.sock</SelectItem>
+                </SelectContent>
+              </Select>
             </AccessField>
             <AccessField label="访问地址" required error={accessFormErrors.address} errorId="access-config-address-error">
-              <Input id="access-config-address" value={accessForm.address} onChange={(event) => updateAccessFormField("address", event.target.value)} placeholder="example.com:10000" aria-invalid={Boolean(accessFormErrors.address)} aria-describedby={accessFormErrors.address ? "access-config-address-error" : undefined} className={cn("h-11 rounded-xl", accessFormErrors.address && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")} />
+              <Select value={accessForm.address || undefined} onValueChange={(value) => updateAccessFormField("address", value)} disabled={accessAddressOptions.length === 0}>
+                <SelectTrigger id="access-config-address" aria-invalid={Boolean(accessFormErrors.address)} aria-describedby={accessFormErrors.address ? "access-config-address-error" : undefined} className="h-11 w-full rounded-xl px-4 text-sm">
+                  <SelectValue placeholder={accessAddressOptions.length ? "请选择边缘单元访问地址" : "当前边缘单元未配置访问地址"} />
+                </SelectTrigger>
+                <SelectContent position="popper" align="start" className="z-[100] rounded-2xl p-2 shadow-[0_16px_36px_rgba(15,23,42,0.14)]" viewportClassName="h-auto">
+                  {accessAddressOptions.map((address) => <SelectItem key={address} value={address} className="min-h-11 rounded-xl px-4 py-3 text-sm">{address}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
+                将自动使用当前边缘单元的 {accessForm.protocol === "QUIC" ? "QUIC" : "WebSocket"} 端口：{selectedProtocolPort || "未配置"}
+              </p>
             </AccessField>
             <AccessField label="通信协议" required>
               <SegmentedChoice
@@ -783,8 +830,7 @@ export function Nodes() {
             <AccessField label="镜像仓库" required error={accessFormErrors.registry} errorId="access-config-registry-error">
               <Input id="access-config-registry" value={accessForm.registry} onChange={(event) => updateAccessFormField("registry", event.target.value)} aria-invalid={Boolean(accessFormErrors.registry)} aria-describedby={accessFormErrors.registry ? "access-config-registry-error" : undefined} className={cn("h-11 rounded-xl", accessFormErrors.registry && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")} />
               <div className="mt-3 flex gap-3">
-                <Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => updateAccessFormField("registry", "registry.cn-shanghai.aliyuncs.com/kubeedge/default")}>引用云端地址</Button>
-                <Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => updateAccessFormField("registry", "registry.cn-beijing.aliyuncs.com/kubeedge")}>一键填充默认仓库</Button>
+                <Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => updateAccessFormField("registry", "registry.cn-shanghai.aliyuncs.com/kubeedge")}>引用云端地址</Button>
               </div>
               <div className="mt-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-soft)] p-4 text-sm text-[var(--color-text-secondary)]">
                 <p className="mb-2 font-semibold text-[var(--color-text-primary)]">镜像仓库说明</p>

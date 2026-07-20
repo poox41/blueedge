@@ -10,7 +10,6 @@ import {
   HelpCircle,
   Pencil,
   Plus,
-  RotateCcw,
   Server,
   Tag,
   Trash2,
@@ -288,7 +287,7 @@ export function AccessConfigDetailPage() {
             <EditField label="镜像仓库" required>
               <Input id="access-config-registry" value={form.registry} onChange={(event) => { setForm({ ...form, registry: event.target.value }); formValidation.clearError("registry"); }} aria-invalid={Boolean(formValidation.errors.registry)} className="h-11 rounded-xl" />
               <RequiredFieldError id="access-config-registry-error" message={formValidation.errors.registry} />
-              <div className="mt-3 flex flex-wrap gap-2"><Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => setForm({ ...form, registry: config.cloudCoreAddress || form.registry })}><Cloud className="h-4 w-4" />引用云端地址</Button><Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => setForm({ ...form, registry: "registry.cn-beijing.aliyuncs.com/kubeedge" })}><RotateCcw className="h-4 w-4" />一键填充默认仓库</Button></div>
+              <div className="mt-3 flex flex-wrap gap-2"><Button type="button" variant="outline" className="h-9 rounded-xl" onClick={() => setForm({ ...form, registry: "registry.cn-shanghai.aliyuncs.com/kubeedge" })}><Cloud className="h-4 w-4" />引用云端地址</Button></div>
               <div className="mt-4 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-soft)] p-4 text-sm text-[var(--color-text-secondary)]"><p className="flex items-center gap-2 font-semibold text-[var(--color-text-primary)]"><HelpCircle className="h-4 w-4 text-[#f59e0b]" />镜像仓库说明</p><p className="mt-2">用于拉取边端组件，建议使用边缘节点可稳定访问的企业仓库。</p></div>
             </EditField>
             <EditField label="描述"><Textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} className="min-h-24 rounded-xl" /></EditField>

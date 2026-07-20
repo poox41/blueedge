@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "project": {
+    "name": "BlueEdge",
+    "gitOrigin": "https://github.com/bluedot-ai/blueedge.git",
+    "markerFiles": [
+      "frontend/Dockerfile",
+      "server/api-gateway/Dockerfile",
+      "deploy/bff.Dockerfile",
+      "deploy/k8s/blueedge/12-frontend.yaml"
+    ]
+  },
+  "platform": "linux/amd64",
+  "registry": {
+    "address": "183.95.195.121:31438",
+    "namespace": "blueedge"
+  },
+  "deployment": {
+    "sshHost": "14.103.163.121",
+    "sshUser": "root",
+    "kubernetesNamespace": "blueedge",
+    "rolloutTimeout": "240s"
+  },
+  "components": {
+    "frontend": {
+      "image": "frontend",
+      "dockerfile": "frontend/Dockerfile",
+      "context": ".",
+      "deployment": "blueedge-frontend",
+      "container": "blueedge-frontend",
+      "changePaths": [
+        "frontend/",
+        "deploy/frontend.nginx.conf"
+      ],
+      "validation": {
+        "cwd": "frontend",
+        "command": ["npm", "run", "build"]
+      }
+    },
+    "api-gateway": {
+      "image": "api-gateway",
+      "dockerfile": "server/api-gateway/Dockerfile",
+      "context": "server/api-gateway",
+      "deployment": "blueedge-api-gateway",
+      "container": "blueedge-api-gateway",
+      "changePaths": [
+        "server/api-gateway/"
+      ],
+      "validation": {
+        "cwd": "server/api-gateway",
+        "command": ["npm", "test"]
+      }
+    },
+    "bff": {
+      "image": "bff",
+      "dockerfile": "deploy/bff.Dockerfile",
+      "context": ".",
+      "deployment": "blueedge-bff",
+      "container": "blueedge-bff",
+      "changePaths": [
+        "deploy/bff.Dockerfile",
+        "upstream/kubeedge-dashboard/modules/api/",
+        "upstream/kubeedge-dashboard/modules/common/"
+      ]
+    }
+  },
+  "publicChecks": [
+    {
+      "name": "frontend",
+      "url": "http://14.103.163.121:30080/",
+      "expectedStatus": 200,
+      "attempts": 5,
+      "intervalSeconds": 3
+    },
+    {
+      "name": "api-gateway-health",
+      "url": "http://14.103.163.121:30080/product-api/healthz",
+      "expectedStatus": 200,
+      "attempts": 5,
+      "intervalSeconds": 3
+    }
+  ]
+}

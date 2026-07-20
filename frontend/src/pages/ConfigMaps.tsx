@@ -126,6 +126,20 @@ const maskSecretData = (resource: KubeResource): Record<string, string> => {
   return Object.fromEntries(Array.from(keys).map((key) => [key, "******"]));
 };
 
+const formatSecretType = (value: unknown): string => {
+  const type = typeof value === "string" && value.trim() ? value.trim() : "Opaque";
+  const labels: Record<string, string> = {
+    Opaque: "默认（Opaque）",
+    "kubernetes.io/dockerconfigjson": "镜像仓库信息（kubernetes.io/dockerconfigjson）",
+    "kubernetes.io/dockercfg": "镜像仓库信息（kubernetes.io/dockercfg）",
+    "kubernetes.io/tls": "TLS 证书（kubernetes.io/tls）",
+    "kubernetes.io/basic-auth": "用户名和密码（kubernetes.io/basic-auth）",
+    "kubernetes.io/ssh-auth": "SSH 认证（kubernetes.io/ssh-auth）",
+    "kubernetes.io/service-account-token": "服务账号令牌（kubernetes.io/service-account-token）",
+  };
+  return labels[type] || type;
+};
+
 const getSecretValues = (resource: KubeResource | undefined): Record<string, string> => ({
   ...stringifyRecord(asRecord(resource?.data)),
   ...stringifyRecord(asRecord(resource?.stringData)),
@@ -167,7 +181,9 @@ const toConfigItem = (resource: KubeResource, type: ConfigType): ConfigItem => {
     namespace,
     labels: getLabels(resource),
     createTime: getCreatedAt(resource),
-    dataCount: Object.keys(data).length,
+    dataCount: type === "密钥" && typeof resource.dataCount === "number"
+      ? resource.dataCount
+      : Object.keys(data).length,
     mountTargets: [],
     description: annotations["blueedge.io/description"] || annotations.description || "",
     data,
@@ -733,7 +749,7 @@ export function ConfigMaps() {
                   <TableHead className="table-header-cell w-[140px]">密钥别名</TableHead>
                   <TableHead className="table-header-cell w-[110px]">命名空间</TableHead>
                   <TableHead className="table-header-cell w-[30%]">标签</TableHead>
-                  <TableHead className="table-header-cell w-[90px]">类型</TableHead>
+                  <TableHead className="table-header-cell w-[240px]">类型</TableHead>
                   <TableHead className="table-header-cell w-[80px]">数据数量</TableHead>
                   <TableHead className="table-header-cell w-[150px]">创建时间</TableHead>
                 </>
@@ -771,7 +787,16 @@ export function ConfigMaps() {
                 {activeTab === "secret" && <TableCell className="table-cell text-xs text-[#374151]">{row.namespace}</TableCell>}
                 <TableCell className="table-cell max-w-[360px] truncate text-xs text-[var(--color-text-secondary)]" title={formatLabels(row.labels)}>{formatLabels(row.labels)}</TableCell>
                 {activeTab === "config" && <TableCell className="table-cell text-xs text-[#374151]">{row.namespace}</TableCell>}
-                {activeTab === "secret" && <TableCell className="table-cell"><span className="rounded-md bg-[var(--color-warning-soft)] px-2 py-0.5 text-xs text-[var(--color-warning)]">Opaque</span></TableCell>}
+                {activeTab === "secret" && (
+                  <TableCell className="table-cell">
+                    <span
+                      className="inline-block max-w-[230px] truncate rounded-md bg-[var(--color-warning-soft)] px-2 py-0.5 text-xs text-[var(--color-warning)]"
+                      title={formatSecretType(row.raw?.type)}
+                    >
+                      {formatSecretType(row.raw?.type)}
+                    </span>
+                  </TableCell>
+                )}
                 {activeTab === "secret" && <TableCell className="table-cell text-xs text-[var(--color-text-secondary)]">{row.dataCount} Keys</TableCell>}
                 <TableCell className="table-cell text-xs text-[var(--color-text-tertiary)]">{row.createTime}</TableCell>
                 <TableCell className="table-action-cell" onClick={(event) => event.stopPropagation()}>
