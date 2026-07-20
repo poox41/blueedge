@@ -165,9 +165,9 @@ async function main() {
     insightStatus: "unknown",
     monitorStatus: "unknown",
   };
-  await request("POST", "/blueedge/edge-units", { ...edgeUnitBase, name: resources.edgeUnits[0], nodeGroupRef: resources.nodeGroups[0], description: "QA isolation A" });
-  await request("POST", "/blueedge/edge-units", { ...edgeUnitBase, name: resources.edgeUnits[1], nodeGroupRef: resources.nodeGroups[1], description: "QA isolation B" });
-  await request("POST", "/blueedge/edge-units", { ...edgeUnitBase, name: resources.edgeUnits[2], nodeGroupRef: "", description: "QA empty edge unit" });
+  await request("POST", "/blueedge/edge-units", { ...edgeUnitBase, name: resources.edgeUnits[0], description: "QA isolation A" });
+  await request("POST", "/blueedge/edge-units", { ...edgeUnitBase, name: resources.edgeUnits[1], description: "QA isolation B" });
+  await request("POST", "/blueedge/edge-units", { ...edgeUnitBase, name: resources.edgeUnits[2], description: "QA empty edge unit" });
   pass("created qa-edge-unit-a, qa-edge-unit-b and qa-edge-unit-empty");
 
   await request("POST", `/blueedge/edge-units/${resources.edgeUnits[0]}/deployments`, deployment(resources.deployments[0]));
@@ -184,8 +184,7 @@ async function main() {
   const b = (await request("GET", `/blueedge/edge-units/${resources.edgeUnits[1]}/resources`)).payload.item;
   const empty = (await request("GET", `/blueedge/edge-units/${resources.edgeUnits[2]}/resources`)).payload.item;
 
-  assert(a.nodeNames.includes("qa-virtual-edge-a") && !a.nodeNames.includes("qa-virtual-edge-b"), "EdgeUnit A owns only its NodeGroup node");
-  assert(b.nodeNames.includes("qa-virtual-edge-b") && !b.nodeNames.includes("qa-virtual-edge-a"), "EdgeUnit B owns only its NodeGroup node");
+  assert(a.nodeNames.length === 0 && b.nodeNames.length === 0, "NodeGroup membership does not assign nodes to an EdgeUnit");
   const aDeploymentNames = a.deployments.map((item) => item.name).sort();
   const bDeploymentNames = b.deployments.map((item) => item.name).sort();
   console.log(`INFO EdgeUnit A deployments: ${aDeploymentNames.join(",")}`);
@@ -194,7 +193,7 @@ async function main() {
   assert(bDeploymentNames.length === 4 && bDeploymentNames.every((name) => name.startsWith("qa-b-")), "EdgeUnit B owns its direct workloads and application Deployments only");
   assert(a.edgeApplications.length === 1 && a.edgeApplications[0].name === resources.edgeApplications[0], "EdgeUnit A application count is isolated at 1");
   assert(b.edgeApplications.length === 2 && b.edgeApplications.every((item) => item.name.startsWith("qa-b-edgeapp-")), "EdgeUnit B application count is isolated at 2");
-  assert(empty.nodeNames.length === 0 && empty.deployments.length === 0 && empty.edgeApplications.length === 0, "EdgeUnit without NodeGroup has 0/0/0 resources");
+  assert(empty.nodeNames.length === 0 && empty.deployments.length === 0 && empty.edgeApplications.length === 0, "unowned EdgeUnit has 0/0/0 resources");
 
   const list = (await request("GET", "/blueedge/edge-units")).payload.items;
   const byName = new Map(list.map((item) => [item.name, item]));

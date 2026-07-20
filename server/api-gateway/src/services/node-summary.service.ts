@@ -4,7 +4,6 @@ import type { ResourceSummaryResult } from "../types/resource-summary.js";
 import type { EdgeUnitWarning } from "../types/warnings.js";
 import {
   annotationsOf,
-  dataOf,
   explicitNodeNamesOf,
   getResourceEvents,
   isNodeReady,
@@ -20,11 +19,7 @@ import {
   warning,
 } from "../utils/kubernetes.js";
 import { listAccessConfigViewsForNodes } from "./access-config.service.js";
-import {
-  collectEdgeUnitSources,
-  edgeUnitConfigMapName,
-  isValidEdgeUnitConfigMap,
-} from "./edge-unit-source.service.js";
+import { collectEdgeUnitSources } from "./edge-unit-source.service.js";
 import { getNodeSummaryMetrics } from "./observability.service.js";
 
 function nodeRoles(node: any): string[] {
@@ -66,7 +61,7 @@ export async function getNodeSummary(name: string): Promise<ResourceSummaryResul
       warnings.push(warning("access-config", error, "AccessConfig unavailable"));
       return [];
     }),
-    collectEdgeUnitSources(warnings, { includeConfigMaps: true, includeNodeGroups: true }).catch((error) => {
+    collectEdgeUnitSources(warnings, { includeConfigMaps: false, includeNodeGroups: true }).catch((error) => {
       warnings.push(warning("edgeunit", error, "EdgeUnit sources unavailable"));
       return { edgeUnitConfigMaps: [], nodeGroups: [], nodeGroupByName: new Map<string, any>(), aux: { nodes: [], deployments: [], edgeApplications: [] } };
     }),
@@ -75,9 +70,12 @@ export async function getNodeSummary(name: string): Promise<ResourceSummaryResul
   const nodeGroupRefs = edgeSources.nodeGroups
     .filter((item: any) => nodeMatchesNodeGroup(node, item))
     .map((item: any) => String(metadataOf(item).name || item?.name || ""));
-  const edgeUnitConfig = edgeSources.edgeUnitConfigMaps
-    .filter((item: any) => isValidEdgeUnitConfigMap(item, warnings))
-    .find((item: any) => nodeGroupRefs.includes(dataOf(item).nodeGroupRef));
+  const edgeUnitRef = String(
+    labelsOf(node)["blueedge.io/edge-unit"] ||
+    annotationsOf(node)["blueedge.io/edge-unit"] ||
+    accessConfig?.edgeUnitRef ||
+    "",
+  );
   const nodeInfo = node?.status?.nodeInfo || {};
   const podItems = pods.map(podSummaryItem);
 
@@ -106,7 +104,7 @@ export async function getNodeSummary(name: string): Promise<ResourceSummaryResul
       },
       events,
       accessConfig,
-      edgeUnitRef: edgeUnitConfig ? edgeUnitConfigMapName(edgeUnitConfig) : "",
+      edgeUnitRef,
       nodeGroupRefs,
       raw: node,
     },

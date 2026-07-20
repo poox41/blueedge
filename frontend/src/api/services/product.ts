@@ -21,7 +21,6 @@ import type { StorageClassListResponse } from "@/api/adapters/storage-class.adap
 
 export interface EdgeUnitCreatePayload {
   name: string;
-  nodeGroupRef?: string;
   clusterName?: string;
   accessType?: "external" | "dedicated" | "unknown";
   kubeEdgeVersion?: string;
@@ -51,7 +50,6 @@ export interface EdgeUnitResourceRef {
 
 export interface EdgeUnitResourceScope {
   edgeUnit: EdgeUnitView;
-  nodeGroupRef: string;
   nodeNames: string[];
   deployments: EdgeUnitResourceRef[];
   edgeApplications: EdgeUnitResourceRef[];

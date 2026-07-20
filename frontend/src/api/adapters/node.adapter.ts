@@ -38,33 +38,26 @@ function getLabelRecords(raw: KubeResource): Array<Record<string, string>> {
 }
 
 function isEdgeNode(raw: KubeResource): boolean {
-  const name = getName(raw).toLowerCase();
-  if (name.includes("edge")) return true;
-
   const flat = raw as Record<string, unknown>;
   const kubeletVersion = typeof flat.kubeletVersion === "string"
     ? flat.kubeletVersion
     : getNestedString(raw, ["status", "nodeInfo", "kubeletVersion"], "");
-  if (kubeletVersion.toLowerCase().includes("kubeedge")) return true;
+  const isKubeEdgeKubelet = kubeletVersion.toLowerCase().includes("kubeedge");
+  if (isKubeEdgeKubelet) return true;
 
   const roles = [
     ...getStringList(flat.roles),
     ...getStringList(flat.role),
     ...getStringList(flat.nodeRole),
   ].map((item) => item.toLowerCase());
-  if (roles.some((role) => role === "edge" || role === "agent")) return true;
+  if (roles.includes("edge")) return true;
+  if (roles.includes("agent") && isKubeEdgeKubelet) return true;
 
   return getLabelRecords(raw).some((labels) => {
-    if ("node-role.kubernetes.io/edge" in labels || "node-role.kubernetes.io/agent" in labels) return true;
+    if ("node-role.kubernetes.io/edge" in labels) return true;
+    if ("node-role.kubernetes.io/agent" in labels && isKubeEdgeKubelet) return true;
     if (labels["blueedge.io/node-role"] === "edge" || labels.nodeType === "edge" || labels.role === "edge") return true;
-
-    return Object.entries(labels).some(([key, value]) => {
-      const normalizedKey = key.toLowerCase();
-      const normalizedValue = String(value).toLowerCase();
-      return normalizedKey.includes("edge") ||
-        normalizedKey.includes("kubeedge") ||
-        normalizedValue.split(/[,\s]+/).includes("edge");
-    });
+    return false;
   });
 }
 

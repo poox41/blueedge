@@ -3,7 +3,6 @@ import type { ResourceSummaryResult } from "../types/resource-summary.js";
 import type { EdgeUnitWarning } from "../types/warnings.js";
 import {
   annotationsOf,
-  dataOf,
   explicitNodeNamesOf,
   isNodeReady,
   itemsOf,
@@ -16,11 +15,8 @@ import {
 } from "../utils/kubernetes.js";
 import { listBatchTaskViewsForSummary } from "./batch-task.service.js";
 import {
-  edgeUnitConfigMapName,
-  getEdgeUnitConfigMaps,
   getEdgeUnitNodes,
   getNodeGroupByName,
-  isValidEdgeUnitConfigMap,
 } from "./edge-unit-source.service.js";
 import {
   annotationValue,
@@ -34,12 +30,11 @@ export async function getNodeGroupSummary(name: string): Promise<ResourceSummary
   const nodeGroup = await getNodeGroupByName(name);
   if (!nodeGroup) return null;
 
-  const [nodes, edgeUnitConfigMaps, edgeApplications, batchTasks] = await Promise.all([
+  const [nodes, edgeApplications, batchTasks] = await Promise.all([
     getEdgeUnitNodes(warnings).catch((error) => {
       warnings.push(warning("node", error, "Node list unavailable"));
       return [];
     }),
-    getEdgeUnitConfigMaps(warnings),
     getJson("/edgeapplication").then(itemsOf).catch((error) => {
       warnings.push(warning("edgeapplication", error, "EdgeApplication list unavailable"));
       return [];
@@ -47,9 +42,6 @@ export async function getNodeGroupSummary(name: string): Promise<ResourceSummary
     listBatchTaskViewsForSummary(warnings),
   ]);
   const matchedNodes = nodesForNodeGroup(nodeGroup, nodes);
-  const edgeUnits = edgeUnitConfigMaps
-    .filter((item) => isValidEdgeUnitConfigMap(item, warnings) && dataOf(item).nodeGroupRef === name)
-    .map((item) => ({ name: edgeUnitConfigMapName(item), rawRef: { kind: "EdgeUnitConfigMap", name: metadataOf(item).name || "" } }));
   const apps = edgeApplications.filter((item) => edgeApplicationTargetsNodeGroup(item, name));
   const taskCount = batchTasks.filter((item) => item.targetRefs.includes(name)).length;
 
@@ -71,7 +63,7 @@ export async function getNodeGroupSummary(name: string): Promise<ResourceSummary
           labels: labelsOf(node),
         })),
       },
-      edgeUnits,
+      edgeUnits: [],
       applications: {
         total: apps.length,
         healthy: apps.filter(isEdgeApplicationHealthy).length,

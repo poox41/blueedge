@@ -35,9 +35,8 @@ export interface EdgeUnitView {
   };
   uninstallPolicy?: "保留相关命名空间" | "删除相关命名空间";
   rawRef: {
-    kind: "NodeGroup" | "EdgeUnitConfigMap";
+    kind: "EdgeUnitConfigMap";
     name: string;
-    nodeGroupRef?: string;
   };
 }
 
@@ -66,9 +65,8 @@ export interface EdgeUnitUiModel {
   accessType: EdgeUnitAccessType;
   insightStatus: EdgeUnitComponentState;
   monitorStatus: EdgeUnitComponentState;
-  rawRefKind: "NodeGroup" | "EdgeUnitConfigMap";
+  rawRefKind: "EdgeUnitConfigMap";
   rawRefName: string;
-  nodeGroupRef?: string;
   description?: string;
   nodeScale?: "小型" | "中型" | "大型";
   mqttEnabled?: boolean;
@@ -112,9 +110,8 @@ export interface WorkbenchEdgeUnitModel {
   accessType: EdgeUnitAccessType;
   insightStatus: EdgeUnitComponentState;
   monitorStatus: EdgeUnitComponentState;
-  rawRefKind: "NodeGroup" | "EdgeUnitConfigMap";
+  rawRefKind: "EdgeUnitConfigMap";
   rawRefName: string;
-  nodeGroupRef?: string;
 }
 
 const defaultPorts = {
@@ -165,8 +162,7 @@ export function toHomeEdgeUnit(item: EdgeUnitView): EdgeUnitUiModel {
     monitorStatus: item.components.monitor,
     rawRefKind: item.rawRef.kind,
     rawRefName: item.rawRef.name,
-    nodeGroupRef: item.rawRef.kind === "NodeGroup" ? item.rawRef.name : item.rawRef.nodeGroupRef || undefined,
-    description: item.description || (item.rawRef.kind === "NodeGroup" ? `NodeGroup ${item.rawRef.name}` : item.rawRef.nodeGroupRef ? `NodeGroup ${item.rawRef.nodeGroupRef}` : ""),
+    description: item.description || "",
     nodeScale: item.nodeScale,
     mqttEnabled: item.mqttEnabled,
     protocols: item.protocols,
@@ -189,7 +185,7 @@ export function toWorkbenchEdgeUnit(item: EdgeUnitView): WorkbenchEdgeUnitModel 
     mqtt: home.mqttEnabled === undefined ? "未配置" : home.mqttEnabled ? "已启用" : "未启用",
     access: home.accessAddresses?.join("、") || "未配置",
     protocols: home.protocols?.join("、") || "未配置",
-    description: home.description || `NodeGroup ${home.name}`,
+    description: home.description || `${home.name} 边缘单元`,
     accessAddresses: home.accessAddresses || [],
     protocolList: home.protocols || [],
     ports: home.ports || Object.fromEntries(Object.keys(defaultPorts).map((key) => [key, "未配置"])) as typeof defaultPorts,
@@ -202,6 +198,5 @@ export function toWorkbenchEdgeUnit(item: EdgeUnitView): WorkbenchEdgeUnitModel 
     monitorStatus: home.monitorStatus,
     rawRefKind: home.rawRefKind,
     rawRefName: home.rawRefName,
-    nodeGroupRef: home.nodeGroupRef,
   };
 }

@@ -31,13 +31,11 @@ import {
 import {
   collectEdgeUnitAuxSources,
   collectEdgeUnitSources,
-  collectNodeGroupDetails,
   edgeUnitConfigMapMatches,
   edgeUnitConfigMapName,
   edgeUnitConfigMapResourceName,
   edgeUnitNameLabel,
   getEdgeUnitConfigMaps,
-  getNodeGroupByName,
   isValidEdgeUnitConfigMap,
 } from "./edge-unit-source.service.js";
 
@@ -137,8 +135,6 @@ export function buildEdgeUnitConfiguration(data: Record<string, string>) {
 
 export function buildEdgeUnitConfigMapData(body: any, existingData?: Record<string, string>) {
   const name = readStringField(body, "name") || existingData?.name || "";
-  const requestedNodeGroupRef = readStringField(body, "nodeGroupRef");
-  const nodeGroupRef = requestedNodeGroupRef !== undefined ? requestedNodeGroupRef : existingData?.nodeGroupRef || "";
   const accessType = normalizeEdgeUnitAccessType(readStringField(body, "accessType") ?? existingData?.accessType);
   const insightStatus = normalizeEdgeUnitComponentState(readStringField(body, "insightStatus") ?? existingData?.insightStatus);
   const monitorStatus = normalizeEdgeUnitComponentState(readStringField(body, "monitorStatus") ?? existingData?.monitorStatus);
@@ -149,7 +145,9 @@ export function buildEdgeUnitConfigMapData(body: any, existingData?: Record<stri
 
   return {
     name,
-    nodeGroupRef,
+    // EdgeUnit ownership is expressed with blueedge.io/edge-unit labels.
+    // Keep the legacy field empty so updates also remove historical bindings.
+    nodeGroupRef: "",
     clusterName: readStringField(body, "clusterName") ?? existingData?.clusterName ?? "",
     accessType,
     kubeEdgeVersion: readStringField(body, "kubeEdgeVersion") ?? existingData?.kubeEdgeVersion ?? "",
@@ -224,36 +222,19 @@ function normalizeComponentState(value: string): "installed" | "notInstalled" | 
   return "unknown";
 }
 
-export function deploymentTargetsEdgeUnit(deployment: any, edgeUnitName: string, nodeGroupRef: string): boolean {
-  return deploymentOwnershipValues(deployment).some((normalized) =>
-    normalized === edgeUnitName || (Boolean(nodeGroupRef) && normalized === nodeGroupRef),
-  );
-}
-
-function deploymentOwnershipValues(deployment: any): string[] {
-  const candidates = [
+export function deploymentTargetsEdgeUnit(deployment: any, edgeUnitName: string): boolean {
+  const records = [
     labelsOf(deployment),
     annotationsOf(deployment),
-    deployment?.spec?.template?.metadata?.labels || {},
-    deployment?.spec?.template?.metadata?.annotations || {},
+    labelsOf(deployment?.spec?.template),
+    annotationsOf(deployment?.spec?.template),
   ];
-  return candidates.flatMap((record) => {
-    if (!record || typeof record !== "object") return [];
-    return [
-      record["blueedge.io/nodegroup"],
-      record["blueedge.io/node-group"],
-      record["blueedge.io/edge-unit"],
-      record["kubeedge.io/nodegroup"],
-      record.nodeGroup,
-      record.edgeUnit,
-    ].map((value) => String(value || "")).filter(Boolean);
-  });
+  return records.some((record) => [record["blueedge.io/edge-unit"], record.edgeUnit]
+    .some((value) => String(value || "") === edgeUnitName));
 }
 
-export function deploymentBelongsToEdgeUnit(deployment: any, edgeUnitName: string, nodeGroupRef: string): boolean {
-  const ownershipValues = deploymentOwnershipValues(deployment);
-  if (ownershipValues.length === 0) return false;
-  return deploymentTargetsEdgeUnit(deployment, edgeUnitName, nodeGroupRef);
+export function deploymentBelongsToEdgeUnit(deployment: any, edgeUnitName: string): boolean {
+  return deploymentTargetsEdgeUnit(deployment, edgeUnitName);
 }
 
 export function bindDeploymentToEdgeUnit(resource: any, edgeUnitName: string) {
@@ -332,6 +313,20 @@ export function nodeTargetsEdgeUnit(node: any, edgeUnitName: string): boolean {
   return resourceDirectlyTargetsEdgeUnit(node, edgeUnitName);
 }
 
+export function isExternalEdgeNode(node: any): boolean {
+  const labels = labelsOf(node);
+  if (Object.prototype.hasOwnProperty.call(labels, "node-role.kubernetes.io/edge")) return true;
+  if (!Object.prototype.hasOwnProperty.call(labels, "node-role.kubernetes.io/agent")) return false;
+
+  const kubeletVersion = String(
+    node?.status?.nodeInfo?.kubeletVersion ||
+    node?.nodeInfo?.kubeletVersion ||
+    node?.kubeletVersion ||
+    "",
+  ).toLowerCase();
+  return kubeletVersion.includes("kubeedge");
+}
+
 export function isDeploymentHealthy(deployment: any): boolean {
   const replicas = Number(deployment?.spec?.replicas ?? deployment?.replicas ?? 1);
   const available = Number(deployment?.status?.availableReplicas ?? deployment?.availableReplicas ?? 0);
@@ -344,22 +339,19 @@ export function edgeApplicationTargetsNodeGroup(app: any, nodeGroupName: string)
   return targetNodeGroups.some((group: any) => String(typeof group === "string" ? group : group?.name || "") === nodeGroupName);
 }
 
-export function edgeApplicationTargetsEdgeUnit(app: any, edgeUnitName: string, nodeGroupName: string): boolean {
+export function edgeApplicationTargetsEdgeUnit(app: any, edgeUnitName: string): boolean {
   const workloadTemplate = app?.spec?.workloadTemplate;
   const manifests = Array.isArray(workloadTemplate?.manifests) ? workloadTemplate.manifests : [];
   return resourceDirectlyTargetsEdgeUnit(app, edgeUnitName) ||
     resourceDirectlyTargetsEdgeUnit(workloadTemplate, edgeUnitName) ||
-    manifests.some((manifest: any) => resourceDirectlyTargetsEdgeUnit(manifest, edgeUnitName)) ||
-    (Boolean(nodeGroupName) && edgeApplicationTargetsNodeGroup(app, nodeGroupName));
+    manifests.some((manifest: any) => resourceDirectlyTargetsEdgeUnit(manifest, edgeUnitName));
 }
 
 export function edgeApplicationBelongsToEdgeUnit(
   app: any,
   edgeUnitName: string,
-  nodeGroupName: string,
-  _knownNodeGroupNames: Set<string>,
 ): boolean {
-  return edgeApplicationTargetsEdgeUnit(app, edgeUnitName, nodeGroupName);
+  return edgeApplicationTargetsEdgeUnit(app, edgeUnitName);
 }
 
 export function isEdgeApplicationHealthy(app: any): boolean {
@@ -379,36 +371,47 @@ function uniqueResources(items: any[]): any[] {
 }
 
 export function buildEdgeUnitResourceSet(
-  nodeGroup: any | null,
   aux: EdgeUnitAuxSources,
   edgeUnitName: string,
-  nodeGroupRef: string,
-  knownNodeGroupNames: Set<string> = new Set(),
+  options: { accessType?: "external" | "dedicated" | "unknown" } = {},
 ) {
-  const nodeGroupNodes = nodeGroup ? nodesForNodeGroup(nodeGroup, aux.nodes) : [];
-  const directlyOwnedNodes = aux.nodes.filter((item) => nodeTargetsEdgeUnit(item, edgeUnitName));
-  const nodes = uniqueResources([...directlyOwnedNodes, ...nodeGroupNodes]);
+  const configuredNodeNames = new Set(aux.accessConfigs
+    .map(dataOf)
+    .filter((config) => config.edgeUnitRef === edgeUnitName)
+    .map((config) => config.nodeName)
+    .filter(Boolean));
+  const directlyOwnedNodes = aux.nodes.filter((item) => {
+    if (nodeTargetsEdgeUnit(item, edgeUnitName) || configuredNodeNames.has(nodeNameOf(item))) return true;
+    if (options.accessType !== "external" || !isExternalEdgeNode(item)) return false;
+
+    // Standard role labels identify imported edge nodes. An explicit BlueEdge
+    // owner always wins so an external unit cannot absorb another unit's node.
+    const explicitOwner = String(
+      labelsOf(item)["blueedge.io/edge-unit"] ||
+      annotationsOf(item)["blueedge.io/edge-unit"] ||
+      "",
+    );
+    return !explicitOwner;
+  });
+  const nodes = uniqueResources(directlyOwnedNodes);
   const nodeNames = new Set(nodes.map(nodeNameOf).filter(Boolean));
   const deployments = aux.deployments.filter((item) =>
-    deploymentBelongsToEdgeUnit(item, edgeUnitName, nodeGroupRef) ||
+    deploymentBelongsToEdgeUnit(item, edgeUnitName) ||
     deploymentRunsOnNodes(item, aux.pods, nodeNames),
   );
   const edgeApplications = aux.edgeApplications.filter((item) =>
-    edgeApplicationBelongsToEdgeUnit(item, edgeUnitName, nodeGroupRef, knownNodeGroupNames),
+    edgeApplicationBelongsToEdgeUnit(item, edgeUnitName),
   );
   return { nodes, deployments, edgeApplications };
 }
 
 export function buildEdgeUnitRuntime(
-  nodeGroup: any | null,
   aux: EdgeUnitAuxSources,
   edgeUnitName: string,
-  nodeGroupRef: string,
-  knownNodeGroupNames: Set<string> = new Set(),
+  options: { accessType?: "external" | "dedicated" | "unknown" } = {},
 ) {
-  const resources = buildEdgeUnitResourceSet(nodeGroup, aux, edgeUnitName, nodeGroupRef, knownNodeGroupNames);
-  const explicitNodeNames = nodeGroup ? explicitNodeNamesOf(nodeGroup) : [];
-  const nodeTotal = explicitNodeNames.length > 0 ? explicitNodeNames.length : resources.nodes.length;
+  const resources = buildEdgeUnitResourceSet(aux, edgeUnitName, options);
+  const nodeTotal = resources.nodes.length;
   const nodeReady = resources.nodes.filter(isNodeReady).length;
   const nodeNames = new Set(resources.nodes.map(nodeNameOf).filter(Boolean));
   const status = nodeTotal === 0 ? "unknown" : nodeReady === nodeTotal ? "running" : "abnormal";
@@ -438,43 +441,17 @@ function resourceRef(item: any) {
   };
 }
 
-function buildNodeGroupEdgeUnitView(nodeGroup: any, aux: EdgeUnitAuxSources, knownNodeGroupNames: Set<string> = new Set()) {
-  const name = String(metadataOf(nodeGroup).name || nodeGroup?.name || "");
-  const runtime = buildEdgeUnitRuntime(nodeGroup, aux, name, name, knownNodeGroupNames);
-
-  return {
-    name,
-    status: runtime.status,
-    accessType: normalizeAccessType(annotationValue(nodeGroup, ["blueedge.io/access-type"])),
-    clusterName: annotationValue(nodeGroup, ["blueedge.io/cluster-name", "blueedge.io/cluster"]),
-    kubeEdgeVersion: annotationValue(nodeGroup, ["blueedge.io/kubeedge-version", "kubeedge.io/version"]),
-    createdAt: metadataOf(nodeGroup).creationTimestamp || nodeGroup?.creationTimestamp || "",
-    nodes: runtime.nodes,
-    workloads: runtime.workloads,
-    applications: runtime.applications,
-    components: {
-      insight: normalizeComponentState(annotationValue(nodeGroup, ["blueedge.io/insight", "blueedge.io/component-insight"])),
-      monitor: normalizeComponentState(annotationValue(nodeGroup, ["blueedge.io/monitor", "blueedge.io/component-monitor"])),
-    },
-    description: annotationValue(nodeGroup, ["blueedge.io/description", "description"], ""),
-    rawRef: {
-      kind: "NodeGroup",
-      name,
-    },
-  };
-}
-
-function buildConfigMapEdgeUnitView(configMap: any, nodeGroup: any | null, aux: EdgeUnitAuxSources, knownNodeGroupNames: Set<string> = new Set()) {
+function buildConfigMapEdgeUnitView(configMap: any, aux: EdgeUnitAuxSources) {
   const metadata = metadataOf(configMap);
   const data = dataOf(configMap);
   const name = data.name;
-  const nodeGroupRef = data.nodeGroupRef;
-  const runtime = buildEdgeUnitRuntime(nodeGroup, aux, name, nodeGroupRef, knownNodeGroupNames);
+  const accessType = normalizeAccessType(data.accessType || "unknown");
+  const runtime = buildEdgeUnitRuntime(aux, name, { accessType });
 
   return {
     name,
     status: runtime.status,
-    accessType: normalizeAccessType(data.accessType || "unknown"),
+    accessType,
     clusterName: data.clusterName || "unknown",
     kubeEdgeVersion: data.kubeEdgeVersion || "unknown",
     createdAt: metadata.creationTimestamp || "",
@@ -490,7 +467,6 @@ function buildConfigMapEdgeUnitView(configMap: any, nodeGroup: any | null, aux: 
     rawRef: {
       kind: "EdgeUnitConfigMap",
       name: metadata.name || "",
-      nodeGroupRef,
     },
   };
 }
@@ -501,20 +477,10 @@ async function findEdgeUnitConfigMap(name: string, warnings: EdgeUnitWarning[]):
 }
 
 async function buildConfigMapEdgeUnitResponse(configMap: any, warnings: EdgeUnitWarning[]) {
-  const data = dataOf(configMap);
-  const edgeUnitName = data.name || edgeUnitConfigMapName(configMap);
-  const { nodeGroupByName, aux } = await collectEdgeUnitSources(warnings);
-  const nodeGroup = data.nodeGroupRef ? nodeGroupByName.get(data.nodeGroupRef) || null : null;
-
-  if (data.nodeGroupRef && !nodeGroup) {
-    warnings.push({
-      source: "edgeunit.nodeGroupRef",
-      message: `EdgeUnit ${edgeUnitName} references missing NodeGroup ${data.nodeGroupRef || "-"}`,
-    });
-  }
+  const aux = await collectEdgeUnitAuxSources(warnings);
 
   return {
-    item: buildConfigMapEdgeUnitView(configMap, nodeGroup, aux, new Set(nodeGroupByName.keys())),
+    item: buildConfigMapEdgeUnitView(configMap, aux),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
@@ -528,33 +494,10 @@ export async function listEdgeUnits() {
   const edgeUnitConfigMaps = await getEdgeUnitConfigMaps(warnings);
   const validEdgeUnitConfigMaps = edgeUnitConfigMaps.filter((configMap) => isValidEdgeUnitConfigMap(configMap, warnings));
 
-  if (validEdgeUnitConfigMaps.length > 0) {
-    const [{ nodeGroupByName }, aux] = await Promise.all([
-      collectNodeGroupDetails(warnings),
-      collectEdgeUnitAuxSources(warnings),
-    ]);
-    const items = validEdgeUnitConfigMaps.map((configMap) => {
-      const data = dataOf(configMap);
-      const nodeGroup = data.nodeGroupRef ? nodeGroupByName.get(data.nodeGroupRef) || null : null;
-      if (data.nodeGroupRef && !nodeGroup) {
-        warnings.push({
-          source: "edgeunit.nodeGroupRef",
-          message: `EdgeUnit ${data.name} references missing NodeGroup ${data.nodeGroupRef}`,
-        });
-      }
-      return buildConfigMapEdgeUnitView(configMap, nodeGroup, aux, new Set(nodeGroupByName.keys()));
-    });
-    return { items, ...(warnings.length > 0 ? { warnings } : {}) };
-  }
-
-  const [{ nodeGroups, nodeGroupError }, aux] = await Promise.all([
-    collectNodeGroupDetails(warnings),
-    collectEdgeUnitAuxSources(warnings),
-  ]);
-  if (nodeGroupError) throw nodeGroupError;
+  const aux = await collectEdgeUnitAuxSources(warnings);
 
   return {
-    items: nodeGroups.map((nodeGroup) => buildNodeGroupEdgeUnitView(nodeGroup, aux, new Set(nodeGroups.map((item) => String(metadataOf(item).name || item?.name || ""))))),
+    items: validEdgeUnitConfigMaps.map((configMap) => buildConfigMapEdgeUnitView(configMap, aux)),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
@@ -576,13 +519,6 @@ export async function createEdgeUnit(body: any) {
     return { status: 400, body: { message: "name must be a valid Kubernetes resource name" } };
   }
 
-  if (data.nodeGroupRef) {
-    const nodeGroup = await getNodeGroupByName(data.nodeGroupRef);
-    if (!nodeGroup) {
-      return { status: 400, body: { message: `NodeGroup ${data.nodeGroupRef} does not exist` } };
-    }
-  }
-
   const duplicated = await findEdgeUnitConfigMap(data.name, warnings);
   if (duplicated) {
     return { status: 409, body: { message: `EdgeUnit ${data.name} already exists`, ...(warnings.length > 0 ? { warnings } : {}) } };
@@ -594,7 +530,7 @@ export async function createEdgeUnit(body: any) {
 
 export async function getEdgeUnit(name: string) {
   const warnings: EdgeUnitWarning[] = [];
-  const { edgeUnitConfigMaps, nodeGroups, nodeGroupError, nodeGroupByName, aux } = await collectEdgeUnitSources(warnings);
+  const { edgeUnitConfigMaps, aux } = await collectEdgeUnitSources(warnings, { includeNodeGroups: false });
   const matchedConfigMap = edgeUnitConfigMaps.find((configMap) => edgeUnitConfigMapMatches(configMap, name));
 
   if (matchedConfigMap) {
@@ -606,82 +542,37 @@ export async function getEdgeUnit(name: string) {
         message: `Invalid EdgeUnit ConfigMap ${metadataOf(matchedConfigMap).namespace || "blueedge-system"}/${metadataOf(matchedConfigMap).name || "-"}: missing data.name`,
       });
     } else {
-      const nodeGroup = data.nodeGroupRef ? nodeGroupByName.get(data.nodeGroupRef) || null : null;
-      if (data.nodeGroupRef && !nodeGroup) {
-        warnings.push({
-          source: "edgeunit.nodeGroupRef",
-          message: `EdgeUnit ${edgeUnitName} references missing NodeGroup ${data.nodeGroupRef}`,
-        });
-      }
       return {
         status: 200,
         body: {
-          item: buildConfigMapEdgeUnitView(matchedConfigMap, nodeGroup, aux, new Set(nodeGroupByName.keys())),
+          item: buildConfigMapEdgeUnitView(matchedConfigMap, aux),
           ...(warnings.length > 0 ? { warnings } : {}),
         },
       };
     }
   }
 
-  if (nodeGroupError) throw nodeGroupError;
-
-  const nodeGroup = nodeGroups.find((item) => String(metadataOf(item).name || item?.name || "") === name);
-  if (!nodeGroup) {
-    return { status: 404, body: { message: `EdgeUnit ${name} not found`, ...(warnings.length > 0 ? { warnings } : {}) } };
-  }
-
-  return {
-    status: 200,
-    body: {
-      item: buildNodeGroupEdgeUnitView(nodeGroup, aux, new Set(nodeGroupByName.keys())),
-      ...(warnings.length > 0 ? { warnings } : {}),
-    },
-  };
+  return { status: 404, body: { message: `EdgeUnit ${name} not found`, ...(warnings.length > 0 ? { warnings } : {}) } };
 }
 
 export async function getEdgeUnitResources(name: string) {
   const warnings: EdgeUnitWarning[] = [];
-  const { edgeUnitConfigMaps, nodeGroups, nodeGroupError, nodeGroupByName, aux } = await collectEdgeUnitSources(warnings);
+  const { edgeUnitConfigMaps, aux } = await collectEdgeUnitSources(warnings, { includeNodeGroups: false });
   const matchedConfigMap = edgeUnitConfigMaps.find((configMap) => edgeUnitConfigMapMatches(configMap, name));
-
-  let nodeGroup: any | null = null;
-  let nodeGroupRef = "";
-  let item: any | null = null;
-
-  if (matchedConfigMap && isValidEdgeUnitConfigMap(matchedConfigMap, warnings)) {
-    const data = dataOf(matchedConfigMap);
-    nodeGroupRef = data.nodeGroupRef || "";
-    nodeGroup = nodeGroupRef ? nodeGroupByName.get(nodeGroupRef) || null : null;
-    if (nodeGroupRef && !nodeGroup) {
-      warnings.push({ source: "edgeunit.nodeGroupRef", message: `EdgeUnit ${name} references missing NodeGroup ${nodeGroupRef}` });
-    }
-    item = buildConfigMapEdgeUnitView(matchedConfigMap, nodeGroup, aux, new Set(nodeGroupByName.keys()));
-  } else {
-    if (nodeGroupError) throw nodeGroupError;
-    nodeGroup = nodeGroups.find((candidate) => String(metadataOf(candidate).name || candidate?.name || "") === name) || null;
-    if (nodeGroup) {
-      nodeGroupRef = name;
-      item = buildNodeGroupEdgeUnitView(nodeGroup, aux, new Set(nodeGroupByName.keys()));
-    }
-  }
-
-  if (!item) {
+  if (!matchedConfigMap || !isValidEdgeUnitConfigMap(matchedConfigMap, warnings)) {
     return { status: 404, body: { message: `EdgeUnit ${name} not found`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
 
-  const resources = buildEdgeUnitResourceSet(nodeGroup, aux, name, nodeGroupRef, new Set(nodeGroupByName.keys()));
-  const explicitNodeNames = nodeGroup ? explicitNodeNamesOf(nodeGroup) : [];
-  const nodeNames = Array.from(new Set([
-    ...explicitNodeNames,
-    ...resources.nodes.map((node) => nodeNameOf(node)).filter(Boolean),
-  ]));
+  const item = buildConfigMapEdgeUnitView(matchedConfigMap, aux);
+  const accessType = normalizeAccessType(dataOf(matchedConfigMap).accessType || "unknown");
+  const resources = buildEdgeUnitResourceSet(aux, name, { accessType });
+  const nodeNames = Array.from(new Set(resources.nodes.map((node) => nodeNameOf(node)).filter(Boolean)));
 
   return {
     status: 200,
     body: {
       item: {
         edgeUnit: item,
-        nodeGroupRef,
         nodeNames,
         deployments: resources.deployments.map(resourceRef).filter((ref) => ref.name),
         edgeApplications: resources.edgeApplications.map(resourceRef).filter((ref) => ref.name),
@@ -689,19 +580,6 @@ export async function getEdgeUnitResources(name: string) {
       ...(warnings.length > 0 ? { warnings } : {}),
     },
   };
-}
-
-export async function resolveEdgeUnitNodeGroup(edgeUnitName: string) {
-  const warnings: EdgeUnitWarning[] = [];
-  const edgeUnitConfigMaps = await getEdgeUnitConfigMaps(warnings);
-  const matchedConfigMap = edgeUnitConfigMaps.find((configMap) => edgeUnitConfigMapMatches(configMap, edgeUnitName));
-  const nodeGroupRef = matchedConfigMap
-    ? String(dataOf(matchedConfigMap).nodeGroupRef || "")
-    : edgeUnitName;
-  if (!nodeGroupRef) throw new Error(`EdgeUnit ${edgeUnitName} 未绑定 NodeGroup`);
-  const nodeGroup = await getNodeGroupByName(nodeGroupRef);
-  if (!nodeGroup) throw new Error(`EdgeUnit ${edgeUnitName} 绑定的 NodeGroup ${nodeGroupRef} 不存在`);
-  return { nodeGroupRef, nodeGroup };
 }
 
 export async function createEdgeUnitDeployment(edgeUnitName: string, resource: any) {
@@ -751,11 +629,10 @@ export async function updateEdgeUnit(name: string, body: any) {
 
   const existing = await findEdgeUnitConfigMap(name, warnings);
   if (!existing) {
-    const nodeGroup = await getNodeGroupByName(name);
     return {
-      status: nodeGroup ? 409 : 404,
+      status: 404,
       body: {
-        message: nodeGroup ? `EdgeUnit ${name} is generated from NodeGroup fallback and has no editable metadata ConfigMap` : `EdgeUnit ${name} not found`,
+        message: `EdgeUnit ${name} not found`,
         ...(warnings.length > 0 ? { warnings } : {}),
       },
     };
@@ -772,13 +649,6 @@ export async function updateEdgeUnit(name: string, body: any) {
     return validationError(error);
   }
 
-  const data = dataOf(configMap);
-  if (data.nodeGroupRef) {
-    const nodeGroup = await getNodeGroupByName(data.nodeGroupRef);
-    if (!nodeGroup) {
-      return { status: 400, body: { message: `NodeGroup ${data.nodeGroupRef} does not exist` } };
-    }
-  }
   const updated = await update(metadataOf(existing).name, configMap);
   return { status: 200, body: await buildConfigMapEdgeUnitResponse(updated, warnings) };
 }
@@ -788,11 +658,10 @@ export async function deleteEdgeUnit(name: string) {
   const existing = await findEdgeUnitConfigMap(name, warnings);
 
   if (!existing) {
-    const nodeGroup = await getNodeGroupByName(name);
     return {
-      status: nodeGroup ? 409 : 404,
+      status: 404,
       body: {
-        message: nodeGroup ? `EdgeUnit ${name} is generated from NodeGroup fallback and has no metadata ConfigMap to delete` : `EdgeUnit ${name} not found`,
+        message: `EdgeUnit ${name} not found`,
         ...(warnings.length > 0 ? { warnings } : {}),
       },
     };
@@ -807,7 +676,7 @@ export async function deleteEdgeUnit(name: string) {
         ...warnings,
         {
           source: "edgeunit.delete",
-          message: `EdgeUnit ${name} metadata deleted. Underlying NodeGroup is retained and may appear via fallback.`,
+          message: `EdgeUnit ${name} metadata deleted. Labeled Kubernetes and KubeEdge resources are retained.`,
         },
       ],
     },

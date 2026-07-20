@@ -220,26 +220,17 @@ export async function getNodeGroupByName(name: string): Promise<any | null> {
   }
 }
 
-export async function resolveEdgeUnitNodeGroupRef(edgeUnitRef: string, warnings: EdgeUnitWarning[]): Promise<string | null> {
-  const resolved = await resolveEdgeUnitReference(edgeUnitRef, warnings);
-  return resolved?.nodeGroupRef || null;
-}
-
-export async function resolveEdgeUnitReference(edgeUnitRef: string, warnings: EdgeUnitWarning[]): Promise<{ nodeGroupRef: string } | null> {
-  const { edgeUnitConfigMaps, nodeGroupByName } = await collectEdgeUnitSources(warnings, { includeNodeGroups: true });
+export async function resolveEdgeUnitReference(edgeUnitRef: string, warnings: EdgeUnitWarning[]): Promise<{ name: string } | null> {
+  const { edgeUnitConfigMaps } = await collectEdgeUnitSources(warnings, { includeNodeGroups: false });
   const matchedConfigMap = edgeUnitConfigMaps.find((configMap) => edgeUnitConfigMapMatches(configMap, edgeUnitRef));
   if (matchedConfigMap && isValidEdgeUnitConfigMap(matchedConfigMap, warnings)) {
-    return { nodeGroupRef: dataOf(matchedConfigMap).nodeGroupRef || "" };
+    return { name: edgeUnitConfigMapName(matchedConfigMap) };
   }
-  if (nodeGroupByName.has(edgeUnitRef)) return { nodeGroupRef: edgeUnitRef };
   return null;
 }
 
-export function knownEdgeUnitNames(edgeUnitConfigMaps: any[], nodeGroupByName: Map<string, any>, warnings: EdgeUnitWarning[]) {
-  return new Set([
-    ...edgeUnitConfigMaps.filter((item) => isValidEdgeUnitConfigMap(item, warnings)).map(edgeUnitConfigMapName),
-    ...nodeGroupByName.keys(),
-  ]);
+export function knownEdgeUnitNames(edgeUnitConfigMaps: any[], warnings: EdgeUnitWarning[]) {
+  return new Set(edgeUnitConfigMaps.filter((item) => isValidEdgeUnitConfigMap(item, warnings)).map(edgeUnitConfigMapName));
 }
 
 export function nodeNames(nodes: any[]) {

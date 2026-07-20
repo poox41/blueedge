@@ -61,6 +61,18 @@ GET /product-api/blueedge/clusters
 
 该接口从当前 Kubernetes 的 `kube-system/kubeadm-config` 读取真实 `clusterName`，并返回 Kubernetes 版本和节点数量。创建 EdgeUnit 的“工作集群”下拉框只使用该接口，不再包含静态集群名称或假数据 fallback。当前 Gateway 只连接一个 Kubernetes API，因此响应只有一个 `current=true` 集群。
 
+### EdgeUnit
+
+EdgeUnit 是 BlueEdge 的逻辑资源归属单元，存储在 `blueedge-system` Namespace 下带 `blueedge.io/resource=edgeunit` 标签的 ConfigMap 中；它不是 NodeGroup 的包装，也不会从 NodeGroup 自动生成。
+
+EdgeUnit 不绑定 NodeGroup。专有 EdgeUnit 的节点、Deployment 和 EdgeApplication 通过 `blueedge.io/edge-unit=<edgeUnitName>` 标签声明平台归属；NodeGroup 仅由 EdgeApplication 的 `spec.workloadScope.targetNodeGroups` 作为批量部署目标使用。历史 ConfigMap 中的 `data.nodeGroupRef` 不再参与资源归属，新建和更新 EdgeUnit 时固定清空。
+
+专有 EdgeUnit 使用 `blueedge.io/managed-by=blueedge`、`blueedge.io/node-role=edge` 和 `blueedge.io/edge-unit=<edgeUnitName>` 识别产品管理的专属节点。外接 EdgeUnit 从当前接入工作集群中识别带 `node-role.kubernetes.io/edge` 的节点；仅带 `node-role.kubernetes.io/agent` 时还要求 kubelet 版本包含 `kubeedge`。已经通过 `blueedge.io/edge-unit` 明确归属于其他单元的节点不会被外接单元吸收。
+
+创建专有 EdgeUnit 时从平台支持版本列表中选择 `kubeEdgeVersion`；创建外接 EdgeUnit 时由用户手动填写外接集群实际运行的版本，不限制在专有版本列表中。
+
+EdgeUnit 列表、详情和资源统计只返回真实 EdgeUnit ConfigMap，并按直接归属标签及所属节点上的实际 Pod 计算，不再把同名或未关联的 NodeGroup 合成为 EdgeUnit。
+
 ### AccessConfig
 
 接口：
@@ -119,6 +131,8 @@ registry, description, labelsJson, status, createdAt
 ```
 
 `nodeGroupRef` 仅作为旧数据结构兼容字段保留，新建和更新 AccessConfig 时固定为空；边缘节点不再从 EdgeUnit 继承 NodeGroup。
+
+工作台内创建接入配置时，`edgeUnitRef` 自动继承当前选择的 EdgeUnit；前端无需重复选择。`nodeName` 可省略，服务端默认使用 `name` 作为未来注册的节点名称。
 
 - `driver=systemd` 在安装命令中映射为 `--cgroupdriver=systemd`。
 - `driver=cgroups` 在安装命令中映射为 `--cgroupdriver=cgroupfs`。

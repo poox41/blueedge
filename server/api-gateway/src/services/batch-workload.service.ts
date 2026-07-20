@@ -15,7 +15,7 @@ import type { BatchWorkloadPlan, BatchWorkloadPlanContainer } from "../types/bat
 import type { EdgeUnitWarning } from "../types/warnings.js";
 import { dataOf, getResourceEvents, itemsOf, labelsOf, metadataOf } from "../utils/kubernetes.js";
 import { readStringArrayField, readStringField } from "../utils/validation.js";
-import { bindDeploymentToEdgeUnit, resolveEdgeUnitNodeGroup } from "./edge-unit.service.js";
+import { bindDeploymentToEdgeUnit } from "./edge-unit.service.js";
 
 const batchTaskNameLabel = "blueedge.io/batch-task";
 const batchTaskTypeLabel = "blueedge.io/task-type";
@@ -574,9 +574,7 @@ export async function listBatchWorkloads(edgeUnitRef = "") {
   ]);
   let items = controls.map((control) => workloadView(control, deployments, edgeApplications));
   if (edgeUnitRef) {
-    let legacyNodeGroupRef = "";
-    try { ({ nodeGroupRef: legacyNodeGroupRef } = await resolveEdgeUnitNodeGroup(edgeUnitRef)); } catch { /* legacy fallback only */ }
-    items = items.filter((item) => item.plan?.edgeUnitRef === edgeUnitRef || (!item.plan?.edgeUnitRef && legacyNodeGroupRef && item.targetGroups.includes(legacyNodeGroupRef)));
+    items = items.filter((item) => item.plan?.edgeUnitRef === edgeUnitRef);
   }
   return { items: items.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt))) };
 }

@@ -47,7 +47,6 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { toHomeEdgeUnit, type EdgeUnitUiModel, type EdgeUnitWarning } from "@/api/adapters/edge-unit.adapter";
 import { createEdgeUnit, deleteEdgeUnit, listConnectedClusters, listEdgeUnits, updateEdgeUnit, type EdgeUnitCreatePayload, type EdgeUnitUpdatePayload } from "@/api/services/product";
-import { listNodeGroups } from "@/api/services/resources";
 import { useAuth } from "@/contexts/AuthContext";
 import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 import { cn } from "@/lib/utils";
@@ -340,6 +339,20 @@ function CreateEdgeUnitDialog({
     });
   };
 
+  const selectUnitType = (unitType: CreateForm["unitType"]) => {
+    setForm((prev) => ({
+      ...prev,
+      unitType,
+      version: prev.unitType === unitType ? prev.version : unitType === "外接" ? "" : versions[0],
+    }));
+    setErrors((prev) => {
+      if (!prev.version) return prev;
+      const next = { ...prev };
+      delete next.version;
+      return next;
+    });
+  };
+
   const addAccessAddress = () => {
     updateForm("accessAddresses", [...form.accessAddresses, ""]);
     window.requestAnimationFrame(() => {
@@ -356,8 +369,9 @@ function CreateEdgeUnitDialog({
       nextErrors.name = "名称只能包含小写字母、数字、中划线和点，且需以字母或数字开头、结尾";
     }
     if (!form.cluster) nextErrors.cluster = "请选择工作集群";
+    if (!form.version.trim()) nextErrors.version = form.unitType === "外接" ? "请输入外接集群的实际 KubeEdge 版本" : "请选择 KubeEdge 版本";
     setErrors(nextErrors);
-    const firstInvalid = (["name", "cluster"] as const).find((field) => nextErrors[field]);
+    const firstInvalid = (["name", "cluster", "version"] as const).find((field) => nextErrors[field]);
     if (firstInvalid) {
       window.requestAnimationFrame(() => {
         const target = document.getElementById(`edge-unit-create-${firstInvalid}`);
@@ -416,8 +430,8 @@ function CreateEdgeUnitDialog({
             <div className="space-y-5 pb-2">
               <p className="text-center text-sm text-[var(--color-text-secondary)]">请选择要创建的边缘单元类型</p>
               <div className="grid grid-cols-2 gap-3">
-                <TypeOption selected={form.unitType === "专有"} onClick={() => updateForm("unitType", "专有")} icon={Server} title="专有边缘单元" desc="在指定集群上部署完整的 KubeEdge 云端组件，适用于需要独立控制的场景。" />
-                <TypeOption selected={form.unitType === "外接"} onClick={() => updateForm("unitType", "外接")} icon={ExternalLink} title="外接边缘单元" desc="接入已有的 KubeEdge 集群，无需重复部署云端组件。" />
+                <TypeOption selected={form.unitType === "专有"} onClick={() => selectUnitType("专有")} icon={Server} title="专有边缘单元" desc="在指定集群上部署完整的 KubeEdge 云端组件，适用于需要独立控制的场景。" />
+                <TypeOption selected={form.unitType === "外接"} onClick={() => selectUnitType("外接")} icon={ExternalLink} title="外接边缘单元" desc="接入已有的 KubeEdge 集群，无需重复部署云端组件。" />
               </div>
             </div>
           )}
@@ -441,13 +455,23 @@ function CreateEdgeUnitDialog({
                     </SelectContent>
                   </Select>
                 </FormField>
-                <FormField label="KubeEdge 版本">
-                  <Select value={form.version} onValueChange={(value) => updateForm("version", value)}>
-                    <SelectTrigger className="h-9 w-full rounded-xl px-3 pr-5 text-sm shadow-none"><SelectValue /></SelectTrigger>
-                    <SelectContent position="popper" align="start" sideOffset={0} viewportClassName="!h-auto p-0" className="w-[var(--radix-select-trigger-width)] rounded-xl p-2 shadow-[0_10px_28px_rgba(15,23,42,0.14)]">
-                      {versions.map((version) => <SelectItem key={version} value={version} className="h-9 px-3 pr-8 text-sm">{version}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                <FormField label="KubeEdge 版本" required error={errors.version} remark={form.unitType === "外接" ? "请输入外接集群当前实际运行的 KubeEdge 版本。" : undefined}>
+                  {form.unitType === "外接" ? (
+                    <Input
+                      id="edge-unit-create-version"
+                      value={form.version}
+                      onChange={(event) => updateForm("version", event.target.value)}
+                      aria-invalid={Boolean(errors.version)}
+                      placeholder="例如 v1.23.0"
+                    />
+                  ) : (
+                    <Select value={form.version} onValueChange={(value) => updateForm("version", value)}>
+                      <SelectTrigger id="edge-unit-create-version" aria-invalid={Boolean(errors.version)} className="h-9 w-full rounded-xl px-3 pr-5 text-sm shadow-none"><SelectValue /></SelectTrigger>
+                      <SelectContent position="popper" align="start" sideOffset={0} viewportClassName="!h-auto p-0" className="w-[var(--radix-select-trigger-width)] rounded-xl p-2 shadow-[0_10px_28px_rgba(15,23,42,0.14)]">
+                        {versions.map((version) => <SelectItem key={version} value={version} className="h-9 px-3 pr-8 text-sm">{version}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  )}
                 </FormField>
               </div>
               <FormField label="边缘节点规模">
@@ -553,13 +577,11 @@ function CreateEdgeUnitDialog({
 
 function EditEdgeUnitDialog({
   unit,
-  nodeGroupOptions,
   onOpenChange,
   isSubmitting,
   onSave,
 }: {
   unit: EdgeUnit | null;
-  nodeGroupOptions: string[];
   onOpenChange: (open: boolean) => void;
   isSubmitting: boolean;
   onSave: (unit: EdgeUnit, payload: EdgeUnitUpdatePayload) => Promise<void>;
@@ -570,7 +592,6 @@ function EditEdgeUnitDialog({
   const [showConfirm, setShowConfirm] = useState(false);
   const [form, setForm] = useState({
     unitType: "专有" as CreateForm["unitType"],
-    nodeGroupRef: "",
     cluster: "",
     version: "",
     insightStatus: "unknown" as CreateForm["insightStatus"],
@@ -588,7 +609,6 @@ function EditEdgeUnitDialog({
     if (!unit) return;
     setForm({
       unitType: unitTypeFromAccessType(unit.accessType),
-      nodeGroupRef: unit.nodeGroupRef || "",
       cluster: unit.cluster === "未配置" ? "" : unit.cluster,
       version: unit.version === "未配置" ? "" : unit.version,
       insightStatus: unit.insightStatus,
@@ -610,7 +630,6 @@ function EditEdgeUnitDialog({
   const save = () => {
     if (!unit) return;
     const payload: EdgeUnitUpdatePayload = {
-      nodeGroupRef: form.nodeGroupRef,
       clusterName: form.cluster,
       accessType: accessTypeFromUnitType(form.unitType),
       kubeEdgeVersion: form.version,
@@ -669,20 +688,6 @@ function EditEdgeUnitDialog({
               <FormField label="边缘单元名称">
                 <Input value={unit?.name ?? ""} disabled className="bg-[var(--color-bg-soft)] text-[var(--color-text-tertiary)]" />
                 <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">边缘单元名称不可修改</p>
-              </FormField>
-              <FormField label="绑定 NodeGroup">
-                <Select value={form.nodeGroupRef || "__unbound__"} onValueChange={(value) => setForm((prev) => ({ ...prev, nodeGroupRef: value === "__unbound__" ? "" : value }))}>
-                  <SelectTrigger className="h-9 w-full rounded-xl px-3 pr-5 text-sm shadow-none">
-                    <SelectValue placeholder="请选择节点组" />
-                  </SelectTrigger>
-                  <SelectContent position="popper" align="start" sideOffset={0} className="w-[var(--radix-select-trigger-width)] rounded-xl p-2 shadow-[0_10px_28px_rgba(15,23,42,0.14)]">
-                    <SelectItem value="__unbound__" className="h-9 px-3 pr-8 text-sm">暂不绑定</SelectItem>
-                    {Array.from(new Set([...nodeGroupOptions, unit?.nodeGroupRef || ""].filter(Boolean))).map((name) => (
-                      <SelectItem key={name} value={name} className="h-9 px-3 pr-8 text-sm">{name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="mt-1 text-[11px] text-[var(--color-text-tertiary)]">绑定后仅统计该 NodeGroup 节点及其工作负载；解绑后统计归零。</p>
               </FormField>
               <FormField label="接入方式">
                 <select className="blueedge-native-select" value={form.unitType} onChange={(event) => setForm((prev) => ({ ...prev, unitType: event.target.value as CreateForm["unitType"] }))}>
@@ -933,16 +938,6 @@ function UnitCard({
         <Metric type="apps" label="应用实例" value={unit.apps} />
       </div>
 
-      {!unit.nodeGroupRef && (
-        <div className="mt-5 flex items-center justify-between gap-4 rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3">
-          <div>
-            <p className="text-sm font-semibold text-[#c2410c]">尚未绑定节点组</p>
-            <p className="mt-0.5 text-xs text-[#9a3412]">未绑定 NodeGroup 时，节点、工作负载和应用实例均按 0 统计。</p>
-          </div>
-          <Button variant="outline" className="shrink-0" onClick={() => onEdit(unit)}>绑定节点组</Button>
-        </div>
-      )}
-
       <div className="mt-7 flex items-center justify-between border-t border-[var(--color-border)] pt-4">
         <div className="flex flex-wrap items-center gap-3">
           <Capability label="Insight" enabled={unit.insight} />
@@ -971,32 +966,26 @@ export default function Home() {
   const [editingUnit, setEditingUnit] = useState<EdgeUnit | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EdgeUnit | null>(null);
   const [clusterOptions, setClusterOptions] = useState<string[]>([]);
-  const [nodeGroupOptions, setNodeGroupOptions] = useState<string[]>([]);
   const { logout } = useAuth();
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setError("");
     try {
-      const [result, clusters, nodeGroups] = await Promise.all([
+      const [result, clusters] = await Promise.all([
         listEdgeUnits(),
         listConnectedClusters().catch((err) => {
           setError(messageOfError(err, "真实集群加载失败"));
           return { items: [] };
         }),
-        listNodeGroups().catch(() => []),
       ]);
       setEdgeUnits(result.items.map(toHomeEdgeUnit));
       setWarnings(result.warnings || []);
       setClusterOptions(clusters.items.map((cluster) => cluster.name));
-      setNodeGroupOptions(nodeGroups
-        .map((nodeGroup) => String(nodeGroup?.metadata?.name || nodeGroup?.name || ""))
-        .filter(Boolean));
     } catch (err) {
       setError(messageOfError(err, "边缘单元加载失败"));
       setEdgeUnits([]);
       setWarnings([]);
       setClusterOptions([]);
-      setNodeGroupOptions([]);
     } finally {
       setIsLoading(false);
     }
@@ -1020,7 +1009,7 @@ export default function Home() {
         name: form.name.trim(),
         clusterName: form.cluster,
         accessType: accessTypeFromUnitType(form.unitType),
-        kubeEdgeVersion: form.version,
+        kubeEdgeVersion: form.version.trim(),
         insightStatus: form.insightStatus,
         monitorStatus: form.monitorStatus,
         description: form.description,
@@ -1033,7 +1022,7 @@ export default function Home() {
       };
       await createEdgeUnit(payload);
       await loadData();
-      setNotice(`边缘单元 ${payload.name} 已创建，暂未绑定 NodeGroup。`);
+      setNotice(`边缘单元 ${payload.name} 已创建。`);
     } catch (err) {
       const message = messageOfError(err, "边缘单元创建失败");
       setNotice(message);
@@ -1066,7 +1055,7 @@ export default function Home() {
       const result = await deleteEdgeUnit(deleteTarget.name);
       await loadData();
       setDeleteTarget(null);
-      setNotice(result.warnings?.map((item) => item.message).join("；") || `边缘单元 ${deleteTarget.name} 元数据已删除，NodeGroup 不受影响。`);
+      setNotice(result.warnings?.map((item) => item.message).join("；") || `边缘单元 ${deleteTarget.name} 元数据已删除。`);
     } catch (err) {
       setNotice(messageOfError(err, "边缘单元删除失败"));
     } finally {
@@ -1138,7 +1127,7 @@ export default function Home() {
               <Server className="h-7 w-7" />
             </div>
             <p className="text-sm font-semibold text-[var(--color-text-secondary)]">暂无边缘单元</p>
-            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">当前没有可展示的 KubeEdge NodeGroup</p>
+            <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">当前还没有创建 BlueEdge 边缘单元</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
@@ -1162,7 +1151,6 @@ export default function Home() {
       />
       <EditEdgeUnitDialog
         unit={editingUnit}
-        nodeGroupOptions={nodeGroupOptions}
         onOpenChange={(open) => {
           if (!open) setEditingUnit(null);
         }}
@@ -1174,7 +1162,7 @@ export default function Home() {
           <AlertDialogHeader>
             <AlertDialogTitle>删除边缘单元元数据</AlertDialogTitle>
             <AlertDialogDescription>
-              将只删除 BlueEdge EdgeUnit ConfigMap 元数据，不会删除底层 NodeGroup、节点、工作负载或边缘应用。删除后，如果同名 NodeGroup 仍存在，列表可能继续以 fallback 方式展示。
+              将只删除 BlueEdge EdgeUnit ConfigMap 元数据，不会删除带归属标签的节点、工作负载或边缘应用。
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="rounded-xl bg-[var(--color-bg-soft)] px-4 py-3 text-sm text-[var(--color-text-primary)]">

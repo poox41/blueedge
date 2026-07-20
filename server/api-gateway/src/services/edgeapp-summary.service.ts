@@ -19,7 +19,24 @@ import {
   workloadManifestOfEdgeApp,
 } from "../utils/kubernetes.js";
 import { collectNodeGroupDetails } from "./edge-unit-source.service.js";
-import { deploymentTargetsEdgeUnit, isDeploymentHealthy } from "./edge-unit.service.js";
+import { isDeploymentHealthy } from "./edge-unit.service.js";
+
+function deploymentTargetsNodeGroup(deployment: any, nodeGroupNames: string[]) {
+  if (nodeGroupNames.length === 0) return false;
+  const targets = new Set(nodeGroupNames);
+  const records = [
+    labelsOf(deployment),
+    annotationsOf(deployment),
+    labelsOf(deployment?.spec?.template),
+    annotationsOf(deployment?.spec?.template),
+  ];
+  return records.some((record) => [
+    record["blueedge.io/nodegroup"],
+    record["blueedge.io/node-group"],
+    record["kubeedge.io/nodegroup"],
+    record.nodeGroup,
+  ].some((value) => targets.has(String(value || ""))));
+}
 import { getSummaryResourceEvents } from "./observability.service.js";
 
 function inferEdgeAppStatus(app: any, deployments: any[], pods: any[]): string {
@@ -59,7 +76,7 @@ export async function getEdgeAppSummary(namespace: string, name: string): Promis
   const refNames = refs.filter((ref) => ref.kind === "Deployment").map((ref) => ref.name).filter(Boolean);
   const deployments = deploymentsRaw.filter((item) => {
     const metadata = metadataOf(item);
-    return metadata.namespace === namespace && (refNames.includes(metadata.name) || deploymentTargetsEdgeUnit(item, name, targetNodeGroups[0] || ""));
+    return metadata.namespace === namespace && (refNames.includes(metadata.name) || deploymentTargetsNodeGroup(item, targetNodeGroups));
   });
   const pods = podsRaw.filter((pod) => podMatchesSelector(pod, selector) || deployments.some((deployment) => podMatchesSelector(pod, selectorOfWorkload(deployment))));
   const nodeGroups = targetNodeGroups.map((groupName) => {

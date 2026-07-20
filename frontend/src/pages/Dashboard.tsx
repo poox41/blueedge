@@ -38,7 +38,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toWorkbenchEdgeUnit, type WorkbenchEdgeUnitModel } from "@/api/adapters/edge-unit.adapter";
 import { updateEdgeUnit, type EdgeUnitUpdatePayload } from "@/api/services/product";
-import { listNodeGroups } from "@/api/services/resources";
 import { useAuth } from "@/contexts/AuthContext";
 import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 import { cn } from "@/lib/utils";
@@ -301,15 +300,6 @@ function OverviewCard({ unit, onEdit }: { unit: WorkbenchEdgeUnit; onEdit: () =>
       </div>
 
       <div className="p-5">
-        {!unit.nodeGroupRef && (
-          <div className="mb-5 flex items-center justify-between gap-4 rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3">
-            <div>
-              <p className="text-sm font-semibold text-[#c2410c]">当前边缘单元尚未绑定 NodeGroup</p>
-              <p className="mt-0.5 text-xs text-[#9a3412]">未绑定时不会统计集群全局资源，节点、工作负载和应用实例均为 0。</p>
-            </div>
-            <Button variant="outline" className="shrink-0" onClick={onEdit}>绑定节点组</Button>
-          </div>
-        )}
         <div className="mb-6 grid grid-cols-3 gap-6 border-b border-[var(--color-border)] pb-6">
           {metrics.map((item) => {
             const Icon = item.icon;
@@ -362,7 +352,6 @@ function OverviewCard({ unit, onEdit }: { unit: WorkbenchEdgeUnit; onEdit: () =>
               ["名称", unit.name],
               ["状态", <StatusPill key="status" tone={unit.status === "运行中" ? "success" : "warning"}>{unit.status}</StatusPill>],
               ["工作集群", unit.cluster],
-              ["绑定 NodeGroup", unit.nodeGroupRef || "未绑定"],
               ["KubeEdge 版本", unit.version],
               ["边缘节点规模", unit.nodeScale],
               ["边缘单元类型", unit.type],
@@ -440,14 +429,12 @@ function SegmentButton({ selected, children, onClick, showCheck = false }: { sel
 function OverviewEditDialog({
   open,
   unit,
-  nodeGroupOptions,
   onOpenChange,
   isSubmitting,
   onSave,
 }: {
   open: boolean;
   unit: WorkbenchEdgeUnit;
-  nodeGroupOptions: string[];
   onOpenChange: (open: boolean) => void;
   isSubmitting: boolean;
   onSave: (unit: WorkbenchEdgeUnit, payload: EdgeUnitUpdatePayload) => Promise<void>;
@@ -460,7 +447,6 @@ function OverviewEditDialog({
   const formBodyRef = useRef<HTMLDivElement>(null);
   const [form, setForm] = useState({
     type: unit.type,
-    nodeGroupRef: unit.nodeGroupRef || "",
     cluster: unit.cluster === "未配置" ? "" : unit.cluster,
     version: unit.version === "未配置" ? "" : unit.version,
     insightStatus: unit.insightStatus,
@@ -483,7 +469,6 @@ function OverviewEditDialog({
     setShowCommWarning(false);
     setForm({
       type: unit.type,
-      nodeGroupRef: unit.nodeGroupRef || "",
       cluster: unit.cluster === "未配置" ? "" : unit.cluster,
       version: unit.version === "未配置" ? "" : unit.version,
       insightStatus: unit.insightStatus,
@@ -504,7 +489,6 @@ function OverviewEditDialog({
 
   const initialForm = {
     type: unit.type,
-    nodeGroupRef: unit.nodeGroupRef || "",
     cluster: unit.cluster === "未配置" ? "" : unit.cluster,
     version: unit.version === "未配置" ? "" : unit.version,
     insightStatus: unit.insightStatus,
@@ -536,7 +520,6 @@ function OverviewEditDialog({
 
   const save = () => {
     const payload: EdgeUnitUpdatePayload = {
-      nodeGroupRef: form.nodeGroupRef,
       clusterName: form.cluster,
       accessType: accessTypeFromWorkbench(form.type),
       kubeEdgeVersion: form.version,
@@ -581,12 +564,6 @@ function OverviewEditDialog({
               <div className="space-y-5">
                 <FormField label="边缘单元名称" hint="边缘单元名称不可修改"><Input value={unit.name} disabled className="bg-[var(--color-bg-soft)] text-[var(--color-text-tertiary)]" /></FormField>
                 <FormField label="工作集群" hint="工作集群不可修改"><Input value={unit.cluster} disabled className="bg-[var(--color-bg-soft)] text-[var(--color-text-tertiary)]" /></FormField>
-                <FormField label="绑定 NodeGroup" hint="绑定后仅统计该节点组中的节点及其工作负载；选择暂不绑定后，资源统计将归零。">
-                  <select className="blueedge-native-select" value={form.nodeGroupRef} onChange={(event) => setForm((prev) => ({ ...prev, nodeGroupRef: event.target.value }))}>
-                    <option value="">暂不绑定</option>
-                    {Array.from(new Set([...nodeGroupOptions, unit.nodeGroupRef || ""].filter(Boolean))).map((name) => <option key={name} value={name}>{name}</option>)}
-                  </select>
-                </FormField>
                 <FormField label="KubeEdge 版本" hint="KubeEdge 版本不可修改"><Input value={unit.version} disabled className="bg-[var(--color-bg-soft)] text-[var(--color-text-tertiary)]" /></FormField>
                 <FormField
                   label="边缘节点规模"
@@ -694,29 +671,11 @@ export function Dashboard() {
   const [isMutating, setIsMutating] = useState(false);
   const [notice, setNotice] = useState("");
   const [editOpen, setEditOpen] = useState(false);
-  const [nodeGroupOptions, setNodeGroupOptions] = useState<string[]>([]);
   const [introVisible, setIntroVisible] = useState(true);
 
   useEffect(() => {
     void refreshEdgeUnits();
   }, [refreshEdgeUnits]);
-
-  useEffect(() => {
-    let active = true;
-    void listNodeGroups()
-      .then((items) => {
-        if (!active) return;
-        setNodeGroupOptions(items
-          .map((nodeGroup) => String(nodeGroup?.metadata?.name || nodeGroup?.name || ""))
-          .filter(Boolean));
-      })
-      .catch(() => {
-        if (active) setNodeGroupOptions([]);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const handleSave = async (target: WorkbenchEdgeUnit, payload: EdgeUnitUpdatePayload) => {
     setIsMutating(true);
@@ -808,7 +767,7 @@ export function Dashboard() {
           </div>
         </main>
       </div>
-      <OverviewEditDialog open={editOpen} unit={unit} nodeGroupOptions={nodeGroupOptions} onOpenChange={setEditOpen} isSubmitting={isMutating} onSave={handleSave} />
+      <OverviewEditDialog open={editOpen} unit={unit} onOpenChange={setEditOpen} isSubmitting={isMutating} onSave={handleSave} />
     </div>
   );
 }

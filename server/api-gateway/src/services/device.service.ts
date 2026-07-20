@@ -3,7 +3,6 @@ import type { DeviceSummarySources } from "../types/device.js";
 import type { EdgeUnitWarning } from "../types/warnings.js";
 import {
   annotationsOf,
-  dataOf,
   explicitNodeNamesOf,
   itemsOf,
   labelsOf,
@@ -15,8 +14,6 @@ import {
 } from "../utils/kubernetes.js";
 import {
   collectNodeGroupDetails,
-  edgeUnitConfigMapName,
-  getEdgeUnitConfigMaps,
   getEdgeUnitNodes,
 } from "./edge-unit-source.service.js";
 import { getDeviceExtensionConfig } from "./device-config.service.js";
@@ -237,12 +234,6 @@ function nodeGroupForNode(nodeName: string, node: any | null, nodeGroups: any[])
   return matched ? String(metadataOf(matched).name || matched?.name || "") : "";
 }
 
-function edgeUnitForNodeGroup(nodeGroupRef: string, edgeUnitConfigMaps: any[]): string {
-  if (!nodeGroupRef) return "";
-  const matched = edgeUnitConfigMaps.find((item) => dataOf(item).nodeGroupRef === nodeGroupRef);
-  return matched ? edgeUnitConfigMapName(matched) : "";
-}
-
 function directEdgeUnitRefOf(device: any): string {
   const labels = labelsOf(device);
   const annotations = annotationsOf(device);
@@ -299,7 +290,10 @@ function buildDeviceSummaryView(
   const nodeGroupRef =
     firstString(labels["blueedge.io/nodegroup"], annotations["blueedge.io/nodegroup"], labels["blueedge.io/node-group"], annotations["blueedge.io/node-group"]) ||
     nodeGroupForNode(nodeName, node, sources.nodeGroups);
-  const edgeUnitRef = directEdgeUnitRefOf(device) || edgeUnitForNodeGroup(nodeGroupRef, sources.edgeUnitConfigMaps);
+  const edgeUnitRef = directEdgeUnitRefOf(device) || firstString(
+    labelsOf(node)["blueedge.io/edge-unit"],
+    annotationsOf(node)["blueedge.io/edge-unit"],
+  );
   const protocol = readProtocol(device) !== "unknown" ? readProtocol(device) : (model ? readProtocol(model) : "unknown");
   const twins = normalizeDeviceTwins(device);
   const view: any = {
@@ -323,7 +317,7 @@ function buildDeviceSummaryView(
 }
 
 async function collectDeviceSummarySources(warnings: EdgeUnitWarning[], namespace?: string): Promise<DeviceSummarySources> {
-  const [deviceModels, nodes, nodeGroups, edgeUnitConfigMaps] = await Promise.all([
+  const [deviceModels, nodes, nodeGroups] = await Promise.all([
     getDeviceModelsFromK8s(namespace).catch((error) => {
       warnings.push(warning("deviceModel", error, "DeviceModel list unavailable"));
       return [];
@@ -336,9 +330,8 @@ async function collectDeviceSummarySources(warnings: EdgeUnitWarning[], namespac
       warnings.push(warning("nodegroup", error, "NodeGroup list unavailable"));
       return [];
     }),
-    getEdgeUnitConfigMaps(warnings),
   ]);
-  return { deviceModels, nodes, nodeGroups, edgeUnitConfigMaps };
+  return { deviceModels, nodes, nodeGroups };
 }
 
 export async function listDeviceModelSummaries(namespace?: string) {

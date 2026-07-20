@@ -28,6 +28,14 @@ test("AccessConfig does not inherit or retain an EdgeUnit NodeGroup", () => {
   });
 });
 
+test("AccessConfig defaults the registered node name to the configuration name", () => {
+  const { nodeName: _nodeName, ...withoutNodeName } = payload;
+  const data = buildAccessConfigData(withoutNodeName);
+
+  assert.equal(data.name, "edge-01");
+  assert.equal(data.nodeName, "edge-01");
+});
+
 test("KubeEdge join command registers BlueEdge product and ownership labels", () => {
   const command = buildJoinCommand({
     ...payload,

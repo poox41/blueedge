@@ -15,9 +15,8 @@ import { StatusBadge } from "@/components/common/StatusBadge";
 import { formatMemory, listNodeMetrics } from "@/api/services/metrics";
 import { deleteNodeResource, getNode, listNodes, listPods, updateNodeResource } from "@/api/services/resources";
 import { toAccessConfigUiModel, type AccessConfigUiModel } from "@/api/adapters/access-config.adapter";
-import { toHomeEdgeUnit } from "@/api/adapters/edge-unit.adapter";
 import { nodeSummaryStatusText } from "@/api/adapters/node-summary.adapter";
-import { createAccessConfig as createAccessConfigResource, deleteAccessConfig, getEdgeUnitResources, getNodeSummary, listAccessConfigs, listEdgeUnits, updateAccessConfig, type AccessConfigPayload } from "@/api/services/product";
+import { createAccessConfig as createAccessConfigResource, deleteAccessConfig, getEdgeUnitResources, getNodeSummary, listAccessConfigs, updateAccessConfig, type AccessConfigPayload } from "@/api/services/product";
 import type { EdgeNodeView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
@@ -49,8 +48,6 @@ interface AccessConfig extends AccessConfigUiModel {
 
 type AccessConfigForm = {
   name: string;
-  edgeUnitRef: string;
-  nodeName: string;
   architecture: "amd64" | "arm64" | "arm";
   os: string;
   kubeEdgeVersion: string;
@@ -69,12 +66,10 @@ type AccessLabelDraft = {
   value: string;
 };
 
-type AccessRequiredField = "name" | "edgeUnitRef" | "nodeName" | "kubeEdgeVersion" | "criAddress" | "address" | "registry";
+type AccessRequiredField = "name" | "kubeEdgeVersion" | "criAddress" | "address" | "registry";
 
 const accessRequiredMessages: Record<AccessRequiredField, string> = {
   name: "请输入配置名称",
-  edgeUnitRef: "请选择关联边缘单元",
-  nodeName: "请输入未来注册的节点名称",
   kubeEdgeVersion: "请输入实际 KubeEdge 版本",
   criAddress: "请选择 CRI 服务地址",
   address: "请输入访问地址",
@@ -83,8 +78,6 @@ const accessRequiredMessages: Record<AccessRequiredField, string> = {
 
 const defaultAccessForm: AccessConfigForm = {
   name: "",
-  edgeUnitRef: "",
-  nodeName: "",
   architecture: "amd64",
   os: "linux",
   kubeEdgeVersion: "",
@@ -250,7 +243,7 @@ function toAccessConfigRow(item: AccessConfigUiModel): AccessConfig {
 }
 
 export function Nodes() {
-  const { selectedEdgeUnitName } = useEdgeUnits();
+  const { selectedEdgeUnit, selectedEdgeUnitName } = useEdgeUnits();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [data, setData] = useState<Node[]>([]);
@@ -267,7 +260,6 @@ export function Nodes() {
   const [aliasTarget, setAliasTarget] = useState<Node | null>(null);
   const [aliasValue, setAliasValue] = useState("");
   const [accessConfigs, setAccessConfigs] = useState<AccessConfig[]>([]);
-  const [edgeUnitOptions, setEdgeUnitOptions] = useState<Array<{ name: string; version: string }>>([]);
   const [accessError, setAccessError] = useState("");
   const [accessCreateOpen, setAccessCreateOpen] = useState(false);
   const [accessCancelConfirmOpen, setAccessCancelConfirmOpen] = useState(false);
@@ -281,12 +273,8 @@ export function Nodes() {
   const loadAccessConfigs = useCallback(async () => {
     setAccessError("");
     try {
-      const [configsResult, edgeUnitsResult] = await Promise.all([
-        listAccessConfigs(),
-        listEdgeUnits().catch(() => ({ items: [] })),
-      ]);
+      const configsResult = await listAccessConfigs();
       setAccessConfigs(configsResult.items.map(toAccessConfigUiModel).map(toAccessConfigRow));
-      setEdgeUnitOptions(edgeUnitsResult.items.map(toHomeEdgeUnit).map((item) => ({ name: item.name, version: item.version === "未配置" ? "" : item.version })));
     } catch (err) {
       setAccessError(err instanceof Error ? err.message : "接入配置加载失败");
     }
@@ -344,6 +332,19 @@ export function Nodes() {
       setSearchParams({}, { replace: true });
     }
   }, [searchParams, setSearchParams]);
+
+  useEffect(() => {
+    if (!accessCreateOpen) return;
+    const inheritedVersion = selectedEdgeUnit?.kubeEdgeVersion === "unknown" ? "" : selectedEdgeUnit?.kubeEdgeVersion || "";
+    if (!inheritedVersion) return;
+    setAccessForm((current) => current.kubeEdgeVersion ? current : { ...current, kubeEdgeVersion: inheritedVersion });
+    setAccessFormErrors((current) => {
+      if (!current.kubeEdgeVersion) return current;
+      const next = { ...current };
+      delete next.kubeEdgeVersion;
+      return next;
+    });
+  }, [accessCreateOpen, selectedEdgeUnit]);
 
   const filtered = useMemo(() => {
     let result = data;
@@ -468,11 +469,14 @@ export function Nodes() {
   };
   const createAccessConfig = async () => {
     if (!validateAccessForm()) return;
+    if (!selectedEdgeUnitName) {
+      setAccessError("当前未选择边缘单元，无法创建接入配置");
+      return;
+    }
     const name = accessForm.name.trim();
     const payload: AccessConfigPayload = {
       name,
-      edgeUnitRef: accessForm.edgeUnitRef,
-      nodeName: accessForm.nodeName.trim() || name,
+      edgeUnitRef: selectedEdgeUnitName,
       architecture: accessForm.architecture,
       os: accessForm.os,
       kubeEdgeVersion: accessForm.kubeEdgeVersion,
@@ -775,24 +779,9 @@ export function Nodes() {
             <AccessField label="配置名称" required error={accessFormErrors.name} errorId="access-config-name-error">
               <Input id="access-config-name" value={accessForm.name} onChange={(event) => updateAccessFormField("name", event.target.value)} placeholder="请输入配置名称" aria-invalid={Boolean(accessFormErrors.name)} aria-describedby={accessFormErrors.name ? "access-config-name-error" : undefined} className={cn("h-11 rounded-xl", accessFormErrors.name && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")} />
             </AccessField>
-            <AccessField label="关联边缘单元" required error={accessFormErrors.edgeUnitRef} errorId="access-config-edgeUnitRef-error">
-              <select value={accessForm.edgeUnitRef} onChange={(event) => {
-                const edgeUnit = edgeUnitOptions.find((item) => item.name === event.target.value);
-                setAccessForm({ ...accessForm, edgeUnitRef: event.target.value, kubeEdgeVersion: edgeUnit?.version || accessForm.kubeEdgeVersion });
-                setAccessFormErrors((current) => {
-                  const next = { ...current };
-                  delete next.edgeUnitRef;
-                  if (edgeUnit?.version) delete next.kubeEdgeVersion;
-                  return next;
-                });
-              }} id="access-config-edgeUnitRef" aria-invalid={Boolean(accessFormErrors.edgeUnitRef)} aria-describedby={accessFormErrors.edgeUnitRef ? "access-config-edgeUnitRef-error" : undefined} className={cn("h-11 w-full rounded-xl border-2 bg-white px-4 text-sm outline-none", accessFormErrors.edgeUnitRef ? "border-[var(--color-danger)] focus:border-[var(--color-danger)]" : "border-[var(--color-input-border)] focus:border-[var(--color-brand)]")}>
-                <option value="">请选择边缘单元</option>
-                {edgeUnitOptions.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-              </select>
-            </AccessField>
-            <AccessField label="节点名称" required error={accessFormErrors.nodeName} errorId="access-config-nodeName-error">
-              <Input id="access-config-nodeName" value={accessForm.nodeName} onChange={(event) => updateAccessFormField("nodeName", event.target.value)} placeholder="请输入未来注册的节点名称" aria-invalid={Boolean(accessFormErrors.nodeName)} aria-describedby={accessFormErrors.nodeName ? "access-config-nodeName-error" : undefined} className={cn("h-11 rounded-xl", accessFormErrors.nodeName && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")} />
-            </AccessField>
+            <div className="rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3 text-sm leading-6 text-[#1d4ed8]">
+              接入配置将自动关联当前边缘单元 <span className="font-semibold">{selectedEdgeUnitName || "未选择"}</span>，注册节点名称默认与配置名称一致。
+            </div>
             <div className="grid gap-4 md:grid-cols-2">
               <AccessField label="节点架构" required>
                 <select value={accessForm.architecture} onChange={(event) => setAccessForm({ ...accessForm, architecture: event.target.value as AccessConfigForm["architecture"] })} className="h-11 w-full rounded-xl border-2 border-[var(--color-input-border)] bg-white px-4 text-sm outline-none focus:border-[var(--color-brand)]">

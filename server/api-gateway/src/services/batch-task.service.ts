@@ -769,9 +769,8 @@ async function validateBatchTaskTargets(targetType: string, targetRefs: string[]
   }
 
   if (targetType === "edgeUnit") {
-    const { edgeUnitConfigMaps, nodeGroupByName, nodeGroupError } = await collectEdgeUnitSources(warnings, { includeNodeGroups: true });
-    if (nodeGroupError) throw nodeGroupError;
-    const names = knownEdgeUnitNames(edgeUnitConfigMaps, nodeGroupByName, warnings);
+    const { edgeUnitConfigMaps } = await collectEdgeUnitSources(warnings, { includeNodeGroups: false });
+    const names = knownEdgeUnitNames(edgeUnitConfigMaps, warnings);
     const missing = targetRefs.filter((name) => !names.has(name));
     if (missing.length > 0) throw new Error(`EdgeUnit not found: ${missing.join(", ")}`);
   }
