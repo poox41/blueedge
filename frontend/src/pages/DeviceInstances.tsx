@@ -4,11 +4,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { Check, ChevronLeft, ChevronRight, Copy, Download, Maximize2, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X, ArrowLeft, Settings, Tag, FileCode2, Bug, ClipboardList } from "lucide-react";
-import { createDeviceConfig, deleteDeviceConfig, getDeviceSummary, getResourceObservability, listDeviceModelSummaries, listDeviceSummaries, updateDeviceConfig } from "@/api/services/product";
+import { createDeviceConfig, deleteDeviceConfig, getDeviceSummary, getEdgeUnitResources, getResourceObservability, listDeviceModelSummaries, listDeviceSummaries, updateDeviceConfig } from "@/api/services/product";
+import { listNodes } from "@/api/services/resources";
 import { deviceStatusColor, deviceStatusText } from "@/api/adapters/device-summary.adapter";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { ObservabilityEvent } from "@/api/adapters/observability.adapter";
@@ -17,6 +19,8 @@ import type { DeviceModelSummary } from "@/api/adapters/device-model-summary.ada
 import type { KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 import { useNamespace } from "@/contexts/NamespaceContext";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
+import type { EdgeNodeView } from "@/types/kubeedge";
 import { validateAccessConfigYaml, validateDeviceTwin, type DeviceTwinFormValue } from "@/lib/device-config";
 import { useNavigate, useParams } from "react-router-dom";
 import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
@@ -39,7 +43,7 @@ function toDeviceRow(item: DeviceSummary): DI {
     statusColor: deviceStatusColor(item.status),
     twins: item.twins.total,
     createdAt: item.createdAt,
-    lastReport: item.twins.items.find((t) => t.lastUpdatedAt)?.lastUpdatedAt || "-",
+    lastReport: item.twins.lastReportedAt || "-",
     protocol: item.protocol || "-",
     description: item.annotations?.description || item.annotations?.["blueedge.io/description"] || "-",
     labels: item.labels || {},
@@ -118,7 +122,7 @@ report:
   qos: 0`;
 
 export function DeviceInstances() {
-  const deviceValidation = useRequiredFieldValidation<"name" | "namespace" | "model" | "protocol" | "twins" | "yaml">();
+  const deviceValidation = useRequiredFieldValidation<"name" | "namespace" | "model" | "node" | "protocol" | "twins" | "yaml">();
   const twinValidation = useRequiredFieldValidation<"propertyName">();
   const navigate = useNavigate();
   const { namespace: detailNamespaceParam, name: detailNameParam } = useParams<{ namespace?: string; name?: string }>();
@@ -126,9 +130,11 @@ export function DeviceInstances() {
   const detailName = detailNameParam ? decodeURIComponent(detailNameParam) : "";
   const isDetailRoute = Boolean(detailNamespace && detailName);
   const { selectedNamespace } = useNamespace();
+  const { selectedEdgeUnitName } = useEdgeUnits();
   const namespaces = useNamespaceOptions();
   const [data, setData] = useState<DI[]>([]);
   const [modelOptions, setModelOptions] = useState<DeviceModelSummary[]>([]);
+  const [nodeOptions, setNodeOptions] = useState<EdgeNodeView[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -164,25 +170,33 @@ export function DeviceInstances() {
     setError("");
     setWarnings([]);
     try {
-      const [rows, models] = await Promise.all([
+      const [rows, models, nodes] = await Promise.all([
         listDeviceSummaries(),
         listDeviceModelSummaries().catch(() => ({ items: [], warnings: [] })),
+        selectedEdgeUnitName
+          ? Promise.all([listNodes(), getEdgeUnitResources(selectedEdgeUnitName)]).then(([allNodes, scope]) => {
+              const allowedNodeNames = new Set(scope.item.nodeNames);
+              return allNodes.filter((node) => node.role === "edge" && allowedNodeNames.has(node.name));
+            }).catch(() => [])
+          : Promise.resolve([]),
       ]);
       setData(rows.items.map(toDeviceRow));
       setWarnings([...(rows.warnings || []), ...(models.warnings || [])].map((item) => item.message));
       setModelOptions(models.items);
+      setNodeOptions(nodes);
       setPage(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载终端设备数据失败");
       if (!preserveCurrentRows) {
         setData([]);
         setModelOptions([]);
+        setNodeOptions([]);
       }
     } finally {
       if (preserveCurrentRows) setIsRefreshing(false);
       else setIsLoading(false);
     }
-  }, []);
+  }, [selectedEdgeUnitName]);
 
   useEffect(() => {
     void loadData();
@@ -408,6 +422,7 @@ export function DeviceInstances() {
           { field: "name", valid: Boolean(form.name.trim()), message: "请输入设备名称", elementId: "device-name" },
           { field: "namespace", valid: Boolean(form.namespace), message: "请选择命名空间", elementId: "device-namespace" },
           { field: "model", valid: Boolean(form.model), message: "请选择设备模型", elementId: "device-model" },
+          { field: "node", valid: Boolean(form.node), message: "请选择绑定节点", elementId: "device-node" },
           { field: "protocol", valid: Boolean(form.protocol.trim()), message: "请输入访问协议", elementId: "device-protocol" },
         ])) return;
       }
@@ -465,7 +480,54 @@ export function DeviceInstances() {
                         {editingDevice ? <Input disabled value={form.namespace} className="h-10 rounded-xl bg-[var(--color-bg-soft)] text-sm text-[var(--color-text-tertiary)]" /> : <select id="device-namespace" value={form.namespace} onChange={e => { setForm({ ...form, namespace: e.target.value, model: "", protocol: "" }); setTwins([]); deviceValidation.clearError("namespace"); }} aria-invalid={Boolean(deviceValidation.errors.namespace)} aria-describedby={deviceValidation.errors.namespace ? "device-namespace-error" : undefined} className="blueedge-native-select !h-10 !rounded-xl !text-sm">{namespaces.filter(n=>n.value!=="all").map(n => (<option key={n.value} value={n.value}>{n.label}</option>))}</select>}
                       </PrototypeField>
                       <PrototypeField label="设备模型" required error={deviceValidation.errors.model} errorId="device-model-error">
-                        {editingDevice ? <Input disabled value={form.model} className="h-10 rounded-xl bg-[var(--color-bg-soft)] text-sm text-[var(--color-text-tertiary)]" /> : <select id="device-model" value={form.model} onChange={e => { const model = availableModels.find((item) => item.name === e.target.value); setForm({ ...form, model: e.target.value, protocol: model?.protocol || form.protocol }); setTwins([]); deviceValidation.clearError("model"); if (model?.protocol) deviceValidation.clearError("protocol"); }} aria-invalid={Boolean(deviceValidation.errors.model)} aria-describedby={deviceValidation.errors.model ? "device-model-error" : undefined} className="blueedge-native-select !h-10 !rounded-xl !text-sm"><option value="">请选择真实设备模型</option>{availableModels.map(model => <option key={`${model.namespace}/${model.name}`} value={model.name}>{model.name}</option>)}</select>}
+                        {editingDevice ? <Input disabled value={form.model} className="h-10 rounded-xl bg-[var(--color-bg-soft)] text-sm text-[var(--color-text-tertiary)]" /> : (
+                          <Select
+                            value={form.model || undefined}
+                            onValueChange={(value) => {
+                              const model = availableModels.find((item) => item.name === value);
+                              setForm({ ...form, model: value, protocol: model?.protocol || form.protocol });
+                              setTwins([]);
+                              deviceValidation.clearError("model");
+                              if (model?.protocol) deviceValidation.clearError("protocol");
+                            }}
+                          >
+                            <SelectTrigger
+                              id="device-model"
+                              aria-invalid={Boolean(deviceValidation.errors.model)}
+                              aria-describedby={deviceValidation.errors.model ? "device-model-error" : undefined}
+                              className="h-10 w-full rounded-xl border-2 border-[#cbd5e1] px-4 text-sm shadow-[0_1px_2px_rgba(15,23,42,0.04)] hover:border-[#94a3b8] focus-visible:border-[#111827] focus-visible:ring-2 focus-visible:ring-[#111827]/10 [&[data-state=open]>svg]:rotate-180 [&>svg]:transition-transform"
+                            >
+                              <SelectValue placeholder="请选择设备模型" />
+                            </SelectTrigger>
+                            <SelectContent
+                              position="popper"
+                              align="start"
+                              sideOffset={6}
+                              viewportClassName="!h-auto max-h-[240px] !p-0"
+                              className="z-[100] max-h-[240px] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-[#e2e8f0] bg-white p-0 shadow-[0_14px_34px_rgba(15,23,42,0.16)]"
+                            >
+                              {availableModels.map((model) => (
+                                <SelectItem
+                                  key={`${model.namespace}/${model.name}`}
+                                  value={model.name}
+                                  className="min-h-10 rounded-none px-5 py-2 pr-12 text-sm text-[#1e293b] focus:bg-[#eaf2ff] focus:text-[var(--color-brand)] data-[state=checked]:bg-[#eaf2ff] data-[state=checked]:text-[var(--color-brand)] [&_[data-slot=select-item-indicator]]:right-5 [&_[data-slot=select-item-indicator]]:text-[var(--color-brand)]"
+                                >
+                                  {model.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                      </PrototypeField>
+                      <PrototypeField label="绑定节点" required error={deviceValidation.errors.node} errorId="device-node-error">
+                        <Select value={form.node || undefined} onValueChange={(value) => { setForm({ ...form, node: value }); deviceValidation.clearError("node"); }}>
+                          <SelectTrigger id="device-node" aria-invalid={Boolean(deviceValidation.errors.node)} aria-describedby={deviceValidation.errors.node ? "device-node-error" : undefined} className="h-10 w-full rounded-xl border-2 border-[#cbd5e1] px-4 text-sm shadow-[0_1px_2px_rgba(15,23,42,0.04)] hover:border-[#94a3b8] focus-visible:border-[#111827] focus-visible:ring-2 focus-visible:ring-[#111827]/10 [&[data-state=open]>svg]:rotate-180 [&>svg]:transition-transform">
+                            <SelectValue placeholder="请选择边缘节点" />
+                          </SelectTrigger>
+                          <SelectContent position="popper" align="start" sideOffset={6} viewportClassName="!h-auto max-h-[240px] !p-0" className="z-[100] max-h-[240px] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-[#e2e8f0] bg-white p-0 shadow-[0_14px_34px_rgba(15,23,42,0.16)]">
+                            {nodeOptions.map((node) => <SelectItem key={node.name} value={node.name} className="min-h-10 rounded-none px-5 py-2 pr-12 text-sm text-[#1e293b] focus:bg-[#eaf2ff] focus:text-[var(--color-brand)] data-[state=checked]:bg-[#eaf2ff] data-[state=checked]:text-[var(--color-brand)] [&_[data-slot=select-item-indicator]]:right-5 [&_[data-slot=select-item-indicator]]:text-[var(--color-brand)]">{node.name}</SelectItem>)}
+                          </SelectContent>
+                        </Select>
                       </PrototypeField>
                       <PrototypeField label="访问协议" required error={deviceValidation.errors.protocol} errorId="device-protocol-error">
                         <Input id="device-protocol" disabled={Boolean(editingDevice)} placeholder="MQTT / Modbus TCP / OPC UA" value={form.protocol} onChange={e => { setForm({ ...form, protocol: e.target.value }); deviceValidation.clearError("protocol"); }} aria-invalid={Boolean(deviceValidation.errors.protocol)} aria-describedby={deviceValidation.errors.protocol ? "device-protocol-error" : undefined} className="h-10 rounded-xl text-sm disabled:bg-[var(--color-bg-soft)] disabled:text-[var(--color-text-tertiary)]" />
@@ -532,7 +594,7 @@ export function DeviceInstances() {
                       </ConfirmSection>
                       <ConfirmSection title="访问配置">
                         <p className="mb-3 text-sm text-[var(--color-text-secondary)]">结构化配置写入 Device CRD，原始 YAML 写入关联扩展 ConfigMap。</p>
-                        <YamlPanel title="YAML 预览" readonly readonlyActions compact value={accessConfigYaml} downloadName={`${form.name || "device"}-access-config.yaml`} />
+                        <YamlPanel title="YAML 预览" readonly readonlyActions compact roomy value={accessConfigYaml} downloadName={`${form.name || "device"}-access-config.yaml`} />
                       </ConfirmSection>
                     </div>
                   )}
@@ -753,11 +815,12 @@ function CreateStepper({ current, steps }: { current: number; steps: string[] })
   );
 }
 
-function YamlPanel({ title, value, onChange, readonly, actions, readonlyActions, compact, downloadName }: { title: string; value: string; onChange?: (value: string) => void; readonly?: boolean; actions?: boolean; readonlyActions?: boolean; compact?: boolean; downloadName?: string; }) {
+function YamlPanel({ title, value, onChange, readonly, actions, readonlyActions, compact, roomy, downloadName }: { title: string; value: string; onChange?: (value: string) => void; readonly?: boolean; actions?: boolean; readonlyActions?: boolean; compact?: boolean; roomy?: boolean; downloadName?: string; }) {
   const showActions = actions || readonlyActions;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenDraft, setFullscreenDraft] = useState(value);
+  const [editorScroll, setEditorScroll] = useState({ top: 0, left: 0 });
   const downloadYaml = () => {
     const blob = new Blob([value], { type: "text/yaml;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -797,14 +860,30 @@ function YamlPanel({ title, value, onChange, readonly, actions, readonlyActions,
           </div>
         ) : null}
       </div>
-      <div className={cn("grid grid-cols-[44px_1fr] bg-[#1f1f1f] font-mono text-[13px] leading-6", compact ? "h-[220px]" : "h-[300px]", isFullscreen && "h-[calc(88vh-132px)]")}>
+      <div className={cn("grid grid-cols-[44px_1fr] bg-[#1f1f1f] font-mono text-[13px] leading-6", roomy ? "h-[280px]" : compact ? "h-[220px]" : "h-[300px]", isFullscreen && "h-[calc(88vh-132px)]")}>
         <div className="select-none border-r border-white/5 py-3 text-right text-[#858585]">
           {lines.map((_, index) => <div key={index} className="px-3">{index + 1}</div>)}
         </div>
         {readonly || !onChange ? (
           <pre className="overflow-auto whitespace-pre py-3 pl-4 pr-5"><code><HighlightedYaml value={panelValue} /></code></pre>
         ) : (
-          <Textarea value={panelValue} onChange={(event) => isFullscreen ? setFullscreenDraft(event.target.value) : onChange(event.target.value)} spellCheck={false} className="h-full resize-none overflow-auto rounded-none border-0 bg-transparent py-3 pl-4 pr-5 font-mono text-[13px] leading-6 text-[#d4d4d4] caret-white shadow-none outline-none selection:bg-white/20 focus-visible:ring-0" />
+          <div className="relative h-full min-w-0 overflow-hidden">
+            <pre
+              aria-hidden="true"
+              className="pointer-events-none absolute left-0 top-0 min-h-full min-w-full whitespace-pre py-3 pl-4 pr-5 text-[#d4d4d4]"
+              style={{ transform: `translate(${-editorScroll.left}px, ${-editorScroll.top}px)` }}
+            >
+              <code><HighlightedYaml value={panelValue} /></code>
+            </pre>
+            <Textarea
+              value={panelValue}
+              onChange={(event) => isFullscreen ? setFullscreenDraft(event.target.value) : onChange(event.target.value)}
+              onScroll={(event) => setEditorScroll({ top: event.currentTarget.scrollTop, left: event.currentTarget.scrollLeft })}
+              spellCheck={false}
+              style={{ color: "transparent", WebkitTextFillColor: "transparent", caretColor: "white" }}
+              className="absolute inset-0 h-full resize-none overflow-auto rounded-none border-0 bg-transparent py-3 pl-4 pr-5 font-mono text-[13px] leading-6 shadow-none outline-none selection:bg-white/20 focus-visible:ring-0"
+            />
+          </div>
         )}
       </div>
     </div>

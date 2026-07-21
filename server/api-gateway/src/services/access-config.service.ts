@@ -33,6 +33,7 @@ const accessConfigNameLabel = "blueedge.io/access-config";
 const accessConfigProtocols = new Set(["https", "websocket", "quic", "QUIC"]);
 const accessConfigDrivers = new Set(["systemd", "cgroups"]);
 const accessConfigStatuses = new Set(["pending", "registered", "ready", "abnormal", "expired", "unknown"]);
+const accessConfigDefaultPorts = { websocket: "30000", quic: "30001", https: "30002" } as const;
 const blueedgeNodeLabels = {
   "blueedge.io/managed-by": "blueedge",
   "blueedge.io/node-role": "edge",
@@ -46,6 +47,34 @@ function normalizeAccessConfigProtocol(value: string | undefined): string {
   if (!value) return "https";
   if (value === "QUIC") return "quic";
   return accessConfigProtocols.has(value) ? value : "";
+}
+
+function formatCloudCoreEndpoint(address: string, port: string): string {
+  const trimmedAddress = address.trim();
+  const trimmedPort = port.trim();
+  if (!trimmedAddress || !/^\d+$/.test(trimmedPort)) return "";
+  const bracketedIpv6 = trimmedAddress.match(/^\[([^\]]+)](?::\d+)?$/);
+  if (bracketedIpv6) return `[${bracketedIpv6[1]}]:${trimmedPort}`;
+  if (trimmedAddress.includes(":")) {
+    const hostWithPort = trimmedAddress.match(/^([^:]+):\d+$/);
+    if (hostWithPort) return `${hostWithPort[1]}:${trimmedPort}`;
+    return `[${trimmedAddress}]:${trimmedPort}`;
+  }
+  return `${trimmedAddress}:${trimmedPort}`;
+}
+
+export function resolveAccessConfigCloudCoreAddress(
+  body: any,
+  edgeUnit: { accessAddresses?: string[]; ports?: Partial<Record<"websocket" | "quic" | "https", string>> },
+): string {
+  const explicitAddress = readStringField(body, "cloudCoreAddress") || "";
+  if (explicitAddress) return explicitAddress;
+
+  const normalizedProtocol = normalizeAccessConfigProtocol(readStringField(body, "protocol"));
+  const protocol = (normalizedProtocol in accessConfigDefaultPorts ? normalizedProtocol : "https") as keyof typeof accessConfigDefaultPorts;
+  const address = edgeUnit.accessAddresses?.find((item) => item.trim()) || "";
+  const port = edgeUnit.ports?.[protocol] || accessConfigDefaultPorts[protocol];
+  return formatCloudCoreEndpoint(address, port);
 }
 
 export function buildAccessConfigData(body: any, existingData?: Record<string, string>, options: { allowNodeName?: boolean } = {}) {
@@ -344,7 +373,11 @@ export async function createAccessConfig(body: any) {
 
   let configMap;
   try {
-    configMap = buildAccessConfigMap({ ...body, kubeEdgeVersion: edgeUnit.kubeEdgeVersion });
+    configMap = buildAccessConfigMap({
+      ...body,
+      cloudCoreAddress: resolveAccessConfigCloudCoreAddress(body, edgeUnit),
+      kubeEdgeVersion: edgeUnit.kubeEdgeVersion,
+    });
   } catch (error) {
     return validationError(error, "Invalid EdgeUnit payload");
   }

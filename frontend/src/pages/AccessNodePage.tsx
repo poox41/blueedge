@@ -120,12 +120,26 @@ export function AccessNodePage() {
                     setNodeName("");
                     formValidation.clearError("config");
                   }}>
-                    <SelectTrigger id="access-node-config" aria-invalid={Boolean(formValidation.errors.config)} className="h-11 flex-1 rounded-xl">
+                    <SelectTrigger
+                      id="access-node-config"
+                      aria-invalid={Boolean(formValidation.errors.config)}
+                      className="h-12 flex-1 rounded-xl border-2 border-[#cbd5e1] px-4 text-sm shadow-[0_1px_2px_rgba(15,23,42,0.04)] hover:border-[#94a3b8] focus-visible:border-[#111827] focus-visible:ring-2 focus-visible:ring-[#111827]/10"
+                    >
                       <SelectValue placeholder="请选择接入配置" />
                     </SelectTrigger>
-                    <SelectContent>
+                    <SelectContent
+                      position="popper"
+                      align="start"
+                      sideOffset={6}
+                      viewportClassName="!h-auto !p-0"
+                      className="w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-[#e2e8f0] bg-white p-0 shadow-[0_14px_34px_rgba(15,23,42,0.16)]"
+                    >
                       {configs.map((config) => (
-                        <SelectItem key={config.name} value={config.name}>
+                        <SelectItem
+                          key={config.name}
+                          value={config.name}
+                          className="min-h-12 rounded-none px-5 py-3 pr-12 text-sm text-[#1e293b] focus:bg-[#eaf2ff] focus:text-[var(--color-brand)] data-[state=checked]:bg-[#eaf2ff] data-[state=checked]:text-[var(--color-brand)] [&_[data-slot=select-item-indicator]]:right-5 [&_[data-slot=select-item-indicator]]:text-[var(--color-brand)]"
+                        >
                           {config.name} — {config.cloudCoreAddress} / {config.protocol}
                         </SelectItem>
                       ))}

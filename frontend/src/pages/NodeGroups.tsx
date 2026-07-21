@@ -10,11 +10,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { AlertTriangle, Check, Copy, Trash2, ChevronRight, Plus, RefreshCw, Search, ArrowLeft, Edit3, Server, X, Info } from "lucide-react";
 import { createNodeGroupResource, deleteNodeGroupResource, getNodeGroup, listNodeGroups, listNodes, updateNodeGroupResource } from "@/api/services/resources";
-import { getNodeGroupSummary } from "@/api/services/product";
+import { getEdgeUnitResources, getNodeGroupSummary } from "@/api/services/product";
 import type { EdgeNodeView, KubeResource } from "@/types/kubeedge";
 import { cn } from "@/lib/utils";
 import { useNavigate, useParams } from "react-router-dom";
 import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 
 interface NodeGroup {
   name: string; namespace: string; nodes: string[];
@@ -148,6 +149,7 @@ function buildNodeGroupResource(form: NodeGroupForm, base?: KubeResource): KubeR
 
 export function NodeGroups() {
   const formValidation = useRequiredFieldValidation<"name" | "selector" | "labels" | "nodes">();
+  const { selectedEdgeUnitName } = useEdgeUnits();
   const navigate = useNavigate();
   const { name: detailNameParam } = useParams<{ name?: string }>();
   const detailName = detailNameParam ? decodeURIComponent(detailNameParam) : "";
@@ -172,13 +174,23 @@ export function NodeGroups() {
   const [form, setForm] = useState<NodeGroupForm>({ name: "", nodes: [], matchLabels: [{ ...emptyLabelRow }], selectorType: "", description: "" });
   const [pageSize, setPageSize] = useState(10);
 
+  const loadEdgeUnitNodeOptions = useCallback(async () => {
+    if (!selectedEdgeUnitName) return [];
+    const [allNodes, scope] = await Promise.all([
+      listNodes(),
+      getEdgeUnitResources(selectedEdgeUnitName),
+    ]);
+    const allowedNodeNames = new Set(scope.item.nodeNames);
+    return allNodes.filter((node) => node.role === "edge" && allowedNodeNames.has(node.name));
+  }, [selectedEdgeUnitName]);
+
   const loadData = useCallback(async (preserveCurrentRows = false) => {
     if (preserveCurrentRows) setIsRefreshing(true);
     else setIsLoading(true);
     setError("");
     try {
-      const [rows, allNodes] = await Promise.all([listNodeGroups(), listNodes()]);
-      setNodeOptions(allNodes);
+      const [rows, edgeNodes] = await Promise.all([listNodeGroups(), loadEdgeUnitNodeOptions()]);
+      setNodeOptions(edgeNodes);
       const details = await Promise.all(
         rows.map(async (row) => {
           const name = row?.metadata?.name || row?.name;
@@ -190,7 +202,7 @@ export function NodeGroups() {
           }
         }),
       );
-      const groups = details.map((row) => toNodeGroup(row, allNodes));
+      const groups = details.map((row) => toNodeGroup(row, edgeNodes));
       setData(groups);
       if (detailName) setSelected(groups.find((group) => group.name === detailName) || null);
       setPage(1);
@@ -201,7 +213,7 @@ export function NodeGroups() {
       if (preserveCurrentRows) setIsRefreshing(false);
       else setIsLoading(false);
     }
-  }, [detailName]);
+  }, [detailName, loadEdgeUnitNodeOptions]);
 
   useEffect(() => {
     void loadData();
@@ -351,7 +363,8 @@ export function NodeGroups() {
   };
   const openNodePicker = () => {
     setNodePickerSearch("");
-    setNodePickerDraftNodes(form.nodes);
+    const allowedNodeNames = new Set(nodeOptions.map((node) => node.name));
+    setNodePickerDraftNodes(form.nodes.filter((name) => allowedNodeNames.has(name)));
     setNodePickerOpen(true);
   };
   const confirmNodePicker = () => {
@@ -363,7 +376,7 @@ export function NodeGroups() {
   const refreshNodePicker = async () => {
     setNodePickerRefreshing(true);
     try {
-      setNodeOptions(await listNodes());
+      setNodeOptions(await loadEdgeUnitNodeOptions());
     } catch (err) {
       setError(err instanceof Error ? err.message : "边缘节点刷新失败");
     } finally {

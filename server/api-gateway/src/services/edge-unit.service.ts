@@ -489,6 +489,17 @@ function validationError(error: unknown) {
   return { status: 400, body: { message: error instanceof Error ? error.message : "Invalid EdgeUnit payload" } };
 }
 
+export function findEdgeUnitClusterConflict(configMaps: any[], clusterName: string, excludedEdgeUnitName = ""): string | null {
+  const targetCluster = clusterName.trim();
+  if (!targetCluster) return null;
+
+  const conflict = configMaps.find((configMap) => {
+    const edgeUnitName = edgeUnitConfigMapName(configMap);
+    return edgeUnitName !== excludedEdgeUnitName && String(dataOf(configMap).clusterName || "").trim() === targetCluster;
+  });
+  return conflict ? edgeUnitConfigMapName(conflict) : null;
+}
+
 export async function listEdgeUnits() {
   const warnings: EdgeUnitWarning[] = [];
   const edgeUnitConfigMaps = await getEdgeUnitConfigMaps(warnings);
@@ -518,10 +529,18 @@ export async function createEdgeUnit(body: any) {
   if (!isValidKubernetesName(data.name)) {
     return { status: 400, body: { message: "name must be a valid Kubernetes resource name" } };
   }
+  if (!data.clusterName) {
+    return { status: 400, body: { message: "工作集群不能为空" } };
+  }
 
-  const duplicated = await findEdgeUnitConfigMap(data.name, warnings);
+  const edgeUnitConfigMaps = await getEdgeUnitConfigMaps(warnings);
+  const duplicated = edgeUnitConfigMaps.find((item) => edgeUnitConfigMapMatches(item, data.name));
   if (duplicated) {
     return { status: 409, body: { message: `EdgeUnit ${data.name} already exists`, ...(warnings.length > 0 ? { warnings } : {}) } };
+  }
+  const clusterConflict = findEdgeUnitClusterConflict(edgeUnitConfigMaps, data.clusterName);
+  if (clusterConflict) {
+    return { status: 409, body: { message: `工作集群 ${data.clusterName} 已安装边缘单元 ${clusterConflict}，一个工作集群只能创建一个边缘单元`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
   await ensureNamespace();
   const created = await create(configMap);
@@ -647,6 +666,16 @@ export async function updateEdgeUnit(name: string, body: any) {
     configMap = buildEdgeUnitConfigMap(body, existing);
   } catch (error) {
     return validationError(error);
+  }
+
+  const data = dataOf(configMap);
+  if (!data.clusterName) {
+    return { status: 400, body: { message: "工作集群不能为空" } };
+  }
+  const edgeUnitConfigMaps = await getEdgeUnitConfigMaps(warnings);
+  const clusterConflict = findEdgeUnitClusterConflict(edgeUnitConfigMaps, data.clusterName, name);
+  if (clusterConflict) {
+    return { status: 409, body: { message: `工作集群 ${data.clusterName} 已安装边缘单元 ${clusterConflict}，一个工作集群只能创建一个边缘单元`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
 
   const updated = await update(metadataOf(existing).name, configMap);

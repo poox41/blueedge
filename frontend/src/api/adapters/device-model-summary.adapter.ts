@@ -20,6 +20,14 @@ export interface DeviceModelSummary {
     online: number;
     offline: number;
     unknown: number;
+    items?: Array<{
+      name: string;
+      namespace: string;
+      nodeName: string;
+      description: string;
+      status: "online" | "offline" | "unknown" | string;
+      lastReportedAt: string;
+    }>;
   };
   createdAt: string;
   labels: Record<string, string>;

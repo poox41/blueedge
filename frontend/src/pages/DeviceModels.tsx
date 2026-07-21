@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
@@ -142,6 +143,7 @@ export function DeviceModels() {
   const [createStep, setCreateStep] = useState<1 | 2>(1);
   const [cancelCreateOpen, setCancelCreateOpen] = useState(false);
   const [addTwinOpen, setAddTwinOpen] = useState(false);
+  const [detailTwinTarget, setDetailTwinTarget] = useState<DM | null>(null);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<DM | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
@@ -160,11 +162,13 @@ export function DeviceModels() {
       const res = await listDeviceModelSummaries();
       const rows = res.items.map(toDeviceModelRow);
       setData(rows);
+      let nextWarnings = (res.warnings || []).map((item) => item.message);
       if (detailNamespace && detailName) {
-        const detail = rows.find((item) => item.namespace === detailNamespace && item.name === detailName);
-        if (detail) setSelected(detail);
+        const detail = await getDeviceModelSummary(detailNamespace, detailName);
+        setSelected(toDeviceModelRow(detail.item));
+        nextWarnings = [...nextWarnings, ...(detail.warnings || []).map((item) => item.message)];
       }
-      setWarnings((res.warnings || []).map((item) => item.message));
+      setWarnings(nextWarnings);
       setPage(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "加载设备模型数据失败");
@@ -290,7 +294,7 @@ export function DeviceModels() {
     } else resetTwinForm();
     setAddTwinOpen(true);
   };
-  const confirmAddTwin = () => {
+  const confirmAddTwin = async () => {
     if (!twinValidation.validate([{ field: "name", valid: Boolean(twinForm.name.trim()), message: "请输入属性名称", elementId: "device-model-twin-name" }])) return;
     const nextProperty: DeviceModelProperty = {
       name: twinForm.name.trim(),
@@ -303,7 +307,28 @@ export function DeviceModels() {
     const nextProperties = editingTwinIndex === null
       ? [...twinProperties, nextProperty]
       : twinProperties.map((item, index) => index === editingTwinIndex ? nextProperty : item);
-    setForm((prev) => ({ ...prev, properties: nextProperties.length, propertiesText: JSON.stringify(nextProperties, null, 2) }));
+    const nextForm = { ...form, properties: nextProperties.length, propertiesText: JSON.stringify(nextProperties, null, 2) };
+    setForm(nextForm);
+    if (detailTwinTarget) {
+      setIsLoading(true);
+      setError("");
+      try {
+        await updateDeviceModelResource(detailTwinTarget.namespace, buildDeviceModelResource(nextForm, detailTwinTarget.raw));
+        const detail = await getDeviceModelSummary(detailTwinTarget.namespace, detailTwinTarget.name);
+        const updated = toDeviceModelRow(detail.item);
+        setSelected(updated);
+        setData((current) => current.map((item) => item.namespace === updated.namespace && item.name === updated.name ? updated : item));
+        setWarnings((detail.warnings || []).map((item) => item.message));
+        setDetailTwinTarget(null);
+        resetTwinForm();
+        setAddTwinOpen(false);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "保存孪生属性失败");
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
     resetTwinForm();
     setAddTwinOpen(false);
   };
@@ -334,7 +359,17 @@ export function DeviceModels() {
     setCreateOpen(true);
   };
   const openDetailTwinEditor = (model: DM, property?: DeviceModelProperty, index?: number) => {
-    openEdit(model, 2);
+    const labels = Object.entries(model.labels).filter(([key]) => key !== "protocol").map(([key, value], labelIndex) => ({ id: `label-${labelIndex + 1}`, key, value }));
+    setDetailTwinTarget(model);
+    setForm({
+      name: model.name,
+      namespace: model.namespace,
+      properties: model.twinProperties.length,
+      protocol: model.protocol || "MQTT",
+      description: model.description === "-" ? "" : model.description || "",
+      propertiesText: JSON.stringify(model.twinProperties, null, 2),
+      labels: labels.length ? labels : [{ id: "label-1", key: "", value: "" }],
+    });
     queueMicrotask(() => openTwinEditor(property, index));
   };
 
@@ -460,20 +495,40 @@ export function DeviceModels() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
-          <Dialog open={addTwinOpen} onOpenChange={(open) => { setAddTwinOpen(open); if (!open) resetTwinForm(); }}>
+          <Dialog open={addTwinOpen} onOpenChange={(open) => { setAddTwinOpen(open); if (!open) { setDetailTwinTarget(null); resetTwinForm(); } }}>
             <DialogContent className="!flex max-h-[85vh] max-w-[520px] flex-col gap-0 overflow-hidden rounded-[24px] p-0" showCloseButton={false}>
-              <button type="button" onClick={() => { setAddTwinOpen(false); resetTwinForm(); }} className="absolute right-8 top-[18px] flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--color-border-strong)] text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"><X className="h-4 w-4" /></button>
+              <button type="button" onClick={() => { setAddTwinOpen(false); setDetailTwinTarget(null); resetTwinForm(); }} className="absolute right-8 top-[18px] flex h-9 w-9 items-center justify-center rounded-[10px] border border-[var(--color-border-strong)] text-[var(--color-text-tertiary)] transition-colors hover:bg-[var(--color-bg-hover)] hover:text-[var(--color-text-primary)]"><X className="h-4 w-4" /></button>
               <DialogHeader className="h-[72px] shrink-0 justify-center border-b border-[#eef1f5] px-8"><DialogTitle className="text-base font-semibold">{editingTwinIndex === null ? "新增孪生属性" : "编辑孪生属性"}</DialogTitle></DialogHeader>
               <div className="space-y-5 overflow-y-auto px-8 py-7">
                 <PrototypeField label="属性名称" required error={twinValidation.errors.name} errorId="device-model-twin-name-error">
                   <Input id="device-model-twin-name" placeholder="temperature" value={twinForm.name} onChange={(event) => { setTwinForm({ ...twinForm, name: event.target.value }); twinValidation.clearError("name"); }} aria-invalid={Boolean(twinValidation.errors.name)} aria-describedby={twinValidation.errors.name ? "device-model-twin-name-error" : undefined} className="h-10 rounded-xl text-sm" />
                 </PrototypeField>
                 <PrototypeField label="属性值类型" required>
-                  <select value={twinForm.type} onChange={(event) => setTwinForm({ ...twinForm, type: event.target.value })} className="blueedge-native-select !h-10 !rounded-xl !text-sm">
-                    <option value="string">string</option>
-                    <option value="int">int</option>
-                    <option value="float">float</option><option value="double">double</option><option value="boolean">boolean</option><option value="bytes">bytes</option><option value="stream">stream</option>
-                  </select>
+                  <Select value={twinForm.type} onValueChange={(value) => setTwinForm({ ...twinForm, type: value })}>
+                    <SelectTrigger
+                      id="device-model-twin-type"
+                      className="h-10 w-full rounded-xl border-2 border-[#cbd5e1] px-4 text-sm shadow-[0_1px_2px_rgba(15,23,42,0.04)] hover:border-[#94a3b8] focus-visible:border-[#111827] focus-visible:ring-2 focus-visible:ring-[#111827]/10 [&[data-state=open]>svg]:rotate-180 [&>svg]:transition-transform"
+                    >
+                      <SelectValue placeholder="请选择属性值类型" />
+                    </SelectTrigger>
+                    <SelectContent
+                      position="popper"
+                      align="start"
+                      sideOffset={6}
+                      viewportClassName="!h-auto max-h-[320px] !p-0"
+                      className="z-[100] max-h-[320px] w-[var(--radix-select-trigger-width)] overflow-hidden rounded-xl border border-[#e2e8f0] bg-white p-0 shadow-[0_14px_34px_rgba(15,23,42,0.16)]"
+                    >
+                      {["int", "float", "double", "string", "boolean", "bytes", "stream"].map((type) => (
+                        <SelectItem
+                          key={type}
+                          value={type}
+                          className="min-h-10 rounded-none px-5 py-2 pr-12 text-sm text-[#1e293b] focus:bg-[#eaf2ff] focus:text-[var(--color-brand)] data-[state=checked]:bg-[#eaf2ff] data-[state=checked]:text-[var(--color-brand)] [&_[data-slot=select-item-indicator]]:right-5 [&_[data-slot=select-item-indicator]]:text-[var(--color-brand)]"
+                        >
+                          {type}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </PrototypeField>
                 <PrototypeField label="访问权限" required>
                   <div className="grid grid-cols-2 gap-2">
@@ -494,8 +549,8 @@ export function DeviceModels() {
                 </div>
               </div>
               <DialogFooter className="h-[72px] shrink-0 items-center border-t border-[#eef1f5] bg-white px-8">
-                <Button variant="outline" onClick={() => { setAddTwinOpen(false); resetTwinForm(); }} className="h-9 rounded-[10px] px-4 text-sm">取消</Button>
-                <Button onClick={confirmAddTwin} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">确定</Button>
+                <Button variant="outline" onClick={() => { setAddTwinOpen(false); setDetailTwinTarget(null); resetTwinForm(); }} className="h-9 rounded-[10px] px-4 text-sm">取消</Button>
+                <Button onClick={() => void confirmAddTwin()} disabled={isLoading} className="h-9 rounded-[10px] bg-[var(--color-text-primary)] px-4 text-sm text-white hover:bg-[var(--color-text-primary)]/90">确定</Button>
               </DialogFooter>
             </DialogContent>
           </Dialog>
@@ -598,7 +653,7 @@ function DeviceModelDetailPage({ model, onBack, onEdit, onConfigureTwins, onAddT
       </section>}
 
       {activeTab === "labels" && <DetailPanel title="标签" action={<button type="button" onClick={onConfigureTwins} className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-brand)]"><Pencil className="h-3.5 w-3.5" />编辑标签</button>}>{Object.keys(model.labels).length === 0 ? <p className="text-sm text-[var(--color-text-secondary)]">暂无标签</p> : <div className="flex flex-wrap gap-2">{Object.entries(model.labels).filter(([key]) => key !== "protocol").map(([key, value]) => <span key={key} className="rounded-md bg-[#f0f1f3] px-2 py-1 text-xs text-[#5f6368]">{key}={value}</span>)}</div>}</DetailPanel>}
-      {activeTab === "instances" && <DetailPanel title={`设备实例 (${model.devices?.total || 0})`}><div className="table-card overflow-x-auto"><Table className="min-w-[500px] table-fixed"><TableHeader><TableRow className="h-12 bg-white hover:bg-white"><TableHead className="w-[200px] px-4 text-xs">设备名称</TableHead><TableHead className="w-[150px] px-4 text-xs">绑定节点</TableHead><TableHead className="px-4 text-xs">描述</TableHead></TableRow></TableHeader><TableBody><TableRow><TableCell colSpan={3} className="py-12 text-center text-sm text-[var(--color-text-secondary)]">{model.devices?.total ? `当前接口返回 ${model.devices.total} 个实例汇总，暂无实例明细` : "暂无引用此模型的设备实例"}</TableCell></TableRow></TableBody></Table></div></DetailPanel>}
+      {activeTab === "instances" && <DetailPanel title={`设备实例 (${model.devices?.total || 0})`}><div className="table-card overflow-x-auto"><Table className="min-w-[500px] table-fixed"><TableHeader><TableRow className="h-12 bg-white hover:bg-white"><TableHead className="w-[200px] px-4 text-xs">设备名称</TableHead><TableHead className="w-[150px] px-4 text-xs">绑定节点</TableHead><TableHead className="px-4 text-xs">描述</TableHead></TableRow></TableHeader><TableBody>{!model.devices?.items?.length ? <TableRow><TableCell colSpan={3} className="py-12 text-center text-sm text-[var(--color-text-secondary)]">暂无引用此模型的设备实例</TableCell></TableRow> : model.devices.items.map((device) => <TableRow key={`${device.namespace}/${device.name}`} className="h-[60px]"><TableCell className="px-4 text-sm font-medium text-[var(--color-brand)]">{device.name}</TableCell><TableCell className="px-4 text-sm">{device.nodeName || "—"}</TableCell><TableCell className="px-4 text-sm text-[var(--color-text-secondary)]">{device.description || "—"}</TableCell></TableRow>)}</TableBody></Table></div></DetailPanel>}
       {activeTab === "events" && <EmptyDetail icon={<Bug className="h-10 w-10" />} text="暂无事件" />}
       {activeTab === "audit" && <EmptyDetail icon={<ClipboardList className="h-10 w-10" />} text="暂无审计记录" />}
     </div>

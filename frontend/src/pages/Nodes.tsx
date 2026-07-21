@@ -52,7 +52,8 @@ type AccessConfigForm = {
   driver: "systemd" | "cgroups";
   criAddress: string;
   address: string;
-  protocol: "websocket" | "QUIC";
+  protocol: "websocket" | "QUIC" | "https";
+  port: string;
   registry: string;
   description: string;
   labelRules: Array<{ key: string; value: string }>;
@@ -64,12 +65,13 @@ type AccessLabelDraft = {
   value: string;
 };
 
-type AccessRequiredField = "name" | "criAddress" | "address" | "registry";
+type AccessRequiredField = "name" | "criAddress" | "address" | "port" | "registry";
 
 const accessRequiredMessages: Record<AccessRequiredField, string> = {
   name: "请输入配置名称",
   criAddress: "请选择 CRI 服务地址",
   address: "请选择访问地址",
+  port: "请输入 CloudCore 端口",
   registry: "请输入镜像仓库地址",
 };
 
@@ -79,6 +81,7 @@ const defaultAccessForm: AccessConfigForm = {
   criAddress: "",
   address: "",
   protocol: "websocket",
+  port: "",
   registry: "registry.cn-shanghai.aliyuncs.com/kubeedge",
   description: "",
   labelRules: [
@@ -105,6 +108,17 @@ function formatCloudCoreEndpoint(address: string, port: string): string {
     return `[${trimmedAddress}]:${trimmedPort}`;
   }
   return `${trimmedAddress}:${trimmedPort}`;
+}
+
+const defaultCloudCorePorts = {
+  websocket: "30000",
+  QUIC: "30001",
+  https: "30002",
+} as const;
+
+function edgeUnitPortForProtocol(edgeUnit: ReturnType<typeof useEdgeUnits>["selectedEdgeUnit"], protocol: AccessConfigForm["protocol"]): string {
+  const portKey = protocol === "QUIC" ? "quic" : protocol;
+  return edgeUnit?.ports?.[portKey] || defaultCloudCorePorts[protocol];
 }
 
 function statusColor(status: EdgeNodeView["status"]) {
@@ -281,17 +295,17 @@ export function Nodes() {
     () => Array.from(new Set((selectedEdgeUnit?.accessAddresses || []).map((address) => address.trim()).filter(Boolean))),
     [selectedEdgeUnit?.accessAddresses],
   );
-  const selectedProtocolPort = accessForm.protocol === "QUIC"
-    ? selectedEdgeUnit?.ports?.quic || ""
-    : selectedEdgeUnit?.ports?.websocket || "";
+  const selectedProtocolPort = edgeUnitPortForProtocol(selectedEdgeUnit, accessForm.protocol);
 
   useEffect(() => {
     if (!accessCreateOpen) return;
     setAccessForm((current) => {
-      if (accessAddressOptions.includes(current.address)) return current;
-      return { ...current, address: accessAddressOptions[0] || "" };
+      const address = accessAddressOptions.includes(current.address) ? current.address : accessAddressOptions[0] || "";
+      const port = current.port || edgeUnitPortForProtocol(selectedEdgeUnit, current.protocol);
+      if (address === current.address && port === current.port) return current;
+      return { ...current, address, port };
     });
-  }, [accessAddressOptions, accessCreateOpen]);
+  }, [accessAddressOptions, accessCreateOpen, selectedEdgeUnit]);
 
   const loadAccessConfigs = useCallback(async () => {
     setAccessError("");
@@ -454,8 +468,8 @@ export function Nodes() {
       const value = accessForm[field];
       if (typeof value !== "string" || !value.trim()) nextErrors[field] = accessRequiredMessages[field];
     });
-    if (accessForm.address.trim() && !/^\d+$/.test(selectedProtocolPort)) {
-      nextErrors.address = `当前边缘单元未配置${accessForm.protocol === "QUIC" ? "QUIC" : "WebSocket"}端口`;
+    if (accessForm.port.trim() && (!/^\d+$/.test(accessForm.port) || Number(accessForm.port) < 1 || Number(accessForm.port) > 65535)) {
+      nextErrors.port = "端口必须是 1-65535 之间的整数";
     }
     setAccessFormErrors(nextErrors);
     const firstInvalidField = (Object.keys(accessRequiredMessages) as AccessRequiredField[]).find((field) => nextErrors[field]);
@@ -487,7 +501,7 @@ export function Nodes() {
     const payload: AccessConfigPayload = {
       name,
       edgeUnitRef: selectedEdgeUnitName,
-      cloudCoreAddress: formatCloudCoreEndpoint(accessForm.address, selectedProtocolPort),
+      cloudCoreAddress: formatCloudCoreEndpoint(accessForm.address, accessForm.port),
       protocol: accessForm.protocol === "QUIC" ? "quic" : accessForm.protocol,
       driver: accessForm.driver,
       criAddress: accessForm.criAddress,
@@ -817,14 +831,39 @@ export function Nodes() {
                 </SelectContent>
               </Select>
               <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">
-                将自动使用当前边缘单元的 {accessForm.protocol === "QUIC" ? "QUIC" : "WebSocket"} 端口：{selectedProtocolPort || "未配置"}
+                默认读取当前边缘单元的 {accessForm.protocol === "QUIC" ? "QUIC" : accessForm.protocol === "https" ? "HTTPS" : "WebSocket"} 端口：{selectedProtocolPort}
               </p>
+            </AccessField>
+            <AccessField label="CloudCore 端口" required error={accessFormErrors.port} errorId="access-config-port-error">
+              <Input
+                id="access-config-port"
+                inputMode="numeric"
+                value={accessForm.port}
+                onChange={(event) => updateAccessFormField("port", event.target.value)}
+                placeholder={selectedProtocolPort}
+                aria-invalid={Boolean(accessFormErrors.port)}
+                aria-describedby={accessFormErrors.port ? "access-config-port-error" : undefined}
+                className={cn("h-11 rounded-xl", accessFormErrors.port && "border-[var(--color-danger)] focus-visible:ring-[var(--color-danger)]")}
+              />
             </AccessField>
             <AccessField label="通信协议" required>
               <SegmentedChoice
                 value={accessForm.protocol}
-                options={["websocket", "QUIC"]}
-                onChange={(protocol) => setAccessForm({ ...accessForm, protocol: protocol as AccessConfigForm["protocol"] })}
+                options={["websocket", "QUIC", "https"]}
+                onChange={(protocol) => {
+                  const nextProtocol = protocol as AccessConfigForm["protocol"];
+                  setAccessForm((current) => ({
+                    ...current,
+                    protocol: nextProtocol,
+                    port: edgeUnitPortForProtocol(selectedEdgeUnit, nextProtocol),
+                  }));
+                  setAccessFormErrors((current) => {
+                    if (!current.port) return current;
+                    const next = { ...current };
+                    delete next.port;
+                    return next;
+                  });
+                }}
               />
             </AccessField>
             <AccessField label="镜像仓库" required error={accessFormErrors.registry} errorId="access-config-registry-error">

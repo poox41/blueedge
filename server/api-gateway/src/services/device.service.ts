@@ -137,7 +137,7 @@ function deviceMatchesModel(device: any, model: any): boolean {
   return resourceNamespace(device) === resourceNamespace(model) && deviceModelRefOf(device) === deviceModelName(model);
 }
 
-function normalizeDeviceStatus(device: any): "online" | "offline" | "unknown" {
+export function normalizeDeviceStatus(device: any): "online" | "offline" {
   const status = device?.status;
   const candidates = [
     status?.state,
@@ -154,7 +154,7 @@ function normalizeDeviceStatus(device: any): "online" | "offline" | "unknown" {
     if (["online", "connected", "ready", "healthy", "true"].includes(value)) return "online";
     if (["offline", "disconnected", "unavailable", "notready", "not ready", "false"].includes(value)) return "offline";
   }
-  return "unknown";
+  return "offline";
 }
 
 function normalizeTwinValue(value: any): string | null {
@@ -199,12 +199,17 @@ function normalizeDeviceTwins(device: any) {
   });
 }
 
-function summarizeTwins(twins: Array<{ status: string }>, includeItems: boolean) {
+export function summarizeTwins(twins: Array<{ status: string; lastUpdatedAt?: string }>, includeItems: boolean) {
+  const lastReportedAt = twins
+    .map((item) => item.lastUpdatedAt || "")
+    .filter(Boolean)
+    .sort((left, right) => right.localeCompare(left))[0] || "";
   return {
     total: twins.length,
     synced: twins.filter((item) => item.status === "synced").length,
     outOfSync: twins.filter((item) => item.status === "outOfSync").length,
     unknown: twins.filter((item) => item.status === "unknown").length,
+    lastReportedAt,
     items: includeItems ? twins : [],
   };
 }
@@ -240,7 +245,11 @@ function directEdgeUnitRefOf(device: any): string {
   return firstString(labels["blueedge.io/edge-unit"], annotations["blueedge.io/edge-unit"]);
 }
 
-function buildDeviceModelSummaryView(model: any, devices: any[], options: { includeRaw?: boolean } = {}) {
+export function buildDeviceModelSummaryView(
+  model: any,
+  devices: any[],
+  options: { includeRaw?: boolean; includeDeviceItems?: boolean } = {},
+) {
   const namespace = resourceNamespace(model);
   const name = deviceModelName(model);
   const matchedDevices = devices.filter((device) => deviceMatchesModel(device, model));
@@ -256,7 +265,24 @@ function buildDeviceModelSummaryView(model: any, devices: any[], options: { incl
       total: matchedDevices.length,
       online: statuses.filter((item) => item === "online").length,
       offline: statuses.filter((item) => item === "offline").length,
-      unknown: statuses.filter((item) => item === "unknown").length,
+      unknown: 0,
+      ...(options.includeDeviceItems ? {
+        items: matchedDevices.map((device) => {
+          const deviceAnnotations = annotationsOf(device);
+          return {
+            name: String(metadataOf(device).name || device?.name || ""),
+            namespace: resourceNamespace(device),
+            nodeName: deviceNodeNameOf(device),
+            description: firstString(
+              deviceAnnotations["blueedge.io/description"],
+              deviceAnnotations.description,
+              device?.description,
+            ),
+            status: normalizeDeviceStatus(device),
+            lastReportedAt: summarizeTwins(normalizeDeviceTwins(device), false).lastReportedAt,
+          };
+        }),
+      } : {}),
     },
     createdAt: metadataOf(model).creationTimestamp || model?.creationTimestamp || "",
     labels: labelsOf(model),
@@ -355,7 +381,7 @@ export async function getDeviceModelSummary(namespace: string, name: string) {
     return [];
   });
   return {
-    item: buildDeviceModelSummaryView(model, devices, { includeRaw: true }),
+    item: buildDeviceModelSummaryView(model, devices, { includeRaw: true, includeDeviceItems: true }),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }

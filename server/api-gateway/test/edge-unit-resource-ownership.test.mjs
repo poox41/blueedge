@@ -9,6 +9,7 @@ import {
   deploymentTargetsEdgeUnit,
   edgeApplicationBelongsToEdgeUnit,
   edgeApplicationTargetsEdgeUnit,
+  findEdgeUnitClusterConflict,
   isExternalEdgeNode,
   nodeTargetsEdgeUnit,
 } from "../dist/services/edge-unit.service.js";
@@ -80,6 +81,18 @@ test("EdgeUnit create and update clear legacy nodeGroupRef bindings", () => {
   assert.equal(buildEdgeUnitConfigMapData({}, existing).nodeGroupRef, "");
   assert.equal(buildEdgeUnitConfigMapData({ nodeGroupRef: "group-b" }, existing).nodeGroupRef, "");
   assert.equal(buildEdgeUnitConfigMapData({ nodeGroupRef: "" }, existing).nodeGroupRef, "");
+});
+
+test("one connected cluster can only be bound to one EdgeUnit", () => {
+  const configMaps = [
+    { metadata: { name: "edgeunit-unit-a" }, data: { name: "unit-a", clusterName: "kubernetes" } },
+    { metadata: { name: "edgeunit-unit-b" }, data: { name: "unit-b", clusterName: "other" } },
+  ];
+
+  assert.equal(findEdgeUnitClusterConflict(configMaps, "kubernetes"), "unit-a");
+  assert.equal(findEdgeUnitClusterConflict(configMaps, "kubernetes", "unit-a"), null);
+  assert.equal(findEdgeUnitClusterConflict(configMaps, "new-cluster"), null);
+  assert.equal(findEdgeUnitClusterConflict(configMaps, ""), null);
 });
 
 test("NodeGroups are not exposed as EdgeUnits", () => {

@@ -31,6 +31,7 @@ export interface DeviceSummary {
     synced: number;
     outOfSync: number;
     unknown: number;
+    lastReportedAt: string;
     items: DeviceTwinSummaryItem[];
   };
   createdAt: string;

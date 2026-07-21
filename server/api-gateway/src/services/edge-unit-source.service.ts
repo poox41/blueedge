@@ -223,13 +223,39 @@ export async function getNodeGroupByName(name: string): Promise<any | null> {
 export async function resolveEdgeUnitReference(
   edgeUnitRef: string,
   warnings: EdgeUnitWarning[],
-): Promise<{ name: string; kubeEdgeVersion: string } | null> {
+): Promise<{
+  name: string;
+  kubeEdgeVersion: string;
+  accessAddresses: string[];
+  ports: Partial<Record<"websocket" | "quic" | "https", string>>;
+} | null> {
   const { edgeUnitConfigMaps } = await collectEdgeUnitSources(warnings, { includeNodeGroups: false });
   const matchedConfigMap = edgeUnitConfigMaps.find((configMap) => edgeUnitConfigMapMatches(configMap, edgeUnitRef));
   if (matchedConfigMap && isValidEdgeUnitConfigMap(matchedConfigMap, warnings)) {
+    const data = dataOf(matchedConfigMap);
+    let accessAddresses: string[] = [];
+    let ports: Partial<Record<"websocket" | "quic" | "https", string>> = {};
+    try {
+      const parsed = JSON.parse(data.accessAddresses || "[]");
+      if (Array.isArray(parsed)) accessAddresses = parsed.map(String).map((item) => item.trim()).filter(Boolean);
+    } catch {
+      accessAddresses = [];
+    }
+    try {
+      const parsed = JSON.parse(data.ports || "{}");
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        ports = Object.fromEntries(["websocket", "quic", "https"]
+          .map((key) => [key, String(parsed[key] || "").trim()])
+          .filter(([, value]) => value)) as Partial<Record<"websocket" | "quic" | "https", string>>;
+      }
+    } catch {
+      ports = {};
+    }
     return {
       name: edgeUnitConfigMapName(matchedConfigMap),
-      kubeEdgeVersion: dataOf(matchedConfigMap).kubeEdgeVersion || "",
+      kubeEdgeVersion: data.kubeEdgeVersion || "",
+      accessAddresses,
+      ports,
     };
   }
   return null;

@@ -32,7 +32,7 @@ interface MessageEndpointRow {
   ruleEndpointType: string;
   targetResource: string;
   createdAt: string;
-  connected: boolean | null;
+  connected: boolean;
   raw: KubeResource;
 }
 
@@ -80,11 +80,11 @@ function endpointLocation(type: string): string {
   return normalizeRuleEndpointType(type) === "rest" ? "云端" : "边端";
 }
 
-function isEndpointConnected(item: RuleEndpointView): boolean | null {
+function isEndpointConnected(item: RuleEndpointView): boolean {
   const status = item.raw.status || {};
   const phase = String(status.phase || status.state || status.connectionStatus || "").toLowerCase();
   if (phase) return ["ready", "running", "connected", "online", "true"].includes(phase);
-  return null;
+  return false;
 }
 
 function toRuleEndpointRow(item: RuleEndpointView): MessageEndpointRow {
@@ -542,7 +542,7 @@ export function RuleEndpoints() {
   );
 }
 
-function StatusPill({ connected }: { connected: boolean | null }) {
+function StatusPill({ connected }: { connected: boolean }) {
   return (
     <span
       className={cn(
@@ -551,7 +551,7 @@ function StatusPill({ connected }: { connected: boolean | null }) {
       )}
     >
       <span className="h-1.5 w-1.5 rounded-full bg-current" />
-      {connected === null ? "未知" : connected ? "在线" : "离线"}
+      {connected ? "在线" : "离线"}
     </span>
   );
 }
@@ -795,13 +795,12 @@ function EndpointPropertiesPanel({ row }: { row: MessageEndpointRow }) {
 }
 
 function EndpointConnectivityPanel({ row }: { row: MessageEndpointRow }) {
-  const known = row.connected !== null;
   const healthy = row.connected === true;
   return (
     <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 text-center shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-      <div className={cn("mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full", known ? healthy ? "bg-[#dcfce7] text-[#16a34a]" : "bg-[#fee2e2] text-[#dc2626]" : "bg-[#f1f5f9] text-[#94a3b8]")}><Wifi className="h-5 w-5" /></div>
-      <h2 className="mb-1 text-sm font-medium text-[#111827]">{known ? healthy ? "连接正常" : "连接异常" : "连接状态未知"}</h2>
-      <p className="mx-auto max-w-[620px] text-xs leading-5 text-[var(--color-text-tertiary)]">{known ? "状态来自 RuleEndpoint.status。" : "当前集群的 RuleEndpoint 资源未返回 status，官方 BFF 也没有提供主动探测接口，因此不使用前端模拟结果。"}</p>
+      <div className={cn("mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full", healthy ? "bg-[#dcfce7] text-[#16a34a]" : "bg-[#fee2e2] text-[#dc2626]")}><Wifi className="h-5 w-5" /></div>
+      <h2 className="mb-1 text-sm font-medium text-[#111827]">{healthy ? "连接正常" : "连接异常"}</h2>
+      <p className="mx-auto max-w-[620px] text-xs leading-5 text-[var(--color-text-tertiary)]">{healthy ? "状态来自 RuleEndpoint.status。" : "RuleEndpoint 未返回在线状态或已明确断开，当前按离线处理。"}</p>
       <div className="mx-auto mt-4 w-fit rounded-xl bg-[#f8f9fb] px-4 py-2 font-mono text-xs text-[#475569]">{endpointAddress(row)}</div>
     </section>
   );

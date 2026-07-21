@@ -53,6 +53,11 @@ import { cn } from "@/lib/utils";
 
 type EdgeUnit = EdgeUnitUiModel;
 
+type ClusterOption = {
+  name: string;
+  edgeUnitName?: string;
+};
+
 type CreateForm = {
   unitType: "专有" | "外接";
   name: string;
@@ -313,7 +318,7 @@ function CreateEdgeUnitDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  clusterOptions: string[];
+  clusterOptions: ClusterOption[];
   isSubmitting: boolean;
   onCreate: (form: CreateForm) => Promise<void>;
 }) {
@@ -323,6 +328,7 @@ function CreateEdgeUnitDialog({
   const [showScaleTip, setShowScaleTip] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const accessAddressListRef = useRef<HTMLDivElement>(null);
+  const availableClusterCount = clusterOptions.filter((cluster) => !cluster.edgeUnitName).length;
 
   useEffect(() => {
     if (!open) return;
@@ -369,6 +375,7 @@ function CreateEdgeUnitDialog({
       nextErrors.name = "名称只能包含小写字母、数字、中划线和点，且需以字母或数字开头、结尾";
     }
     if (!form.cluster) nextErrors.cluster = "请选择工作集群";
+    else if (clusterOptions.some((cluster) => cluster.name === form.cluster && cluster.edgeUnitName)) nextErrors.cluster = "该工作集群已安装边缘单元";
     if (!form.version.trim()) nextErrors.version = form.unitType === "外接" ? "请输入外接集群的实际 KubeEdge 版本" : "请选择 KubeEdge 版本";
     setErrors(nextErrors);
     const firstInvalid = (["name", "cluster", "version"] as const).find((field) => nextErrors[field]);
@@ -445,15 +452,21 @@ function CreateEdgeUnitDialog({
                 <FormField label="工作集群" required error={errors.cluster}>
                   <Select value={form.cluster || undefined} onValueChange={(value) => updateForm("cluster", value)} disabled={clusterOptions.length === 0}>
                     <SelectTrigger id="edge-unit-create-cluster" aria-invalid={Boolean(errors.cluster)} className="h-9 w-full rounded-xl px-3 pr-5 text-sm shadow-none">
-                      <SelectValue placeholder={clusterOptions.length === 0 ? "未发现已连接集群" : "请选择集群"} />
+                      <SelectValue placeholder={clusterOptions.length === 0 ? "未发现已连接集群" : availableClusterCount === 0 ? "暂无可用集群" : "请选择集群"} />
                     </SelectTrigger>
                     <SelectContent position="popper" align="start" sideOffset={0} viewportClassName="!h-auto p-0" className="w-[var(--radix-select-trigger-width)] rounded-xl p-2 shadow-[0_10px_28px_rgba(15,23,42,0.14)]">
                       <SelectGroup>
                         <SelectLabel className="px-3 py-2 text-xs font-medium text-[var(--color-text-tertiary)]">选择集群</SelectLabel>
-                        {clusterOptions.map((cluster) => <SelectItem key={cluster} value={cluster} className="h-9 px-3 pr-8 text-sm">{cluster}</SelectItem>)}
+                        {clusterOptions.map((cluster) => (
+                          <SelectItem key={cluster.name} value={cluster.name} disabled={Boolean(cluster.edgeUnitName)} className="min-h-9 px-3 pr-8 text-sm">
+                            <span>{cluster.name}</span>
+                            {cluster.edgeUnitName && <span className="ml-2 text-xs text-[var(--color-warning)]">已安装边缘单元</span>}
+                          </SelectItem>
+                        ))}
                       </SelectGroup>
                     </SelectContent>
                   </Select>
+                  {availableClusterCount === 0 && clusterOptions.length > 0 && <p className="mt-1 text-xs text-[var(--color-text-tertiary)]">每个工作集群只能创建一个边缘单元；请先连接新集群或删除原边缘单元。</p>}
                 </FormField>
                 <FormField label="KubeEdge 版本" required error={errors.version} remark={form.unitType === "外接" ? "请输入外接集群当前实际运行的 KubeEdge 版本。" : undefined}>
                   {form.unitType === "外接" ? (
@@ -577,11 +590,13 @@ function CreateEdgeUnitDialog({
 
 function EditEdgeUnitDialog({
   unit,
+  clusterOptions,
   onOpenChange,
   isSubmitting,
   onSave,
 }: {
   unit: EdgeUnit | null;
+  clusterOptions: ClusterOption[];
   onOpenChange: (open: boolean) => void;
   isSubmitting: boolean;
   onSave: (unit: EdgeUnit, payload: EdgeUnitUpdatePayload) => Promise<void>;
@@ -696,7 +711,25 @@ function EditEdgeUnitDialog({
                 </select>
               </FormField>
               <FormField label="工作集群">
-                <Input value={form.cluster} onChange={(event) => setForm((prev) => ({ ...prev, cluster: event.target.value }))} placeholder="未配置" />
+                <Select value={form.cluster || undefined} onValueChange={(value) => setForm((prev) => ({ ...prev, cluster: value }))}>
+                  <SelectTrigger className="h-9 w-full rounded-xl px-3 pr-5 text-sm shadow-none">
+                    <SelectValue placeholder="请选择集群" />
+                  </SelectTrigger>
+                  <SelectContent position="popper" align="start" sideOffset={0} viewportClassName="!h-auto p-0" className="w-[var(--radix-select-trigger-width)] rounded-xl p-2 shadow-[0_10px_28px_rgba(15,23,42,0.14)]">
+                    <SelectGroup>
+                      <SelectLabel className="px-3 py-2 text-xs font-medium text-[var(--color-text-tertiary)]">选择集群</SelectLabel>
+                      {clusterOptions.map((cluster) => {
+                        const occupiedByOther = Boolean(cluster.edgeUnitName && cluster.edgeUnitName !== unit?.name);
+                        return (
+                          <SelectItem key={cluster.name} value={cluster.name} disabled={occupiedByOther} className="min-h-9 px-3 pr-8 text-sm">
+                            <span>{cluster.name}</span>
+                            {occupiedByOther && <span className="ml-2 text-xs text-[var(--color-warning)]">已安装边缘单元</span>}
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectGroup>
+                  </SelectContent>
+                </Select>
               </FormField>
               <FormField label="KubeEdge 版本">
                 <Input value={form.version} onChange={(event) => setForm((prev) => ({ ...prev, version: event.target.value }))} placeholder="未配置" />
@@ -967,6 +1000,7 @@ export default function Home() {
   const [deleteTarget, setDeleteTarget] = useState<EdgeUnit | null>(null);
   const [clusterOptions, setClusterOptions] = useState<string[]>([]);
   const { logout } = useAuth();
+  const { refreshEdgeUnits } = useEdgeUnits();
   const loadData = useCallback(async () => {
     setIsLoading(true);
     setError("");
@@ -1001,6 +1035,11 @@ export default function Home() {
     return edgeUnits.filter((unit) => unit.name.toLowerCase().includes(keyword) || unit.cluster.toLowerCase().includes(keyword));
   }, [edgeUnits, query]);
 
+  const edgeUnitClusterOptions = useMemo<ClusterOption[]>(() => clusterOptions.map((name) => ({
+    name,
+    edgeUnitName: edgeUnits.find((unit) => unit.cluster === name)?.name,
+  })), [clusterOptions, edgeUnits]);
+
   const handleCreate = async (form: CreateForm) => {
     setIsMutating(true);
     setNotice("");
@@ -1021,7 +1060,7 @@ export default function Home() {
         uninstallPolicy: form.uninstallPolicy,
       };
       await createEdgeUnit(payload);
-      await loadData();
+      await Promise.all([loadData(), refreshEdgeUnits()]);
       setNotice(`边缘单元 ${payload.name} 已创建。`);
     } catch (err) {
       const message = messageOfError(err, "边缘单元创建失败");
@@ -1037,7 +1076,7 @@ export default function Home() {
     setNotice("");
     try {
       await updateEdgeUnit(unit.name, payload);
-      await loadData();
+      await Promise.all([loadData(), refreshEdgeUnits()]);
       setNotice(`边缘单元 ${unit.name} 元数据已更新。`);
     } catch (err) {
       setNotice(messageOfError(err, "边缘单元更新失败"));
@@ -1053,7 +1092,7 @@ export default function Home() {
     setNotice("");
     try {
       const result = await deleteEdgeUnit(deleteTarget.name);
-      await loadData();
+      await Promise.all([loadData(), refreshEdgeUnits()]);
       setDeleteTarget(null);
       setNotice(result.warnings?.map((item) => item.message).join("；") || `边缘单元 ${deleteTarget.name} 元数据已删除。`);
     } catch (err) {
@@ -1145,12 +1184,13 @@ export default function Home() {
       <CreateEdgeUnitDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        clusterOptions={clusterOptions}
+        clusterOptions={edgeUnitClusterOptions}
         isSubmitting={isMutating}
         onCreate={handleCreate}
       />
       <EditEdgeUnitDialog
         unit={editingUnit}
+        clusterOptions={edgeUnitClusterOptions}
         onOpenChange={(open) => {
           if (!open) setEditingUnit(null);
         }}
