@@ -94,3 +94,14 @@ test("KubeEdge join command registers BlueEdge product and ownership labels", ()
   assert.match(command, /--labels=blueedge\.io\/managed-by=blueedge,blueedge\.io\/node-role=edge,blueedge\.io\/edge-unit=unit-a/);
   assert.match(command, /--edgenode-name=edge-01/);
 });
+
+test("AccessConfig accepts the current cri-dockerd Unix endpoint", () => {
+  const data = buildAccessConfigData({
+    ...payload,
+    criAddress: "unix:///var/run/cri-dockerd.sock",
+  });
+  assert.equal(data.criAddress, "unix:///var/run/cri-dockerd.sock");
+
+  const command = buildJoinCommand({ ...data, labels: {} }, "join-token");
+  assert.match(command, /--remote-runtime-endpoint=unix:\/\/\/var\/run\/cri-dockerd\.sock/);
+});

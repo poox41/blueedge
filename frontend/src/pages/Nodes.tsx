@@ -823,8 +823,8 @@ export function Nodes() {
                   <SelectValue placeholder="点击读取现有 CRI 服务地址" />
                 </SelectTrigger>
                 <SelectContent position="popper" align="start" className="z-[100] rounded-2xl p-2 shadow-[0_16px_36px_rgba(15,23,42,0.14)]" viewportClassName="h-auto">
-                  <SelectItem value="/run/containerd/containerd.sock" className="min-h-11 rounded-xl px-4 py-3 text-sm">/run/containerd/containerd.sock</SelectItem>
-                  <SelectItem value="/var/run/dockershim.sock" className="min-h-11 rounded-xl px-4 py-3 text-sm">/var/run/dockershim.sock</SelectItem>
+                  <SelectItem value="unix:///run/containerd/containerd.sock" className="min-h-11 rounded-xl px-4 py-3 text-sm">unix:///run/containerd/containerd.sock</SelectItem>
+                  <SelectItem value="unix:///var/run/cri-dockerd.sock" className="min-h-11 rounded-xl px-4 py-3 text-sm">unix:///var/run/cri-dockerd.sock</SelectItem>
                 </SelectContent>
               </Select>
             </AccessField>

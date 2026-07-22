@@ -112,8 +112,8 @@ export function buildAccessConfigData(body: any, existingData?: Record<string, s
   if (driver && !accessConfigDrivers.has(driver)) {
     throw new Error("driver must be one of systemd, cgroups");
   }
-  if (criAddress && !/^\/[A-Za-z0-9._/-]+$/.test(criAddress)) {
-    throw new Error("criAddress must be an absolute Unix socket path");
+  if (criAddress && !/^(?:unix:\/\/)?\/[A-Za-z0-9._/-]+$/.test(criAddress)) {
+    throw new Error("criAddress must be an absolute Unix socket endpoint");
   }
   if (!cloudCoreAddress || !isHostPort(cloudCoreAddress)) {
     throw new Error("cloudCoreAddress must be a valid host:port");

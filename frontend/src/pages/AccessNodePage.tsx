@@ -19,6 +19,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { toAccessConfigUiModel, type AccessConfigInstallCommandResponse, type AccessConfigUiModel } from "@/api/adapters/access-config.adapter";
 import { getAccessConfigInstallCommand, listAccessConfigs } from "@/api/services/product";
 import { cn } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/clipboard";
 import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 
 export function AccessNodePage() {
@@ -206,8 +207,8 @@ function AccessStepsDialog({
   const [activeTab, setActiveTab] = useState<"online" | "offline">("online");
   const [copiedStep, setCopiedStep] = useState<number | null>(null);
 
-  const copyText = (text: string, step: number) => {
-    navigator.clipboard.writeText(text).catch(() => {});
+  const copyText = async (text: string, step: number) => {
+    if (!await copyToClipboard(text)) return;
     setCopiedStep(step);
     window.setTimeout(() => setCopiedStep(null), 1800);
   };
@@ -238,8 +239,8 @@ function AccessStepsDialog({
 
           {activeTab === "online" ? (
             <>
-              <StepBlock step={1} title="使用脚本准备 keadm 工具" warning="建议先创建一个空的工作目录，在该目录中运行脚本。" command={initCommandOnline} copied={copiedStep === 1} onCopy={() => copyText(initCommandOnline, 1)} />
-              <StepBlock step={2} title="使用 keadm 工具接入节点" warning={installCommand.ready ? "请在 token 有效期内执行。" : "当前仅为命令模板，不能直接执行。"} command={joinCommand} copied={copiedStep === 2} onCopy={() => copyText(joinCommand, 2)} />
+              <StepBlock step={1} title="使用脚本准备 keadm 工具" warning="建议先创建一个空的工作目录，在该目录中运行脚本。" command={initCommandOnline} copied={copiedStep === 1} onCopy={() => void copyText(initCommandOnline, 1)} />
+              <StepBlock step={2} title="使用 keadm 工具接入节点" warning={installCommand.ready ? "请在 token 有效期内执行。" : "当前仅为命令模板，不能直接执行。"} command={joinCommand} copied={copiedStep === 2} onCopy={() => void copyText(joinCommand, 2)} />
             </>
           ) : (
             <>
@@ -256,8 +257,8 @@ function AccessStepsDialog({
                   <p className="mt-2 text-xs text-[var(--color-text-tertiary)]">尚未配置真实安装包或 edgecore 配置生成能力。</p>
                 </div>
               </div>
-              <StepBlock step={2} title="将安装包文件和脚本文件拷贝到边缘节点的同一目录下，并运行初始化脚本" warning="建议创建一个空的工作目录来存放相关文件。" command={initCommandOffline} copied={copiedStep === 3} onCopy={() => copyText(initCommandOffline, 3)} />
-              <StepBlock step={3} title="执行命令接入节点" warning={installCommand.ready ? "请在 token 有效期内执行。" : "当前仅为命令模板，不能直接执行。"} command={joinCommand} copied={copiedStep === 4} onCopy={() => copyText(joinCommand, 4)} />
+              <StepBlock step={2} title="将安装包文件和脚本文件拷贝到边缘节点的同一目录下，并运行初始化脚本" warning="建议创建一个空的工作目录来存放相关文件。" command={initCommandOffline} copied={copiedStep === 3} onCopy={() => void copyText(initCommandOffline, 3)} />
+              <StepBlock step={3} title="执行命令接入节点" warning={installCommand.ready ? "请在 token 有效期内执行。" : "当前仅为命令模板，不能直接执行。"} command={joinCommand} copied={copiedStep === 4} onCopy={() => void copyText(joinCommand, 4)} />
             </>
           )}
         </div>
