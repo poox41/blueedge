@@ -38,6 +38,7 @@ import {
   getEdgeUnitConfigMaps,
   isValidEdgeUnitConfigMap,
 } from "./edge-unit-source.service.js";
+import { edgeApplicationTargetsOnlyMatchingNodes } from "./edge-application-placement.service.js";
 
 const edgeUnitAccessTypes = new Set(["external", "dedicated", "unknown"]);
 const edgeUnitComponentStates = new Set(["installed", "notInstalled", "unknown"]);
@@ -271,7 +272,107 @@ export function bindDeploymentToEdgeUnit(resource: any, edgeUnitName: string) {
 }
 
 export function deploymentRunsOnNodes(deployment: any, pods: any[], nodeNames: Set<string>): boolean {
-  return deploymentPodsOnNodes(deployment, pods, nodeNames).length > 0;
+  const selector = selectorOfWorkload(deployment);
+  const metadata = metadataOf(deployment);
+  const namespace = String(metadata.namespace || deployment?.namespace || "default");
+  const matchingPods = pods.filter((pod) =>
+    podNamespace(pod) === namespace && podBelongsToDeployment(pod, deployment, selector),
+  );
+  const activeScheduledPods = matchingPods.filter((pod) => isActiveScheduledPod(pod));
+  if (activeScheduledPods.length > 0) {
+    return activeScheduledPods.some((pod) => nodeNames.has(String(pod?.spec?.nodeName || "")));
+  }
+  return matchingPods.some((pod) =>
+    metadataOf(pod).deletionTimestamp && nodeNames.has(String(pod?.spec?.nodeName || "")),
+  );
+}
+
+function isActiveScheduledPod(pod: any): boolean {
+  const phase = String(pod?.status?.phase || "");
+  return !metadataOf(pod).deletionTimestamp &&
+    !["Succeeded", "Failed"].includes(phase) &&
+    Boolean(String(pod?.spec?.nodeName || ""));
+}
+
+function deploymentHasActiveScheduledPods(deployment: any, pods: any[]): boolean {
+  const selector = selectorOfWorkload(deployment);
+  const metadata = metadataOf(deployment);
+  const namespace = String(metadata.namespace || deployment?.namespace || "default");
+  return pods.some((pod) =>
+    isActiveScheduledPod(pod) &&
+    podNamespace(pod) === namespace &&
+    podBelongsToDeployment(pod, deployment, selector),
+  );
+}
+
+function podBelongsToDeployment(pod: any, deployment: any, selector = selectorOfWorkload(deployment)): boolean {
+  const ownerReferences = Array.isArray(metadataOf(pod).ownerReferences) ? metadataOf(pod).ownerReferences : [];
+  const deploymentName = String(metadataOf(deployment).name || deployment?.name || "");
+  if (ownerReferences.length > 0) {
+    return ownerReferences.some((owner: any) =>
+      String(owner?.kind || "") === "ReplicaSet" && replicaSetBelongsToDeployment(String(owner?.name || ""), deploymentName),
+    );
+  }
+  return Object.keys(selector).length > 0 && podMatchesSelector(pod, selector);
+}
+
+function replicaSetBelongsToDeployment(replicaSetName: string, deploymentName: string): boolean {
+  const prefix = `${deploymentName}-`;
+  if (!deploymentName || !replicaSetName.startsWith(prefix)) return false;
+  // Deployment ReplicaSets are named <deployment>-<pod-template-hash>.
+  // Reject a longer Deployment name such as "ov-model-blueedge-import-<hash>"
+  // when evaluating the shorter "ov-model" Deployment.
+  const hash = replicaSetName.slice(prefix.length);
+  return Boolean(hash) && !hash.includes("-");
+}
+
+export function deploymentTargetsNodes(deployment: any, allNodes: any[], nodeNames: Set<string>): boolean {
+  const podSpec = deployment?.spec?.template?.spec || {};
+  const nodeName = String(podSpec.nodeName || "");
+  if (nodeName) return nodeNames.has(nodeName);
+
+  const nodeSelector = podSpec.nodeSelector && typeof podSpec.nodeSelector === "object" && !Array.isArray(podSpec.nodeSelector)
+    ? Object.fromEntries(Object.entries(podSpec.nodeSelector).map(([key, value]) => [key, String(value)]))
+    : {};
+  if (nodeSelector["blueedge.io/node-role"] === "edge") return true;
+  if (Object.keys(nodeSelector).length > 0) {
+    const matchingNodes = allNodes.filter((node) => nodeMatchesSelector(node, nodeSelector));
+    if (matchingNodes.length > 0 && matchingNodes.every((node) => nodeNames.has(nodeNameOf(node)))) return true;
+  }
+
+  const terms = podSpec?.affinity?.nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution?.nodeSelectorTerms;
+  if (!Array.isArray(terms)) return false;
+  const matchingNodes = allNodes.filter((node) => terms.some((term: any) => nodeMatchesAffinityTerm(node, term)));
+  return matchingNodes.length > 0 && matchingNodes.every((node) => nodeNames.has(nodeNameOf(node)));
+}
+
+function nodeMatchesAffinityTerm(node: any, term: any): boolean {
+  const expressions = Array.isArray(term?.matchExpressions) ? term.matchExpressions : [];
+  const fields = Array.isArray(term?.matchFields) ? term.matchFields : [];
+  return expressions.every((expression: any) => nodeRequirementMatches(labelsOf(node), expression)) &&
+    fields.every((field: any) => nodeRequirementMatches({ "metadata.name": nodeNameOf(node) }, field));
+}
+
+function nodeRequirementMatches(values: Record<string, string>, requirement: any): boolean {
+  const key = String(requirement?.key || "");
+  const operator = String(requirement?.operator || "");
+  const expected = Array.isArray(requirement?.values) ? requirement.values.map(String) : [];
+  const exists = Object.prototype.hasOwnProperty.call(values, key);
+  const actual = String(values[key] || "");
+  if (operator === "In") return exists && expected.includes(actual);
+  if (operator === "NotIn") return exists && !expected.includes(actual);
+  if (operator === "Exists") return exists;
+  if (operator === "DoesNotExist") return !exists;
+  if (operator === "Gt") return exists && expected.length === 1 && Number(actual) > Number(expected[0]);
+  if (operator === "Lt") return exists && expected.length === 1 && Number(actual) < Number(expected[0]);
+  return false;
+}
+
+async function validateExplicitDeploymentNode(deployment: any): Promise<void> {
+  const nodeName = String(deployment?.spec?.template?.spec?.nodeName || "").trim();
+  if (!nodeName) return;
+  const node = await getK8sJson(`/api/v1/nodes/${encodeURIComponent(nodeName)}`);
+  if (!isExternalEdgeNode(node)) throw new Error(`节点 ${nodeName} 不是边缘节点`);
 }
 
 export function deploymentPodsOnNodes(deployment: any, pods: any[], nodeNames: Set<string>): any[] {
@@ -281,10 +382,9 @@ export function deploymentPodsOnNodes(deployment: any, pods: any[], nodeNames: S
   const metadata = metadataOf(deployment);
   const namespace = String(metadata.namespace || deployment?.namespace || "default");
   return pods.filter((pod) =>
-    !metadataOf(pod).deletionTimestamp &&
     nodeNames.has(String(pod?.spec?.nodeName || "")) &&
     podNamespace(pod) === namespace &&
-    podMatchesSelector(pod, selector),
+    podBelongsToDeployment(pod, deployment, selector),
   );
 }
 
@@ -333,6 +433,40 @@ export function isDeploymentHealthy(deployment: any): boolean {
   return replicas > 0 && available >= replicas;
 }
 
+function isCloudCoreResource(resource: any): boolean {
+  const metadata = metadataOf(resource);
+  const labels = labelsOf(resource);
+  const name = String(metadata.name || resource?.name || "").toLowerCase();
+  const containers = Array.isArray(resource?.spec?.template?.spec?.containers)
+    ? resource.spec.template.spec.containers
+    : Array.isArray(resource?.spec?.containers)
+      ? resource.spec.containers
+      : [];
+  return name === "cloudcore" || name.startsWith("cloudcore-") ||
+    String(labels.kubeedge || "").toLowerCase() === "cloudcore" ||
+    containers.some((container: any) => String(container?.name || "").toLowerCase() === "cloudcore");
+}
+
+export function cloudCoreRuntimeStatus(deployments: any[], pods: any[]): "running" | "abnormal" | "unknown" {
+  const cloudCoreDeployments = deployments.filter(isCloudCoreResource);
+  if (cloudCoreDeployments.length > 0) {
+    return cloudCoreDeployments.some((deployment) => {
+      const desired = Number(deployment?.spec?.replicas ?? deployment?.replicas ?? 1);
+      const available = Number(deployment?.status?.availableReplicas ?? deployment?.availableReplicas ?? 0);
+      const ready = Number(deployment?.status?.readyReplicas ?? deployment?.readyReplicas ?? 0);
+      return desired > 0 && available >= desired && ready >= desired;
+    }) ? "running" : "abnormal";
+  }
+
+  const cloudCorePods = pods.filter(isCloudCoreResource);
+  if (cloudCorePods.length === 0) return "unknown";
+  return cloudCorePods.some((pod) => {
+    if (metadataOf(pod).deletionTimestamp || String(pod?.status?.phase || "") !== "Running") return false;
+    const conditions = Array.isArray(pod?.status?.conditions) ? pod.status.conditions : [];
+    return conditions.some((condition: any) => condition?.type === "Ready" && condition?.status === "True");
+  }) ? "running" : "abnormal";
+}
+
 export function edgeApplicationTargetsNodeGroup(app: any, nodeGroupName: string): boolean {
   const targetNodeGroups = app?.spec?.workloadScope?.targetNodeGroups;
   if (!Array.isArray(targetNodeGroups)) return false;
@@ -375,33 +509,19 @@ export function buildEdgeUnitResourceSet(
   edgeUnitName: string,
   options: { accessType?: "external" | "dedicated" | "unknown" } = {},
 ) {
-  const configuredNodeNames = new Set(aux.accessConfigs
-    .map(dataOf)
-    .filter((config) => config.edgeUnitRef === edgeUnitName)
-    .map((config) => config.nodeName)
-    .filter(Boolean));
-  const directlyOwnedNodes = aux.nodes.filter((item) => {
-    if (nodeTargetsEdgeUnit(item, edgeUnitName) || configuredNodeNames.has(nodeNameOf(item))) return true;
-    if (options.accessType !== "external" || !isExternalEdgeNode(item)) return false;
-
-    // Standard role labels identify imported edge nodes. An explicit BlueEdge
-    // owner always wins so an external unit cannot absorb another unit's node.
-    const explicitOwner = String(
-      labelsOf(item)["blueedge.io/edge-unit"] ||
-      annotationsOf(item)["blueedge.io/edge-unit"] ||
-      "",
-    );
-    return !explicitOwner;
-  });
+  const directlyOwnedNodes = aux.nodes.filter(isExternalEdgeNode);
   const nodes = uniqueResources(directlyOwnedNodes);
   const nodeNames = new Set(nodes.map(nodeNameOf).filter(Boolean));
-  const deployments = aux.deployments.filter((item) =>
-    deploymentBelongsToEdgeUnit(item, edgeUnitName) ||
-    deploymentRunsOnNodes(item, aux.pods, nodeNames),
-  );
-  const edgeApplications = aux.edgeApplications.filter((item) =>
-    edgeApplicationBelongsToEdgeUnit(item, edgeUnitName),
-  );
+  const deployments = aux.deployments.filter((item) => {
+    const runsOnEdge = deploymentRunsOnNodes(item, aux.pods, nodeNames);
+    if (deploymentHasActiveScheduledPods(item, aux.pods)) return runsOnEdge;
+    return runsOnEdge || deploymentTargetsNodes(item, aux.nodes, nodeNames);
+  });
+  const nodeGroups = aux.nodeGroups || [];
+  const groupsByName = new Map(nodeGroups.map((group) => [String(metadataOf(group).name || group?.name || ""), group]));
+  const edgeApplications = aux.nodeGroups
+    ? aux.edgeApplications.filter((item) => edgeApplicationTargetsOnlyMatchingNodes(item, groupsByName, aux.nodes, isExternalEdgeNode))
+    : aux.edgeApplications;
   return { nodes, deployments, edgeApplications };
 }
 
@@ -414,7 +534,7 @@ export function buildEdgeUnitRuntime(
   const nodeTotal = resources.nodes.length;
   const nodeReady = resources.nodes.filter(isNodeReady).length;
   const nodeNames = new Set(resources.nodes.map(nodeNameOf).filter(Boolean));
-  const status = nodeTotal === 0 ? "unknown" : nodeReady === nodeTotal ? "running" : "abnormal";
+  const status = cloudCoreRuntimeStatus(aux.deployments, aux.pods);
 
   return {
     status,
@@ -604,6 +724,7 @@ export async function getEdgeUnitResources(name: string) {
 export async function createEdgeUnitDeployment(edgeUnitName: string, resource: any) {
   try {
     const deployment = bindDeploymentToEdgeUnit(resource, edgeUnitName);
+    await validateExplicitDeploymentNode(deployment);
     const namespace = String(deployment.metadata.namespace || "default");
     const created = await requestK8sJson(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments`, {
       method: "POST",
@@ -630,6 +751,7 @@ export async function updateEdgeUnitDeployment(edgeUnitName: string, namespace: 
         resourceVersion: metadataOf(existing).resourceVersion,
       },
     }, edgeUnitName);
+    await validateExplicitDeploymentNode(deployment);
     const updated = await requestK8sJson(path, { method: "PUT", body: deployment });
     return { status: 200, body: updated };
   } catch (error) {

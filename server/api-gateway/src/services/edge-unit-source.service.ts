@@ -126,7 +126,7 @@ export async function collectNodeGroupDetails(warnings: EdgeUnitWarning[]): Prom
 }
 
 export async function collectEdgeUnitAuxSources(warnings: EdgeUnitWarning[]) {
-  const [nodes, podsRaw, deploymentsRaw, edgeApplicationsRaw, accessConfigs, k8sDeploymentsRaw, k8sEdgeApplicationsRaw] = await Promise.all([
+  const [nodes, podsRaw, deploymentsRaw, edgeApplicationsRaw, accessConfigs, k8sDeploymentsRaw, k8sEdgeApplicationsRaw, nodeGroupsRaw] = await Promise.all([
     getEdgeUnitNodes(warnings),
     getK8sJson("/api/v1/pods").catch(async (k8sError) => {
       const bffPods = await getJson("/pod").catch((bffError) => {
@@ -150,6 +150,10 @@ export async function collectEdgeUnitAuxSources(warnings: EdgeUnitWarning[]) {
     }),
     getK8sJson("/apis/apps/v1/deployments").catch(() => null),
     getK8sJson("/apis/apps.kubeedge.io/v1alpha1/edgeapplications").catch(() => null),
+    getK8sJson("/apis/apps.kubeedge.io/v1alpha1/nodegroups").catch((error) => {
+      warnings.push({ source: "nodegroup.detail", message: error instanceof Error ? error.message : "NodeGroup list unavailable" });
+      return { items: [] };
+    }),
   ]);
 
   const deploymentSummaries = deploymentsRaw.status === "fulfilled" ? itemsOf(deploymentsRaw.value) : [];
@@ -166,7 +170,7 @@ export async function collectEdgeUnitAuxSources(warnings: EdgeUnitWarning[]) {
   const edgeApplications = mergeResourceDetails(edgeApplicationSummaries, k8sEdgeApplicationsRaw, warnings, "edgeapplication.detail");
   const pods = itemsOf(podsRaw);
 
-  return { nodes, pods, deployments, edgeApplications, accessConfigs };
+  return { nodes, pods, deployments, edgeApplications, nodeGroups: itemsOf(nodeGroupsRaw), accessConfigs };
 }
 
 export function edgeUnitConfigMapName(configMap: any): string {

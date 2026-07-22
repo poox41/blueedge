@@ -5,6 +5,7 @@ export interface EdgeUnitAuxSources {
   pods: any[];
   deployments: any[];
   edgeApplications: any[];
+  nodeGroups?: any[];
   accessConfigs: any[];
 }
 

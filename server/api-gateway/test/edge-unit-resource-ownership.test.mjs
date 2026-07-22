@@ -5,6 +5,7 @@ import {
   buildEdgeUnitConfigMapData,
   buildEdgeUnitRuntime,
   bindDeploymentToEdgeUnit,
+  cloudCoreRuntimeStatus,
   deploymentBelongsToEdgeUnit,
   deploymentTargetsEdgeUnit,
   edgeApplicationBelongsToEdgeUnit,
@@ -258,7 +259,39 @@ function edgeApplication(name, edgeUnit, phase = "Running") {
   };
 }
 
-test("EdgeUnit ignores unowned cluster resources without relying on NodeGroup", () => {
+test("EdgeUnit status follows CloudCore readiness instead of edge node readiness", () => {
+  const cloudCoreDeployment = {
+    metadata: { name: "cloudcore", namespace: "kubeedge", labels: { kubeedge: "cloudcore" } },
+    spec: { replicas: 1, template: { spec: { containers: [{ name: "cloudcore" }] } } },
+    status: { availableReplicas: 1, readyReplicas: 1 },
+  };
+  const aux = {
+    nodes: [
+      externalReadyNode("edge-ready", { "node-role.kubernetes.io/edge": "" }),
+      { ...externalReadyNode("edge-offline", { "node-role.kubernetes.io/edge": "" }), status: { conditions: [{ type: "Ready", status: "False" }] } },
+    ],
+    pods: [],
+    deployments: [cloudCoreDeployment],
+    edgeApplications: [],
+    accessConfigs: [],
+  };
+
+  const result = buildEdgeUnitRuntime(aux, "unit-a");
+  assert.equal(result.status, "running");
+  assert.deepEqual(result.nodes, { ready: 1, total: 2 });
+});
+
+test("EdgeUnit status is abnormal only when an observed CloudCore workload is not ready", () => {
+  const unavailable = {
+    metadata: { name: "cloudcore", namespace: "kubeedge" },
+    spec: { replicas: 1, template: { spec: { containers: [{ name: "cloudcore" }] } } },
+    status: { availableReplicas: 0, readyReplicas: 0 },
+  };
+  assert.equal(cloudCoreRuntimeStatus([unavailable], []), "abnormal");
+  assert.equal(cloudCoreRuntimeStatus([], []), "unknown");
+});
+
+test("EdgeUnit includes cluster EdgeApplications without relying on BlueEdge ownership labels", () => {
   const aux = {
     nodes: [readyNode("k8s-laptop-edge")],
     pods: [pod("cluster-pod", "cluster-app", "k8s-laptop-edge")],
@@ -271,10 +304,10 @@ test("EdgeUnit ignores unowned cluster resources without relying on NodeGroup", 
 
   assert.deepEqual(result.nodes, { ready: 0, total: 0 });
   assert.deepEqual(result.workloads, { healthy: 0, total: 0 });
-  assert.deepEqual(result.applications, { healthy: 0, total: 0 });
+  assert.deepEqual(result.applications, { healthy: 1, total: 1 });
 });
 
-test("external EdgeUnits discover imported edge nodes from standard role labels", () => {
+test("EdgeUnits discover all cluster edge nodes from standard KubeEdge role labels", () => {
   const edgeRoleNode = externalReadyNode("external-edge", {
     "node-role.kubernetes.io/edge": "",
   });
@@ -306,11 +339,11 @@ test("external EdgeUnits discover imported edge nodes from standard role labels"
   assert.equal(isExternalEdgeNode(kubeEdgeAgent), true);
   assert.equal(isExternalEdgeNode(ordinaryAgent), false);
   const result = buildEdgeUnitRuntime(aux, "external-unit", { accessType: "external" });
-  assert.deepEqual(result.nodes, { ready: 2, total: 2 });
-  assert.deepEqual(result.workloads, { healthy: 1, total: 1 });
+  assert.deepEqual(result.nodes, { ready: 3, total: 3 });
+  assert.deepEqual(result.workloads, { healthy: 2, total: 2 });
 });
 
-test("dedicated EdgeUnits do not absorb unlabeled external edge nodes", () => {
+test("dedicated EdgeUnits also count standard KubeEdge nodes in their cluster", () => {
   const aux = {
     nodes: [externalReadyNode("external-edge", { "node-role.kubernetes.io/edge": "" })],
     pods: [],
@@ -320,12 +353,12 @@ test("dedicated EdgeUnits do not absorb unlabeled external edge nodes", () => {
   };
 
   const result = buildEdgeUnitRuntime(aux, "dedicated-unit", { accessType: "dedicated" });
-  assert.deepEqual(result.nodes, { ready: 0, total: 0 });
+  assert.deepEqual(result.nodes, { ready: 1, total: 1 });
 });
 
 test("EdgeUnit resolves directly labeled nodes and resources", () => {
   const aux = {
-    nodes: [readyNode("k8s-laptop-edge", "unit-a"), readyNode("cloud-node", "unit-b")],
+    nodes: [externalReadyNode("k8s-laptop-edge", { "node-role.kubernetes.io/edge": "", "blueedge.io/edge-unit": "unit-a" }), readyNode("cloud-node", "unit-b")],
     pods: [
       pod("edge-pod", "edge-app", "k8s-laptop-edge"),
       pod("cloud-pod", "cloud-app", "cloud-node"),
@@ -342,12 +375,12 @@ test("EdgeUnit resolves directly labeled nodes and resources", () => {
 
   assert.deepEqual(result.nodes, { ready: 1, total: 1 });
   assert.deepEqual(result.workloads, { healthy: 1, total: 1 });
-  assert.deepEqual(result.applications, { healthy: 1, total: 1 });
+  assert.deepEqual(result.applications, { healthy: 2, total: 2 });
 });
 
 test("EdgeUnit resolves legacy nodes from AccessConfig ownership without NodeGroup binding", () => {
   const aux = {
-    nodes: [readyNode("legacy-edge")],
+    nodes: [externalReadyNode("legacy-edge", { "node-role.kubernetes.io/edge": "" })],
     pods: [],
     deployments: [],
     edgeApplications: [],
@@ -358,9 +391,12 @@ test("EdgeUnit resolves legacy nodes from AccessConfig ownership without NodeGro
   assert.deepEqual(result.nodes, { ready: 1, total: 1 });
 });
 
-test("EdgeUnits in the same cluster are isolated by direct ownership labels", () => {
+test("EdgeApplication totals follow the connected cluster instead of ownership labels", () => {
   const aux = {
-    nodes: [readyNode("edge-a", "unit-a"), readyNode("edge-b", "unit-b")],
+    nodes: [
+      externalReadyNode("edge-a", { "node-role.kubernetes.io/edge": "", "blueedge.io/edge-unit": "unit-a" }),
+      externalReadyNode("edge-b", { "node-role.kubernetes.io/edge": "", "blueedge.io/edge-unit": "unit-b" }),
+    ],
     pods: [pod("pod-a", "app-a", "edge-a"), pod("pod-b", "app-b", "edge-b")],
     deployments: [deployment("deployment-a", "app-a", 1, "unit-a"), deployment("deployment-b", "app-b", 1, "unit-b")],
     edgeApplications: [edgeApplication("edge-app-a", "unit-a"), edgeApplication("edge-app-b", "unit-b")],
@@ -369,18 +405,43 @@ test("EdgeUnits in the same cluster are isolated by direct ownership labels", ()
   const unitA = buildEdgeUnitRuntime(aux, "unit-a");
   const unitB = buildEdgeUnitRuntime(aux, "unit-b");
 
-  assert.deepEqual(unitA.nodes, { ready: 1, total: 1 });
-  assert.deepEqual(unitA.workloads, { healthy: 1, total: 1 });
-  assert.deepEqual(unitA.applications, { healthy: 1, total: 1 });
-  assert.deepEqual(unitB.nodes, { ready: 1, total: 1 });
-  assert.deepEqual(unitB.workloads, { healthy: 1, total: 1 });
-  assert.deepEqual(unitB.applications, { healthy: 1, total: 1 });
+  assert.deepEqual(unitA.nodes, { ready: 2, total: 2 });
+  assert.deepEqual(unitA.workloads, { healthy: 2, total: 2 });
+  assert.deepEqual(unitA.applications, { healthy: 2, total: 2 });
+  assert.deepEqual(unitB.nodes, { ready: 2, total: 2 });
+  assert.deepEqual(unitB.workloads, { healthy: 2, total: 2 });
+  assert.deepEqual(unitB.applications, { healthy: 2, total: 2 });
+});
+
+test("overview application totals use the same real edge NodeGroup scope as the batch workload list", () => {
+  const valid = edgeApplication("valid-edge-app", "unit-a");
+  const missing = edgeApplication("missing-group-app", "unit-a");
+  missing.spec.workloadScope.targetNodeGroups = [{ name: "missing-group" }];
+  const cloud = edgeApplication("cloud-group-app", "unit-a");
+  cloud.spec.workloadScope.targetNodeGroups = [{ name: "cloud-group" }];
+  const aux = {
+    nodes: [
+      externalReadyNode("edge-01", { "node-role.kubernetes.io/edge": "" }),
+      readyNode("k8s-master"),
+    ],
+    nodeGroups: [
+      { metadata: { name: "shared-target-group" }, spec: { nodes: ["edge-01"] } },
+      { metadata: { name: "cloud-group" }, spec: { nodes: ["k8s-master"] } },
+    ],
+    pods: [],
+    deployments: [],
+    edgeApplications: [valid, missing, cloud],
+    accessConfigs: [],
+  };
+
+  const result = buildEdgeUnitRuntime(aux, "unit-a");
+  assert.deepEqual(result.applications, { healthy: 1, total: 1 });
 });
 
 test("workload totals and health use directly owned nodes and workloads", () => {
   const ownedDeployment = deployment("owned-deployment", "owned-app", 1, "unit-a");
   const aux = {
-    nodes: [readyNode("edge-a", "unit-a"), readyNode("cloud-node", "unit-b")],
+    nodes: [externalReadyNode("edge-a", { "node-role.kubernetes.io/edge": "", "blueedge.io/edge-unit": "unit-a" }), readyNode("cloud-node", "unit-b")],
     pods: [
       pod("edge-pending", "owned-app", "edge-a", { phase: "Pending", ready: false }),
       pod("cloud-ready", "owned-app", "cloud-node"),
@@ -399,9 +460,9 @@ test("workload totals and health use directly owned nodes and workloads", () => 
   assert.deepEqual(result.applications, { healthy: 1, total: 2 });
 });
 
-test("deleting pods do not assign an unowned cloud workload to an EdgeUnit", () => {
+test("a currently cloud-scheduled Deployment is not rescued by a stale terminating edge Pod", () => {
   const aux = {
-    nodes: [readyNode("k8s-laptop-edge", "demo-edge-unit"), readyNode("k8s-master")],
+    nodes: [externalReadyNode("k8s-laptop-edge", { "node-role.kubernetes.io/edge": "", "blueedge.io/edge-unit": "demo-edge-unit" }), readyNode("k8s-master")],
     pods: [
       pod("cloud-ready", "dap-predict-proxy", "k8s-master"),
       pod("edge-stale", "dap-predict-proxy", "k8s-laptop-edge", {
@@ -417,5 +478,155 @@ test("deleting pods do not assign an unowned cloud workload to an EdgeUnit", () 
 
   const result = buildEdgeUnitRuntime(aux, "demo-edge-unit");
 
+  assert.deepEqual(result.workloads, { healthy: 0, total: 0 });
+});
+
+test("a pending replacement keeps its Deployment in edge workload totals through the terminating edge Pod", () => {
+  const aux = {
+    nodes: [externalReadyNode("edge-01", { "node-role.kubernetes.io/edge": "" }), readyNode("k8s-master")],
+    pods: [
+      pod("replacement-pending", "edge-app", "", { phase: "Pending", ready: false }),
+      pod("edge-terminating", "edge-app", "edge-01", { phase: "Running", deletionTimestamp: "2026-07-22T01:00:00Z" }),
+    ],
+    deployments: [deployment("edge-app", "edge-app", 0)],
+    edgeApplications: [],
+    accessConfigs: [],
+  };
+
+  const result = buildEdgeUnitRuntime(aux, "demo-edge-unit");
+  assert.deepEqual(result.workloads, { healthy: 0, total: 1 });
+});
+
+test("a generic Linux nodeSelector does not turn cloud system Deployments into edge workloads", () => {
+  const systemDeployment = deployment("metrics-server", "metrics-server", 1);
+  systemDeployment.spec.template.spec = { nodeSelector: { "kubernetes.io/os": "linux" } };
+  const aux = {
+    nodes: [
+      externalReadyNode("edge-01", { "node-role.kubernetes.io/edge": "", "kubernetes.io/os": "linux" }),
+      { ...readyNode("k8s-master"), metadata: { name: "k8s-master", labels: { "kubernetes.io/os": "linux", "node-role.kubernetes.io/control-plane": "" } } },
+    ],
+    pods: [pod("metrics-server-pod", "metrics-server", "k8s-master")],
+    deployments: [systemDeployment],
+    edgeApplications: [],
+    accessConfigs: [],
+  };
+
+  const result = buildEdgeUnitRuntime(aux, "demo-edge-unit");
+  assert.deepEqual(result.workloads, { healthy: 0, total: 0 });
+});
+
+test("mixed cloud and edge nodeAffinity candidates do not classify an unscheduled Deployment as edge-only", () => {
+  const resource = deployment("mixed-affinity", "mixed-affinity", 0);
+  resource.spec.template.spec = {
+    affinity: {
+      nodeAffinity: {
+        requiredDuringSchedulingIgnoredDuringExecution: {
+          nodeSelectorTerms: [{
+            matchExpressions: [{
+              key: "kubernetes.io/hostname",
+              operator: "In",
+              values: ["edge-01", "k8s-master"],
+            }],
+          }],
+        },
+      },
+    },
+  };
+  const aux = {
+    nodes: [
+      externalReadyNode("edge-01", { "node-role.kubernetes.io/edge": "", "kubernetes.io/hostname": "edge-01" }),
+      { ...readyNode("k8s-master"), metadata: { name: "k8s-master", labels: { "kubernetes.io/hostname": "k8s-master" } } },
+    ],
+    pods: [],
+    deployments: [resource],
+    edgeApplications: [],
+    accessConfigs: [],
+  };
+
+  const result = buildEdgeUnitRuntime(aux, "demo-edge-unit");
+  assert.deepEqual(result.workloads, { healthy: 0, total: 0 });
+});
+
+test("all conditions in a nodeAffinity term must match before an unscheduled Deployment is classified as edge", () => {
+  const resource = deployment("contradictory-affinity", "contradictory-affinity", 0);
+  resource.spec.template.spec = {
+    affinity: {
+      nodeAffinity: {
+        requiredDuringSchedulingIgnoredDuringExecution: {
+          nodeSelectorTerms: [{
+            matchExpressions: [
+              { key: "kubernetes.io/hostname", operator: "In", values: ["edge-01"] },
+              { key: "workload-zone", operator: "In", values: ["cloud"] },
+            ],
+          }],
+        },
+      },
+    },
+  };
+  const aux = {
+    nodes: [externalReadyNode("edge-01", { "node-role.kubernetes.io/edge": "", "kubernetes.io/hostname": "edge-01", "workload-zone": "edge" })],
+    pods: [],
+    deployments: [resource],
+    edgeApplications: [],
+    accessConfigs: [],
+  };
+
+  const result = buildEdgeUnitRuntime(aux, "demo-edge-unit");
+  assert.deepEqual(result.workloads, { healthy: 0, total: 0 });
+});
+
+test("overlapping legacy selectors do not assign another Deployment's edge Pod", () => {
+  const cloudDeployment = deployment("my-workload", "my-app", 1);
+  const edgeDeployment = deployment("aaa", "my-app", 0);
+  const cloudPod = pod("my-workload-rs-pod", "my-app", "k8s-master");
+  cloudPod.metadata.ownerReferences = [{ kind: "ReplicaSet", name: "my-workload-68f7d9" }];
+  const edgePod = pod("aaa-rs-pod", "my-app", "edge-01", { phase: "Pending", ready: false });
+  edgePod.metadata.ownerReferences = [{ kind: "ReplicaSet", name: "aaa-5ddf6" }];
+  const aux = {
+    nodes: [externalReadyNode("edge-01", { "node-role.kubernetes.io/edge": "" }), readyNode("k8s-master")],
+    pods: [cloudPod, edgePod],
+    deployments: [cloudDeployment, edgeDeployment],
+    edgeApplications: [],
+    accessConfigs: [],
+  };
+
+  const result = buildEdgeUnitRuntime(aux, "demo-edge-unit");
+  assert.deepEqual(result.workloads, { healthy: 0, total: 1 });
+});
+
+test("a longer Deployment name does not make its edge Pod belong to a shorter cloud Deployment", () => {
+  const cloudDeployment = deployment("ov-model", "ov-model", 1);
+  const edgeDeployment = deployment("ov-model-blueedge-import", "ov-model", 1);
+  const cloudPod = pod("ov-model-cloud", "ov-model", "k8s-master");
+  cloudPod.metadata.ownerReferences = [{ kind: "ReplicaSet", name: "ov-model-fc97bf764" }];
+  const edgePod = pod("ov-model-import-edge", "ov-model", "edge-01");
+  edgePod.metadata.ownerReferences = [{ kind: "ReplicaSet", name: "ov-model-blueedge-import-5cb476bbd7" }];
+  const aux = {
+    nodes: [externalReadyNode("edge-01", { "node-role.kubernetes.io/edge": "" }), readyNode("k8s-master")],
+    pods: [cloudPod, edgePod],
+    deployments: [cloudDeployment, edgeDeployment],
+    edgeApplications: [],
+    accessConfigs: [],
+  };
+
+  const result = buildEdgeUnitRuntime(aux, "demo-edge-unit");
+  assert.deepEqual(result.workloads, { healthy: 1, total: 1 });
+});
+
+test("a completed edge Pod does not keep a currently cloud-running Deployment in edge workloads", () => {
+  const resource = deployment("ov-model", "ov-model", 1);
+  const completedEdgePod = pod("ov-model-old", "ov-model", "edge-01", { phase: "Succeeded", ready: false });
+  completedEdgePod.metadata.ownerReferences = [{ kind: "ReplicaSet", name: "ov-model-oldrs" }];
+  const runningCloudPod = pod("ov-model-current", "ov-model", "k8s-master");
+  runningCloudPod.metadata.ownerReferences = [{ kind: "ReplicaSet", name: "ov-model-currentrs" }];
+  const aux = {
+    nodes: [externalReadyNode("edge-01", { "node-role.kubernetes.io/edge": "" }), readyNode("k8s-master")],
+    pods: [completedEdgePod, runningCloudPod],
+    deployments: [resource],
+    edgeApplications: [],
+    accessConfigs: [],
+  };
+
+  const result = buildEdgeUnitRuntime(aux, "demo-edge-unit");
   assert.deepEqual(result.workloads, { healthy: 0, total: 0 });
 });

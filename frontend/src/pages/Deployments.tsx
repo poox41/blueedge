@@ -252,8 +252,8 @@ const defaultForm: WorkloadForm = {
   schedulingMode: "nodeSelector",
   nodeSelectors: [{ id: "node-selector-1", key: "blueedge.io/node-role", value: "edge" }],
   nodeSelectorValue: "",
-  workloadLabels: "app=my-app",
-  podLabels: "app=my-app",
+  workloadLabels: "",
+  podLabels: "",
   networkType: "none",
   strategy: "RollingUpdate",
   maxSurge: "25%",
@@ -355,6 +355,13 @@ const configuredValue = (value: unknown): string => {
   return JSON.stringify(value);
 };
 
+const replicaSetBelongsToDeployment = (replicaSetName: string, deploymentName: string): boolean => {
+  const prefix = `${deploymentName}-`;
+  if (!deploymentName || !replicaSetName.startsWith(prefix)) return false;
+  const hash = replicaSetName.slice(prefix.length);
+  return Boolean(hash) && !hash.includes("-");
+};
+
 const deploymentPodRows = (pods: unknown[], item: Workload): DeploymentPodRow[] => {
   const deploymentSpec = asRecord(item.raw?.spec);
   const selector = asStringRecord(asRecord(deploymentSpec.selector).matchLabels);
@@ -364,8 +371,8 @@ const deploymentPodRows = (pods: unknown[], item: Workload): DeploymentPodRow[] 
     const podLabels = asStringRecord(metadata.labels);
     const ownerReferences = asRecordArray(metadata.ownerReferences);
     const selectorMatches = Object.keys(selector).length > 0 && Object.entries(selector).every(([key, value]) => podLabels[key] === value);
-    const ownerMatches = ownerReferences.some((owner) => String(owner.kind || "") === "ReplicaSet" && String(owner.name || "").startsWith(`${item.name}-`));
-    if (!selectorMatches && !ownerMatches) return [];
+    const ownerMatches = ownerReferences.some((owner) => String(owner.kind || "") === "ReplicaSet" && replicaSetBelongsToDeployment(String(owner.name || ""), item.name));
+    if (ownerReferences.length > 0 ? !ownerMatches : !selectorMatches) return [];
     const spec = asRecord(resource.spec);
     const status = asRecord(resource.status);
     const containerSpecs = asRecordArray(spec.containers);
@@ -579,12 +586,12 @@ const buildDeploymentResource = (form: WorkloadForm): KubeResource => {
   const name = form.name.trim();
   const namespace = form.namespace.trim() || "default";
   const workloadLabels = {
-    app: name,
     ...parseKeyValueText(form.workloadLabels),
+    app: name,
   };
   const podLabels = {
-    ...workloadLabels,
     ...parseKeyValueText(form.podLabels),
+    ...workloadLabels,
   };
   const container: Record<string, any> = {
     name: form.containerName.trim() || "main",
@@ -1853,9 +1860,9 @@ function MetadataList({ title, rows }: { title: string; rows: [string, string][]
       <div className="space-y-2">
         {rows.length === 0 && <div className="rounded-lg bg-white px-3 py-5 text-center text-sm text-[var(--color-text-tertiary)]">未配置</div>}
         {rows.map(([key, value]) => (
-          <div key={key} className="grid grid-cols-[160px_1fr] gap-3 rounded-lg bg-white px-3 py-2 text-sm">
-            <span className="font-mono text-[#64748b]">{key}</span>
-            <span className="truncate font-mono text-[#111827]">{value}</span>
+          <div key={key} className="grid min-w-0 grid-cols-1 gap-2 rounded-lg bg-white px-3 py-2 text-sm sm:grid-cols-[minmax(220px,35%)_minmax(0,1fr)] sm:gap-3">
+            <span className="min-w-0 break-all font-mono leading-5 text-[#64748b]">{key}</span>
+            <span className="min-w-0 break-all font-mono leading-5 text-[#111827]">{value}</span>
           </div>
         ))}
       </div>
@@ -2094,8 +2101,8 @@ function WorkloadConsoleDialog({ item, onClose }: { item: Workload; onClose: () 
         const labels = asStringRecord(metadata.labels);
         const owners = asRecordArray(metadata.ownerReferences);
         const selectorMatches = Object.keys(selector).length > 0 && Object.entries(selector).every(([key, value]) => labels[key] === value);
-        const ownerMatches = owners.some((owner) => String(owner.kind || "") === "ReplicaSet" && String(owner.name || "").startsWith(`${item.name}-`));
-        if (!selectorMatches && !ownerMatches) return [];
+        const ownerMatches = owners.some((owner) => String(owner.kind || "") === "ReplicaSet" && replicaSetBelongsToDeployment(String(owner.name || ""), item.name));
+        if (owners.length > 0 ? !ownerMatches : !selectorMatches) return [];
         const spec = asRecord(pod.spec);
         return [{
           name: String(metadata.name || ""),

@@ -47,10 +47,14 @@ export interface BatchTaskApiItem {
   plan?: BatchWorkloadPlan | null;
   namespace?: string;
   targetGroups?: string[];
+  missingNodeGroups?: string[];
   workloads?: Array<{
     name: string;
     namespace: string;
     nodeGroup: string;
+    targetGroups?: string[];
+    missingNodeGroups?: string[];
+    nodeGroupExists?: boolean;
     replicas: number;
     readyReplicas: number;
     status: "running" | "succeeded" | "failed" | string;

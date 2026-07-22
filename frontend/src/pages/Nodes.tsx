@@ -25,7 +25,7 @@ import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 interface Node {
   name: string; role: string; status: string; statusColor: string; labels: number;
   cpu: string; memory: string; ip: string; taints: number; pods: number; createdAt: string;
-  raw: KubeResource; unschedulable: boolean;
+  raw: KubeResource; unschedulable: boolean; cordoned: boolean; blockingTaints: string[];
   alias?: string;
   labelPreview?: string;
   extraLabels?: number;
@@ -183,6 +183,11 @@ function toPageNode(
   const conditions = Array.isArray(raw.status?.conditions) ? raw.status.conditions : [];
   const metrics = metricsByName.get(node.name);
   const labels = raw.metadata?.labels || {};
+  const taints = Array.isArray(raw.spec?.taints) ? raw.spec.taints : [];
+  const blockingTaints = taints
+    .filter((taint: any) => taint?.effect === "NoSchedule" || taint?.effect === "NoExecute")
+    .map((taint: any) => `${String(taint?.key || "未知污点")}${taint?.effect ? `:${taint.effect}` : ""}`);
+  const cordoned = Boolean(raw.spec?.unschedulable);
   const cpuCapacity = formatCapacityCpu(allocatable.cpu || capacity.cpu);
   const memoryCapacity = formatCapacityMemory(allocatable.memory || capacity.memory);
   const cpuUsage = metrics ? `${Math.min(100, Math.round((metrics.cpuMillicores / Math.max(Number.parseInt(String(allocatable.cpu || capacity.cpu || "1000"), 10) || 1000, 1)) * 100))}%` : "-";
@@ -198,11 +203,13 @@ function toPageNode(
     cpu: metrics ? `${metrics.cpuMillicores}m` : cpuCapacity,
     memory: metrics ? memoryUsage : memoryCapacity,
     ip: node.internalIP,
-    taints: Array.isArray(raw.spec?.taints) ? raw.spec.taints.length : 0,
+    taints: taints.length,
     pods: podCountByNode.get(node.name) ?? Number(raw.podCount || raw.pods || 0),
     createdAt: node.createdAt,
     raw: node.raw,
-    unschedulable: Boolean(raw.spec?.unschedulable),
+    unschedulable: cordoned || blockingTaints.length > 0,
+    cordoned,
+    blockingTaints,
     alias: raw.metadata?.annotations?.alias || raw.metadata?.annotations?.["blueedge.io/alias"] || node.name,
     labelPreview: Object.entries(labels)[0]?.join(": ") || "-",
     extraLabels: Math.max(Object.keys(labels).length - 1, 0),
@@ -698,7 +705,7 @@ export function Nodes() {
                   <TableCell className="cursor-pointer px-4 py-3 text-sm font-semibold text-[var(--color-brand)] hover:underline" onClick={() => openDetailWithFreshData(row)}>{row.name}</TableCell>
                   <TableCell className="px-4 py-3 text-sm text-[var(--color-text-secondary)]">{row.alias || "-"}</TableCell>
                   <TableCell className="px-4 py-3"><NodeStatePill status={row.status} /></TableCell>
-                  <TableCell className="px-4 py-3"><SchedulePill unschedulable={row.unschedulable} /></TableCell>
+                  <TableCell className="px-4 py-3"><SchedulePill node={row} /></TableCell>
                   <TableCell className="px-4 py-3">
                     <div className="flex items-center gap-1.5">
                       <span className="rounded-md bg-[var(--color-bg-soft)] px-2 py-1 text-xs text-[var(--color-text-primary)]">{row.labelPreview || "-"}</span>
@@ -1039,12 +1046,12 @@ export function Nodes() {
                   <Info label="Pod 数量" value={String(selected.pods)} />
                   <Info label="标签数" value={String(selected.labels)} />
                   <Info label="污点" value={String(selected.taints)} />
-                  <Info label="调度状态" value={selected.unschedulable ? "不可调度" : "可调度"} />
+                  <Info label="调度状态" value={selected.unschedulable ? selected.cordoned ? "不可调度（已封锁）" : "不可调度（污点限制）" : "可调度"} />
                 </div>
                 <div className="flex gap-2 pt-2">
                   <Button size="sm" variant="outline" className="h-8 text-xs" onClick={() => toggleScheduling(selected)} disabled={isLoading}>
-                    {selected.unschedulable ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <Ban className="w-3.5 h-3.5 mr-1" />}
-                    {selected.unschedulable ? "恢复调度" : "设为不可调度"}
+                    {selected.cordoned ? <CheckCircle2 className="w-3.5 h-3.5 mr-1" /> : <Ban className="w-3.5 h-3.5 mr-1" />}
+                    {selected.cordoned ? "取消节点封锁" : "封锁节点"}
                   </Button>
                   <Button size="sm" variant="outline" className="h-8 text-xs text-[var(--color-text-secondary)]" onClick={() => openDelete(selected)}><Trash2 className="mr-1 h-3.5 w-3.5" /><span>删除</span></Button>
                 </div>
@@ -1193,7 +1200,7 @@ function PortalActionMenu({ items }: { items: ActionMenuItem[] }) {
 function NodeActionMenu({ node, onSchedule, onAlias, onRemove }: { node: Node; onSchedule: () => void | Promise<void>; onAlias: () => void; onRemove: () => void }) {
   return (
     <PortalActionMenu items={[
-      { label: node.unschedulable ? "恢复调度" : "暂停调度", icon: node.unschedulable ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />, onClick: onSchedule },
+      { label: node.cordoned ? "取消节点封锁" : "封锁节点", icon: node.cordoned ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Pause className="h-3.5 w-3.5" />, onClick: onSchedule },
       { label: "编辑别名", icon: <Pencil className="h-3.5 w-3.5" />, onClick: onAlias },
       { label: "移除节点", icon: <Trash2 className="h-3.5 w-3.5" />, danger: true, onClick: onRemove },
     ]} />
@@ -1219,10 +1226,15 @@ function NodeStatePill({ status }: { status: string }) {
   );
 }
 
-function SchedulePill({ unschedulable }: { unschedulable: boolean }) {
+function SchedulePill({ node }: { node: Node }) {
+  const reason = node.cordoned
+    ? "节点已设置 spec.unschedulable=true"
+    : node.blockingTaints.length > 0
+      ? `阻止调度的污点：${node.blockingTaints.join(", ")}`
+      : "节点没有阻止调度的封锁或污点";
   return (
-    <span className={cn("inline-flex h-7 items-center rounded-full px-3 text-xs font-semibold", unschedulable ? "bg-[var(--color-bg-soft)] text-[var(--color-text-tertiary)]" : "bg-[var(--color-success-soft)] text-[var(--color-success)]")}>
-      {unschedulable ? "不可调度" : "可调度"}
+    <span title={reason} className={cn("inline-flex h-7 items-center rounded-full px-3 text-xs font-semibold", node.unschedulable ? "bg-[var(--color-bg-soft)] text-[var(--color-text-tertiary)]" : "bg-[var(--color-success-soft)] text-[var(--color-success)]")}>
+      {node.unschedulable ? "不可调度" : "可调度"}
     </span>
   );
 }

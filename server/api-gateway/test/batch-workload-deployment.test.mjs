@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildBatchDeployment, buildBatchEdgeApplication } from "../dist/services/batch-workload.service.js";
+import { buildBatchDeployment, buildBatchEdgeApplication, edgeApplicationTargetsOnlyEdgeNodes } from "../dist/services/batch-workload.service.js";
 
 const plan = {
   edgeUnitRef: "unit-a",
@@ -106,4 +106,25 @@ test("rejects non-EdgeApplication imports", () => {
     () => buildBatchEdgeApplication(plan, "bw-default-batch-nginx", [{ metadata: { name: "edge-group" } }], { apiVersion: "apps/v1", kind: "Deployment" }),
     /必须是 apps.kubeedge.io\/v1alpha1 EdgeApplication/,
   );
+});
+
+test("batch workload membership requires every target NodeGroup to resolve only to edge nodes", () => {
+  const resource = buildBatchEdgeApplication(plan, "bw-default-batch-nginx", [{ metadata: { name: "edge-group" } }]);
+  const edgeNode = {
+    metadata: { name: "edge-01", labels: { "node-role.kubernetes.io/edge": "" } },
+    status: { nodeInfo: { kubeletVersion: "v1.31.0-kubeedge-v1.22.1" } },
+  };
+  const cloudNode = { metadata: { name: "k8s-master", labels: {} }, status: { nodeInfo: { kubeletVersion: "v1.28.15" } } };
+
+  assert.equal(edgeApplicationTargetsOnlyEdgeNodes(
+    resource,
+    new Map([["edge-group", { metadata: { name: "edge-group" }, spec: { nodes: ["edge-01"] } }]]),
+    [edgeNode, cloudNode],
+  ), true);
+  assert.equal(edgeApplicationTargetsOnlyEdgeNodes(resource, new Map(), [edgeNode, cloudNode]), false);
+  assert.equal(edgeApplicationTargetsOnlyEdgeNodes(
+    resource,
+    new Map([["edge-group", { metadata: { name: "edge-group" }, spec: { nodes: ["k8s-master"] } }]]),
+    [edgeNode, cloudNode],
+  ), false);
 });
