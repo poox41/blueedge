@@ -120,6 +120,11 @@ type WorkloadUpdateForm = {
 
 type WorkloadDetailTab = "pods" | "containers" | "scheduling" | "labels" | "access" | "versions" | "events" | "audit" | "yaml";
 
+type WorkloadWizardLocation = {
+  step: 0 | 1 | 2;
+  advancedTab?: 0 | 1 | 2 | 3;
+};
+
 type WorkloadForm = {
   name: string;
   alias: string;
@@ -152,6 +157,7 @@ type WorkloadForm = {
   nodeSelectors: KeyValueDraft[];
   nodeSelectorValue: string;
   workloadLabels: string;
+  workloadAnnotations: string;
   podLabels: string;
   networkType: "none" | "portMapping" | "hostNetwork";
   strategy: "RollingUpdate" | "Recreate";
@@ -253,6 +259,7 @@ const defaultForm: WorkloadForm = {
   nodeSelectors: [{ id: "node-selector-1", key: "blueedge.io/node-role", value: "edge" }],
   nodeSelectorValue: "",
   workloadLabels: "",
+  workloadAnnotations: "",
   podLabels: "",
   networkType: "none",
   strategy: "RollingUpdate",
@@ -260,6 +267,15 @@ const defaultForm: WorkloadForm = {
   maxUnavailable: "25%",
   partition: "0",
   timeoutSeconds: "600",
+};
+
+const wizardLocationForDetailTab = (tab: WorkloadDetailTab): WorkloadWizardLocation | null => {
+  if (tab === "yaml") return null;
+  if (tab === "containers") return { step: 1 };
+  if (tab === "scheduling") return { step: 2, advancedTab: 0 };
+  if (tab === "labels") return { step: 2, advancedTab: 1 };
+  if (tab === "access") return { step: 2, advancedTab: 2 };
+  return { step: 0 };
 };
 
 const statusConfig: Record<WorkloadStatus, { className: string; dot: string }> = {
@@ -667,6 +683,7 @@ const buildDeploymentResource = (form: WorkloadForm): KubeResource => {
       namespace,
       labels: workloadLabels,
       annotations: {
+        ...parseKeyValueText(form.workloadAnnotations),
         ...(form.alias.trim() ? { "blueedge.io/alias": form.alias.trim() } : {}),
         ...(form.description.trim() ? { "blueedge.io/description": form.description.trim() } : {}),
       },
@@ -692,6 +709,95 @@ const buildDeploymentResource = (form: WorkloadForm): KubeResource => {
   };
 };
 
+const workloadWizardValues = (item: Workload): { form: WorkloadForm; containers: ContainerDraft[] } => {
+  const raw = item.raw || {};
+  const metadata = asRecord(raw.metadata);
+  const annotations = asStringRecord(metadata.annotations);
+  const spec = asRecord(raw.spec);
+  const strategy = asRecord(spec.strategy);
+  const rollingUpdate = asRecord(strategy.rollingUpdate);
+  const template = asRecord(spec.template);
+  const templateMetadata = asRecord(template.metadata);
+  const podSpec = asRecord(template.spec);
+  const nodeSelector = asStringRecord(podSpec.nodeSelector);
+  const rawContainers = asRecordArray(podSpec.containers);
+  const firstPort = asRecord(asRecordArray(rawContainers[0]?.ports)[0]);
+  const schedulingMode: WorkloadForm["schedulingMode"] = typeof podSpec.nodeName === "string" && podSpec.nodeName
+    ? "nodeName"
+    : Object.keys(asRecord(podSpec.affinity)).length > 0
+      ? "podAntiAffinity"
+      : Object.keys(nodeSelector).length > 0
+        ? "nodeSelector"
+        : "all";
+  const labelsToText = (value: unknown) => Object.entries(asStringRecord(value)).map(([key, val]) => `${key}=${val}`).join("\n");
+  const containers = rawContainers.length > 0 ? rawContainers.map((rawContainer, index) => {
+    const resources = asRecord(rawContainer.resources);
+    const requests = asRecord(resources.requests);
+    const limits = asRecord(resources.limits);
+    const securityContext = asRecord(rawContainer.securityContext);
+    const envs = asRecordArray(rawContainer.env).map((entry, envIndex) => ({
+      id: `env-edit-${index}-${envIndex}`,
+      key: configuredValue(entry.name) === "未配置" ? "" : configuredValue(entry.name),
+      value: configuredValue(entry.value) === "未配置" ? "" : configuredValue(entry.value),
+    }));
+    return {
+      ...createContainerDraft(index),
+      id: `container-edit-${index}`,
+      name: configuredValue(rawContainer.name) === "未配置" ? "" : configuredValue(rawContainer.name),
+      image: configuredValue(rawContainer.image) === "未配置" ? "" : configuredValue(rawContainer.image),
+      pullPolicy: (["Always", "Never", "IfNotPresent"].includes(String(rawContainer.imagePullPolicy)) ? rawContainer.imagePullPolicy : "IfNotPresent") as WorkloadForm["pullPolicy"],
+      cpuRequest: configuredValue(requests.cpu) === "未配置" ? "" : configuredValue(requests.cpu),
+      cpuLimit: configuredValue(limits.cpu) === "未配置" ? "" : configuredValue(limits.cpu),
+      memoryRequest: configuredValue(requests.memory) === "未配置" ? "" : configuredValue(requests.memory),
+      memoryLimit: configuredValue(limits.memory) === "未配置" ? "" : configuredValue(limits.memory),
+      privileged: securityContext.privileged === true,
+      startupProbe: Boolean(rawContainer.startupProbe),
+      readinessProbe: Boolean(rawContainer.readinessProbe),
+      livenessProbe: Boolean(rawContainer.livenessProbe),
+      envs: envs.length ? envs : [{ id: `env-edit-${index}-0`, key: "", value: "" }],
+      runAsUser: typeof securityContext.runAsUser === "number" ? String(securityContext.runAsUser) : "",
+      runAsGroup: typeof securityContext.runAsGroup === "number" ? String(securityContext.runAsGroup) : "",
+      readOnlyRootFilesystem: securityContext.readOnlyRootFilesystem === true,
+      allowPrivilegeEscalation: securityContext.allowPrivilegeEscalation === true,
+    };
+  }) : [{ ...createContainerDraft(0), name: "main", image: item.image }];
+
+  return {
+    form: {
+      ...defaultForm,
+      name: item.name,
+      alias: annotations["blueedge.io/alias"] || item.alias || "",
+      namespace: item.namespace,
+      replicas: String(spec.replicas ?? item.replicas),
+      description: annotations["blueedge.io/description"] || item.description || "",
+      containerName: containers[0].name,
+      image: containers[0].image,
+      pullPolicy: containers[0].pullPolicy,
+      cpuRequest: containers[0].cpuRequest,
+      cpuLimit: containers[0].cpuLimit,
+      memoryRequest: containers[0].memoryRequest,
+      memoryLimit: containers[0].memoryLimit,
+      privileged: containers[0].privileged,
+      port: firstPort.containerPort ? String(firstPort.containerPort) : "",
+      schedulingMode,
+      nodeSelectors: Object.entries(nodeSelector).map(([key, value], index) => ({ id: `node-selector-edit-${index}`, key, value })),
+      nodeSelectorValue: typeof podSpec.nodeName === "string" ? podSpec.nodeName : "",
+      workloadLabels: labelsToText(metadata.labels),
+      workloadAnnotations: Object.entries(asStringRecord(metadata.annotations))
+        .filter(([key]) => key !== "blueedge.io/alias" && key !== "blueedge.io/description")
+        .map(([key, value]) => `${key}=${value}`)
+        .join("\n"),
+      podLabels: labelsToText(templateMetadata.labels),
+      networkType: podSpec.hostNetwork === true ? "hostNetwork" : firstPort.containerPort ? "portMapping" : "none",
+      strategy: strategy.type === "Recreate" ? "Recreate" : "RollingUpdate",
+      maxSurge: configuredValue(rollingUpdate.maxSurge) === "未配置" ? "25%" : configuredValue(rollingUpdate.maxSurge),
+      maxUnavailable: configuredValue(rollingUpdate.maxUnavailable) === "未配置" ? "25%" : configuredValue(rollingUpdate.maxUnavailable),
+      timeoutSeconds: spec.progressDeadlineSeconds ? String(spec.progressDeadlineSeconds) : "600",
+    },
+    containers,
+  };
+};
+
 export function Deployments() {
   const { selectedNamespace } = useNamespace();
   const { selectedEdgeUnitName } = useEdgeUnits();
@@ -701,6 +807,8 @@ export function Deployments() {
   const [search, setSearch] = useState("");
   const [yamlOpen, setYamlOpen] = useState(false);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardEditTarget, setWizardEditTarget] = useState<Workload | null>(null);
+  const [wizardLocation, setWizardLocation] = useState<WorkloadWizardLocation>({ step: 0 });
   const [deleteTarget, setDeleteTarget] = useState<Workload | null>(null);
   const [selectedWorkload, setSelectedWorkload] = useState<Workload | null>(null);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
@@ -763,6 +871,73 @@ export function Deployments() {
       showToast("工作负载创建成功");
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建工作负载失败");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const openWizardEditor = (item: Workload, tab: WorkloadDetailTab) => {
+    if (tab === "yaml") {
+      handleMenuAction("yaml", item);
+      return;
+    }
+    setWizardEditTarget(item);
+    setWizardLocation(wizardLocationForDetailTab(tab) || { step: 0 });
+    setWizardOpen(true);
+  };
+
+  const updateFromWizard = async (item: Workload, form: WorkloadForm) => {
+    setIsLoading(true);
+    setError("");
+    try {
+      if (!selectedEdgeUnitName) throw new Error("请先选择边缘单元");
+      const generated = buildDeploymentResource({ ...form, name: item.name, namespace: item.namespace });
+      const currentMetadata = (item.raw?.metadata || {}) as Record<string, unknown>;
+      const currentSpec = asRecord(item.raw?.spec);
+      const currentTemplate = asRecord(currentSpec.template);
+      const currentTemplateMetadata = asRecord(currentTemplate.metadata);
+      const currentPodSpec = { ...asRecord(currentTemplate.spec) };
+      delete currentPodSpec.nodeName;
+      delete currentPodSpec.nodeSelector;
+      delete currentPodSpec.affinity;
+      delete currentPodSpec.hostNetwork;
+      delete currentPodSpec.dnsPolicy;
+      const generatedSpec = asRecord(generated.spec);
+      const generatedTemplate = asRecord(generatedSpec.template);
+      const generatedTemplateMetadata = asRecord(generatedTemplate.metadata);
+      const generatedPodSpec = asRecord(generatedTemplate.spec);
+      const resource = normalizeDeploymentForUpdate(item, {
+        ...generated,
+        metadata: {
+          ...currentMetadata,
+          ...(generated.metadata || {}),
+          ...(currentMetadata.resourceVersion ? { resourceVersion: currentMetadata.resourceVersion } : {}),
+        } as KubeResource["metadata"],
+        spec: {
+          ...currentSpec,
+          ...generatedSpec,
+          template: {
+            ...currentTemplate,
+            ...generatedTemplate,
+            metadata: {
+              ...currentTemplateMetadata,
+              ...generatedTemplateMetadata,
+              annotations: currentTemplateMetadata.annotations,
+            },
+            spec: { ...currentPodSpec, ...generatedPodSpec },
+          },
+        },
+      });
+      await updateEdgeUnitDeploymentResource(selectedEdgeUnitName, item.namespace, item.name, resource);
+      setWizardOpen(false);
+      setWizardEditTarget(null);
+      setSelectedWorkload((current) => current?.id === item.id ? { ...current, raw: resource } : current);
+      await loadData();
+      showToast("工作负载更新成功");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "更新工作负载失败";
+      setError(message);
+      throw new Error(message);
     } finally {
       setIsLoading(false);
     }
@@ -901,8 +1076,17 @@ export function Deployments() {
           item={selectedWorkload}
           onBack={() => setSelectedWorkload(null)}
           onAction={(action) => handleMenuAction(action, selectedWorkload)}
+          onEdit={(tab) => openWizardEditor(selectedWorkload, tab)}
           onDelete={() => setDeleteTarget(selectedWorkload)}
           onReload={() => reloadWorkload(selectedWorkload)}
+        />
+        <CreateWorkloadWizard
+          open={wizardOpen}
+          onOpenChange={(open) => { setWizardOpen(open); if (!open) setWizardEditTarget(null); }}
+          onCreate={createFromForm}
+          editItem={wizardEditTarget}
+          initialLocation={wizardLocation}
+          onUpdate={updateFromWizard}
         />
         <WorkloadActionModal
           panel={actionPanel}
@@ -1020,8 +1204,11 @@ export function Deployments() {
       <YamlCreateModal open={yamlOpen} defaultValue={defaultYaml} onSubmit={createFromYaml} onCancel={() => setYamlOpen(false)} />
       <CreateWorkloadWizard
         open={wizardOpen}
-        onOpenChange={setWizardOpen}
+        onOpenChange={(open) => { setWizardOpen(open); if (!open) setWizardEditTarget(null); }}
         onCreate={createFromForm}
+        editItem={wizardEditTarget}
+        initialLocation={wizardLocation}
+        onUpdate={updateFromWizard}
       />
       <WorkloadActionModal
         panel={actionPanel}
@@ -1268,12 +1455,14 @@ function WorkloadDetailPage({
   item,
   onBack,
   onAction,
+  onEdit,
   onDelete,
   onReload,
 }: {
   item: Workload;
   onBack: () => void;
   onAction: (action: WorkloadMenuAction) => void;
+  onEdit: (tab: WorkloadDetailTab) => void;
   onDelete: () => void;
   onReload: () => Promise<void>;
 }) {
@@ -1370,7 +1559,7 @@ function WorkloadDetailPage({
           <button type="button" onClick={() => onAction("yaml")} className="btn-secondary flex items-center gap-1.5 text-xs">
             <FileText className="h-[13px] w-[13px]" />编辑YAML
           </button>
-          <button type="button" onClick={() => onAction("update")} className="btn-black flex items-center gap-1.5 text-xs">
+          <button type="button" onClick={() => onEdit(activeTab)} className="btn-black flex items-center gap-1.5 text-xs">
             <Pencil className="h-[13px] w-[13px]" />编辑
           </button>
           <button type="button" onClick={() => onAction("console")} className="btn-secondary flex items-center gap-1.5 text-xs"><Terminal className="h-[13px] w-[13px]" />控制台</button>
@@ -1485,6 +1674,7 @@ function WorkloadDetailPage({
           eventsLoading={eventsLoading}
           onRefreshEvents={loadEvents}
           onAction={onAction}
+          onEdit={onEdit}
           onReload={onReload}
         />
       )}
@@ -1511,6 +1701,7 @@ function WorkloadDetailTabContent({
   eventsLoading,
   onRefreshEvents,
   onAction,
+  onEdit,
   onReload,
 }: {
   tab: WorkloadDetailTab;
@@ -1522,6 +1713,7 @@ function WorkloadDetailTabContent({
   eventsLoading: boolean;
   onRefreshEvents: () => Promise<void>;
   onAction: (action: WorkloadMenuAction) => void;
+  onEdit: (tab: WorkloadDetailTab) => void;
   onReload: () => Promise<void>;
 }) {
   const template = asRecord(asRecord(item.raw?.spec).template);
@@ -1568,7 +1760,7 @@ function WorkloadDetailTabContent({
               </button>
             ))}
           </div>
-          <button type="button" onClick={() => onAction("update")} className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#dfe5ee] bg-white px-4 text-sm font-semibold text-[#334155] hover:bg-[#f8fafc]"><Pencil className="h-4 w-4" />编辑</button>
+          <button type="button" onClick={() => onEdit("containers")} className="inline-flex h-10 items-center gap-2 rounded-xl border border-[#dfe5ee] bg-white px-4 text-sm font-semibold text-[#334155] hover:bg-[#f8fafc]"><Pencil className="h-4 w-4" />编辑</button>
         </div>
         {containers.length === 0 ? (
           <div className="rounded-xl border border-dashed border-[#dfe5ee] px-4 py-12 text-center text-sm text-[var(--color-text-tertiary)]">未配置容器</div>
@@ -1648,7 +1840,7 @@ function WorkloadDetailTabContent({
           ? "按节点亲和性规则调度"
           : "由 Kubernetes 调度器选择节点";
     return (
-      <DetailPanel title="节点调度" action={<button type="button" onClick={() => onAction("yaml")} className="detail-action-button"><Pencil className="mr-1 h-4 w-4" />编辑</button>}>
+      <DetailPanel title="节点调度" action={<button type="button" onClick={() => onEdit("scheduling")} className="detail-action-button"><Pencil className="mr-1 h-4 w-4" />编辑</button>}>
         <div className="space-y-7">
           <DetailInfoItem label="调度策略" value={schedulingPolicy} />
           <div className="grid grid-cols-2 gap-6">
@@ -1684,7 +1876,7 @@ function WorkloadDetailTabContent({
     const annotationRows: [string, string][] = Object.entries(rawAnnotations);
 
     return (
-      <DetailPanel title="标签与注解" action={<button type="button" onClick={() => onAction("labels")} className="detail-action-button">编辑标签与注解</button>}>
+      <DetailPanel title="标签与注解" action={<button type="button" onClick={() => onEdit("labels")} className="detail-action-button">编辑标签与注解</button>}>
         <div className="space-y-5">
           <MetadataList title="工作负载标签" rows={labelRows} />
           <MetadataList title="容器组标签" rows={Object.entries(podLabels)} />
@@ -1703,7 +1895,7 @@ function WorkloadDetailTabContent({
       protocol: configuredValue(port.protocol || "TCP"),
     })));
     return (
-      <DetailPanel title="访问配置" action={<button type="button" onClick={() => onAction("yaml")} className="detail-action-button"><Pencil className="mr-1 h-4 w-4" />编辑</button>}>
+      <DetailPanel title="访问配置" action={<button type="button" onClick={() => onEdit("access")} className="detail-action-button"><Pencil className="mr-1 h-4 w-4" />编辑</button>}>
         <div className="space-y-6">
           <DetailInfoItem label="网络类型" value={<span className="rounded-lg bg-[#f3f4f6] px-2.5 py-1 text-sm font-semibold">{podSpec.hostNetwork === true ? "主机网络" : "容器网络"}</span>} />
           <div className="h-px bg-[#eef2f7]" />
@@ -2507,7 +2699,21 @@ function YamlCreateModal({
   );
 }
 
-function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean; onOpenChange: (open: boolean) => void; onCreate: (form: WorkloadForm) => void }) {
+function CreateWorkloadWizard({
+  open,
+  onOpenChange,
+  onCreate,
+  editItem = null,
+  initialLocation = { step: 0 },
+  onUpdate,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCreate: (form: WorkloadForm) => void;
+  editItem?: Workload | null;
+  initialLocation?: WorkloadWizardLocation;
+  onUpdate?: (item: Workload, form: WorkloadForm) => void;
+}) {
   const [step, setStep] = useState(0);
   const [form, setForm] = useState(defaultForm);
   const [containers, setContainers] = useState<ContainerDraft[]>([createContainerDraft(0)]);
@@ -2520,12 +2726,19 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
 
   useEffect(() => {
     if (!open) return;
+    const initialValues = editItem ? workloadWizardValues(editItem) : { form: defaultForm, containers: [createContainerDraft(0)] };
+    setStep(editItem ? initialLocation.step : 0);
+    setForm(initialValues.form);
+    setContainers(initialValues.containers);
+    setActiveContainerIndex(0);
+    setErrors({});
+    setTouched(false);
     setNodeLoadError("");
     void listNodes().then((items) => setEdgeNodes(items.filter((item) => item.role === "edge"))).catch((error) => {
       setEdgeNodes([]);
       setNodeLoadError(error instanceof Error ? error.message : "边缘节点加载失败");
     });
-  }, [open]);
+  }, [editItem, initialLocation.advancedTab, initialLocation.step, open]);
 
   const close = () => {
     setStep(0);
@@ -2577,7 +2790,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
     setTouched(true);
     if (!validate()) return;
     const primaryContainer = containers[0] || createContainerDraft(0);
-    onCreate({
+    const nextForm = {
       ...form,
       containerName: primaryContainer.name,
       image: primaryContainer.image,
@@ -2600,7 +2813,9 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
       runAsGroup: primaryContainer.runAsGroup,
       readOnlyRootFilesystem: primaryContainer.readOnlyRootFilesystem,
       allowPrivilegeEscalation: primaryContainer.allowPrivilegeEscalation,
-    });
+    };
+    if (editItem && onUpdate) onUpdate(editItem, nextForm);
+    else onCreate(nextForm);
     setStep(0);
     setForm(defaultForm);
     setContainers([createContainerDraft(0)]);
@@ -2614,7 +2829,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
       <DialogContent className="!flex max-h-[min(800px,calc(100vh-48px))] w-[min(600px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)] sm:max-w-[600px]" showCloseButton={false}>
         <DialogHeader className="h-14 shrink-0 border-b border-[#f0f1f3] px-6 py-0">
           <div className="flex h-full items-center justify-between">
-            <DialogTitle className="text-base font-semibold text-[#111827]">创建工作负载</DialogTitle>
+            <DialogTitle className="text-base font-semibold text-[#111827]">{editItem ? "编辑工作负载" : "创建工作负载"}</DialogTitle>
             <button type="button" onClick={close} className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#e5e7eb] text-[#64748b] hover:bg-[#f8fafc]">
               <X className="h-[18px] w-[18px]" />
             </button>
@@ -2642,7 +2857,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
               clearError={clearError}
             />
           )}
-          {step === 2 && <AdvancedStep form={form} setForm={setForm} edgeNodes={edgeNodes} nodeLoadError={nodeLoadError} schedulingError={errors.scheduling || ""} />}
+          {step === 2 && <AdvancedStep key={`${editItem?.id || "create"}-${initialLocation.advancedTab ?? 0}`} form={form} setForm={setForm} edgeNodes={edgeNodes} nodeLoadError={nodeLoadError} schedulingError={errors.scheduling || ""} initialTab={initialLocation.advancedTab ?? 0} />}
         </div>
 
         <DialogFooter className="h-16 shrink-0 border-t border-[#f0f1f3] bg-white px-6 py-0">
@@ -2656,7 +2871,7 @@ function CreateWorkloadWizard({ open, onOpenChange, onCreate }: { open: boolean;
               {step < 2 ? (
                 <button type="button" onClick={next} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">下一步</button>
               ) : (
-                <button type="button" onClick={create} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">创建</button>
+                <button type="button" onClick={create} className="h-10 rounded-xl bg-[#0f172a] px-6 text-sm font-semibold text-white hover:bg-[#172033]">{editItem ? "保存" : "创建"}</button>
               )}
             </div>
           </div>
@@ -2983,10 +3198,14 @@ function ProbeToggle({ label, checked, onChange }: { label: string; checked: boo
   );
 }
 
-function AdvancedStep({ form, setForm, edgeNodes, nodeLoadError, schedulingError }: { form: WorkloadForm; setForm: (form: WorkloadForm) => void; edgeNodes: EdgeNodeView[]; nodeLoadError: string; schedulingError: string }) {
-  const [activeTab, setActiveTab] = useState(0);
-  const [labels, setLabels] = useState<KeyValueDraft[]>([{ id: `label-${Date.now()}`, key: "", value: "" }]);
-  const [annotations, setAnnotations] = useState<KeyValueDraft[]>([{ id: `annotation-${Date.now()}`, key: "", value: "" }]);
+function AdvancedStep({ form, setForm, edgeNodes, nodeLoadError, schedulingError, initialTab = 0 }: { form: WorkloadForm; setForm: (form: WorkloadForm) => void; edgeNodes: EdgeNodeView[]; nodeLoadError: string; schedulingError: string; initialTab?: number }) {
+  const [activeTab, setActiveTab] = useState(initialTab);
+  const parseDrafts = (source: string, prefix: string) => source.split("\n").map((line) => line.trim()).filter(Boolean).map((line, index) => {
+    const separator = line.indexOf("=");
+    return { id: `${prefix}-${index}`, key: separator >= 0 ? line.slice(0, separator) : line, value: separator >= 0 ? line.slice(separator + 1) : "" };
+  });
+  const [labels, setLabels] = useState<KeyValueDraft[]>(() => parseDrafts(form.workloadLabels, "label"));
+  const [annotations, setAnnotations] = useState<KeyValueDraft[]>(() => parseDrafts(form.workloadAnnotations, "annotation"));
   const tabs = ["节点调度", "标签与注解", "访问配置", "升级策略"];
 
   return (
@@ -3085,13 +3304,19 @@ function AdvancedStep({ form, setForm, edgeNodes, nodeLoadError, schedulingError
           <KeyValueEditor
             title="标签 (Labels)"
             items={labels}
-            onChange={setLabels}
+            onChange={(items) => {
+              setLabels(items);
+              setForm({ ...form, workloadLabels: items.filter((item) => item.key.trim()).map((item) => `${item.key.trim()}=${item.value}`).join("\n") });
+            }}
             addLabel="添加"
           />
           <KeyValueEditor
             title="注解 (Annotations)"
             items={annotations}
-            onChange={setAnnotations}
+            onChange={(items) => {
+              setAnnotations(items);
+              setForm({ ...form, workloadAnnotations: items.filter((item) => item.key.trim()).map((item) => `${item.key.trim()}=${item.value}`).join("\n") });
+            }}
             addLabel="添加"
           />
         </section>
