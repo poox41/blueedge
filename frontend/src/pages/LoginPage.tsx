@@ -29,7 +29,7 @@ function LoginLogo({ compact = false }: { compact?: boolean }) {
         <Box className={compact ? "h-5 w-5 text-white" : "h-[22px] w-[22px] text-white"} />
       </div>
       <div>
-        <div className="text-lg font-semibold leading-6 text-[#111827]">BlueEdge</div>
+        <div className="text-lg font-semibold leading-6 text-[#111827]">BlueEdge 云边协同平台</div>
         <div className="text-xs leading-5 text-[#6b7280]">
           {compact ? "云边协同管理平台" : "Enterprise Cloud-Edge Console"}
         </div>
@@ -122,7 +122,7 @@ export function LoginPage() {
         </div>
 
         <div className="relative z-10 text-xs text-[#9ca3af]">
-          © 2026 BlueEdge Console. All rights reserved.
+          © 2026 BlueEdge 云边协同平台. All rights reserved.
         </div>
       </section>
 
@@ -138,7 +138,7 @@ export function LoginPage() {
           >
             <div className="mb-8">
               <h2 className="mb-2 text-2xl font-semibold leading-8 text-[#111827]">欢迎登录</h2>
-              <p className="text-sm text-[#6b7280]">云边协同管理平台 BlueEdge</p>
+              <p className="text-sm text-[#6b7280]">BlueEdge 云边协同平台</p>
             </div>
 
             {error && (
@@ -249,7 +249,7 @@ export function LoginPage() {
             </button>
           </form>
 
-          <div className="mt-6 text-center text-xs text-[#9ca3af]">BlueEdge Console v1.2.0</div>
+          <div className="mt-6 text-center text-xs text-[#9ca3af]">BlueEdge 云边协同平台 v1.2.0</div>
         </div>
       </section>
     </main>

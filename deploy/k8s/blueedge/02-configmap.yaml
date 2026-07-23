@@ -9,6 +9,7 @@ data:
   BFF_BASE_URL: "http://blueedge-bff:8080/api/v1"
   K8S_API_SERVER: "https://kubernetes.default.svc"
   K8S_SKIP_TLS_VERIFY: "true"
+  BLUEEDGE_SYSTEM_NAMESPACE: "blueedge-system"
   KUBEEDGE_TOKEN_SECRET_NAMESPACE: "kubeedge"
   KUBEEDGE_TOKEN_SECRET_NAME: "tokensecret"
   KUBEEDGE_TOKEN_SECRET_KEY: "tokendata"

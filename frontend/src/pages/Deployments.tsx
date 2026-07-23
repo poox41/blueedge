@@ -8,6 +8,8 @@ import {
   AlertTriangle,
   ArrowLeft,
   Box,
+  Check,
+  CheckCircle2,
   ChevronDown,
   ChevronUp,
   Copy,
@@ -15,6 +17,7 @@ import {
   ExternalLink,
   Eye,
   FileText,
+  Info,
   Maximize2,
   Minimize2,
   MoreHorizontal,
@@ -44,6 +47,16 @@ import {
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ListPagination, useListPagination } from "@/components/common/ListPagination";
 import { Textarea } from "@/components/ui/textarea";
@@ -52,6 +65,7 @@ import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YA
 import {
   createEdgeUnitDeploymentResource,
   deleteDeploymentResource,
+  deletePodResource,
   getDeployment,
   listDeployments,
   listNamespaces,
@@ -76,7 +90,7 @@ import type { EdgeNodeView, KubeResource, WorkloadView } from "@/types/kubeedge"
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 
-type WorkloadStatus = "运行中" | "未就绪" | "异常";
+type WorkloadStatus = "运行中" | "等待中" | "未就绪";
 
 type Workload = {
   id: string;
@@ -104,7 +118,21 @@ type DeploymentPodRow = {
   restartCount: number;
   cpu: string;
   memory: string;
+  raw: KubeResource;
 };
+
+type PodColumnKey = "name" | "status" | "containers" | "ip" | "node" | "restarts" | "cpu" | "memory";
+
+const podColumns: Array<{ key: PodColumnKey; label: string }> = [
+  { key: "name", label: "容器组名称" },
+  { key: "status", label: "状态" },
+  { key: "containers", label: "容器（正常/总量）" },
+  { key: "ip", label: "容器组 IP" },
+  { key: "node", label: "节点" },
+  { key: "restarts", label: "重启次数" },
+  { key: "cpu", label: "CPU 申请值/限制值" },
+  { key: "memory", label: "内存申请值/限制值" },
+];
 
 type WorkloadMenuAction = "console" | "monitor" | "logs" | "yaml" | "update" | "labels" | "status" | "rollback";
 
@@ -280,8 +308,8 @@ const wizardLocationForDetailTab = (tab: WorkloadDetailTab): WorkloadWizardLocat
 
 const statusConfig: Record<WorkloadStatus, { className: string; dot: string }> = {
   运行中: { className: "bg-[#dcfce7] text-[#16a34a]", dot: "#22c55e" },
-  未就绪: { className: "bg-[#fff7ed] text-[#f59e0b]", dot: "#f59e0b" },
-  异常: { className: "bg-[#fee2e2] text-[#ef4444]", dot: "#ef4444" },
+  等待中: { className: "bg-[#fff7ed] text-[#f59e0b]", dot: "#f59e0b" },
+  未就绪: { className: "bg-[#fee2e2] text-[#ef4444]", dot: "#ef4444" },
 };
 
 const defaultYaml = `apiVersion: apps/v1
@@ -438,6 +466,7 @@ const deploymentPodRows = (pods: unknown[], item: Workload): DeploymentPodRow[] 
       restartCount: containerStatuses.reduce((sum, entry) => sum + Number(entry.restartCount || 0), 0),
       cpu: resourceText("cpu"),
       memory: resourceText("memory"),
+      raw: resource as KubeResource,
     }];
   });
 };
@@ -470,8 +499,11 @@ const getWorkloadStatus = (workload: WorkloadView): WorkloadStatus => {
   if (workload.replicas > 0 && workload.availableReplicas >= workload.replicas) return "运行中";
   const rawStatus = workload.raw?.status as Record<string, any> | undefined;
   const conditions = Array.isArray(rawStatus?.conditions) ? rawStatus.conditions : [];
-  const failed = conditions.some((item) => item?.status === "False" && ["Available", "Progressing"].includes(item?.type));
-  return failed ? "异常" : "未就绪";
+  const failed = conditions.some((item) =>
+    (item?.type === "ReplicaFailure" && item?.status === "True") ||
+    (item?.type === "Progressing" && item?.status === "False" && item?.reason === "ProgressDeadlineExceeded"),
+  );
+  return failed ? "未就绪" : "等待中";
 };
 
 const toWorkload = (workload: WorkloadView): Workload => {
@@ -1226,11 +1258,25 @@ export function Deployments() {
 
 function WorkloadDeleteDialog({ target, loading, onCancel, onConfirm }: { target: Workload | null; loading: boolean; onCancel: () => void; onConfirm: () => void }) {
   const [confirmName, setConfirmName] = useState("");
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!target) return;
-    const timer = window.setTimeout(() => setConfirmName(""), 0);
+    const timer = window.setTimeout(() => {
+      setConfirmName("");
+      setCopied(false);
+    }, 0);
     return () => window.clearTimeout(timer);
   }, [target]);
+  const copyName = async () => {
+    if (!target) return;
+    try {
+      await navigator.clipboard.writeText(target.name);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  };
   const confirmed = Boolean(target && confirmName === target.name);
   return (
     <AlertDialog open={Boolean(target)} onOpenChange={(open) => !open && onCancel()}>
@@ -1250,7 +1296,10 @@ function WorkloadDeleteDialog({ target, loading, onCancel, onConfirm }: { target
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium text-[#111827]">请输入 <strong className="text-[#ff4d4f]">{target?.name}</strong> 以确认删除</label>
-              <button type="button" onClick={() => target && void navigator.clipboard.writeText(target.name)} className="flex items-center gap-1 text-xs text-[#1a73e8]"><Copy className="h-3 w-3" />复制名称</button>
+              <button type="button" onClick={() => void copyName()} className="flex items-center gap-1 text-xs text-[#1a73e8]">
+                {copied ? <Check className="h-3 w-3" strokeWidth={2.5} /> : <Copy className="h-3 w-3" />}
+                {copied ? "已复制" : "复制名称"}
+              </button>
             </div>
             <Input value={confirmName} onChange={(event) => setConfirmName(event.target.value)} placeholder={target?.name} className="h-10 rounded-[10px]" />
           </div>
@@ -1277,8 +1326,8 @@ function StatusPill({ status }: { status: WorkloadStatus }) {
 function WorkloadStatusOverview({ status }: { status: WorkloadStatus }) {
   const items = [
     { label: "运行中", active: status === "运行中", color: "#16a34a", bg: "#dcfce7" },
-    { label: "等待中", active: false, color: "#f59e0b", bg: "#fff5e5" },
-    { label: "未就绪", active: status !== "运行中", color: "#ef4444", bg: "#fdecec" },
+    { label: "等待中", active: status === "等待中", color: "#f59e0b", bg: "#fff5e5" },
+    { label: "未就绪", active: status === "未就绪", color: "#ef4444", bg: "#fdecec" },
   ];
   return (
     <div className="flex items-center gap-2">
@@ -1317,7 +1366,7 @@ function ToastNotice({ message, onClose }: { message: string | null; onClose: ()
   if (!message) return null;
   return (
     <div className="fixed right-6 top-6 z-[80] flex h-12 items-center gap-3 rounded-2xl border border-[#eef2f7] bg-white px-5 text-sm font-semibold text-[#334155] shadow-[0_12px_30px_rgba(15,23,42,0.12)]">
-      <span className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-[#3b82f6] text-xs font-semibold text-[#3b82f6]">i</span>
+      <CheckCircle2 className="h-5 w-5 text-[#22c55e]" />
       <span>{message}</span>
       <button type="button" onClick={onClose} className="ml-1 text-[#94a3b8] hover:text-[#475569]">
         <X className="h-4 w-4" />
@@ -1486,6 +1535,11 @@ function WorkloadDetailPage({
   const [podSearch, setPodSearch] = useState("");
   const [podsLoading, setPodsLoading] = useState(false);
   const [podsError, setPodsError] = useState("");
+  const [podNotice, setPodNotice] = useState<string | null>(null);
+  const [visiblePodColumns, setVisiblePodColumns] = useState<Set<PodColumnKey>>(() => new Set(podColumns.map((column) => column.key)));
+  const [podYaml, setPodYaml] = useState<DeploymentPodRow | null>(null);
+  const [podLogs, setPodLogs] = useState<DeploymentPodRow | null>(null);
+  const [podMonitor, setPodMonitor] = useState<DeploymentPodRow | null>(null);
   const podsRequestId = useRef(0);
   const eventsRequestId = useRef(0);
   const yaml = buildWorkloadYaml(item);
@@ -1511,19 +1565,51 @@ function WorkloadDetailPage({
     }
   }, [item.name, item.namespace]);
 
-  const loadDeploymentPods = useCallback(async () => {
+  const loadDeploymentPods = useCallback(async (showNotice = false) => {
     const requestId = ++podsRequestId.current;
+    const refreshStartedAt = performance.now();
     setPodsLoading(true);
     setPodsError("");
     try {
-      const result = await listPods(item.namespace);
-      if (requestId === podsRequestId.current) setPods(deploymentPodRows(result, item));
+      const result = await listPods(item.namespace, showNotice);
+      if (showNotice) {
+        const remainingAnimationTime = Math.max(0, 1000 - (performance.now() - refreshStartedAt));
+        await new Promise((resolve) => window.setTimeout(resolve, remainingAnimationTime));
+      }
+      if (requestId === podsRequestId.current) {
+        setPods(deploymentPodRows(result, item));
+        if (showNotice) {
+          setPodNotice("容器组列表已刷新");
+          window.setTimeout(() => setPodNotice(null), 1800);
+        }
+      }
     } catch (err) {
       if (requestId === podsRequestId.current) setPodsError(err instanceof Error ? err.message : "加载关联 Pod 失败");
     } finally {
       if (requestId === podsRequestId.current) setPodsLoading(false);
     }
   }, [item]);
+
+  const togglePodColumn = (key: PodColumnKey, checked: boolean) => {
+    setVisiblePodColumns((current) => {
+      const next = new Set(current);
+      if (checked) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  };
+
+  const deletePod = async (pod: DeploymentPodRow) => {
+    if (!window.confirm(`确认删除容器组「${pod.name}」吗？由工作负载管理的容器组可能会自动重建。`)) return;
+    try {
+      await deletePodResource(item.namespace, pod.name);
+      await loadDeploymentPods();
+      setPodNotice("容器组删除成功");
+      window.setTimeout(() => setPodNotice(null), 1800);
+    } catch (err) {
+      setPodsError(err instanceof Error ? err.message : "删除容器组失败");
+    }
+  };
 
   useEffect(() => {
     if (activeTab === "events") void loadEvents();
@@ -1629,37 +1715,98 @@ function WorkloadDetailPage({
 
       {activeTab === "pods" && (
         <section className="rounded-2xl border border-[#eef2f7] bg-white px-7 py-6 shadow-[0_10px_30px_rgba(15,23,42,0.04)]">
+          <ToastNotice message={podNotice} onClose={() => setPodNotice(null)} />
           <div className="mb-3 flex items-center justify-between">
             <div className="relative w-[240px]">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
               <Input value={podSearch} onChange={(event) => setPodSearch(event.target.value)} placeholder="搜索容器组名称" className="h-9 rounded-[10px] pl-9 text-sm" />
             </div>
             <div className="flex items-center gap-2">
-              <button type="button" onClick={() => setActiveTab("scheduling")} className="action-button" title="容器组设置"><Settings className="h-3.5 w-3.5" /></button>
-              <button type="button" onClick={() => void loadDeploymentPods()} disabled={podsLoading} className="action-button" title="刷新关联 Pod">
-                <RotateCcw className={cn("h-3.5 w-3.5", podsLoading && "animate-spin")} />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button type="button" className="action-button" title="列设置"><Settings className="h-3.5 w-3.5" /></button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="bottom" align="end" sideOffset={8} avoidCollisions={false} className="z-[90] w-[230px] max-h-[var(--radix-dropdown-menu-content-available-height)] overflow-y-auto rounded-2xl border-[#eef2f7] bg-white p-2 shadow-[0_18px_45px_rgba(15,23,42,0.16)]">
+                  <DropdownMenuLabel className="px-3 py-2 text-sm font-semibold">列设置</DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  {podColumns.map((column) => {
+                    const checked = visiblePodColumns.has(column.key);
+                    return (
+                      <DropdownMenuCheckboxItem
+                        key={column.key}
+                        checked={checked}
+                        onCheckedChange={(nextChecked) => togglePodColumn(column.key, nextChecked === true)}
+                        onSelect={(event) => event.preventDefault()}
+                        className="min-h-10 gap-3 rounded-xl px-3 text-sm hover:bg-[#f6f8fb] [&>span:first-child]:hidden"
+                      >
+                        <span className={cn(
+                          "flex h-4 w-4 shrink-0 items-center justify-center rounded-[3px] border",
+                          checked ? "border-[#1683ff] bg-[#1683ff] text-white" : "border-[#94a3b8] bg-white",
+                        )}>
+                          {checked && <Check className="h-3 w-3 !text-white" strokeWidth={3} />}
+                        </span>
+                        {column.label}
+                      </DropdownMenuCheckboxItem>
+                    );
+                  })}
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <button type="button" onClick={() => void loadDeploymentPods(true)} disabled={podsLoading} className="action-button" title="刷新关联 Pod">
+                <RotateCcw className={cn("h-3.5 w-3.5", podsLoading && "animate-spin [animation-duration:1.2s]")} />
               </button>
             </div>
           </div>
           {podsError && <div className="mb-3 rounded-lg border border-[#F7BA1E]/30 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{podsError}</div>}
           <div className="overflow-hidden rounded-2xl border border-[#eef2f7]">
           <Table>
-            <TableHeader><TableRow><TableHead>容器组名称</TableHead><TableHead>状态</TableHead><TableHead>容器（正常/总量）</TableHead><TableHead>容器组 IP</TableHead><TableHead>节点</TableHead><TableHead>重启次数</TableHead><TableHead>CPU 申请值/限制值</TableHead><TableHead>内存申请值/限制值</TableHead><TableHead className="text-right">操作</TableHead></TableRow></TableHeader>
+            <TableHeader><TableRow>
+              {visiblePodColumns.has("name") && <TableHead>容器组名称</TableHead>}
+              {visiblePodColumns.has("status") && <TableHead>状态</TableHead>}
+              {visiblePodColumns.has("containers") && <TableHead>容器（正常/总量）</TableHead>}
+              {visiblePodColumns.has("ip") && <TableHead>容器组 IP</TableHead>}
+              {visiblePodColumns.has("node") && <TableHead>节点</TableHead>}
+              {visiblePodColumns.has("restarts") && <TableHead>重启次数</TableHead>}
+              {visiblePodColumns.has("cpu") && <TableHead>CPU 申请值/限制值</TableHead>}
+              {visiblePodColumns.has("memory") && <TableHead>内存申请值/限制值</TableHead>}
+              <TableHead className="text-right">操作</TableHead>
+            </TableRow></TableHeader>
             <TableBody>
-              {visiblePods.length === 0 ? <TableRow><TableCell colSpan={9} className="py-10 text-center text-sm text-[var(--color-text-tertiary)]">{podsLoading ? "正在加载关联 Pod..." : "暂无关联 Pod"}</TableCell></TableRow> : visiblePods.map((pod) => (
+              {visiblePods.length === 0 ? <TableRow><TableCell colSpan={visiblePodColumns.size + 1} className="py-10 text-center text-sm text-[var(--color-text-tertiary)]">{podsLoading ? "正在加载关联 Pod..." : "暂无关联 Pod"}</TableCell></TableRow> : visiblePods.map((pod) => (
                 <TableRow key={pod.name}>
-                  <TableCell className="font-semibold text-[#1e6bff]">{pod.name}</TableCell>
-                  <TableCell className="min-w-[220px]">
+                  {visiblePodColumns.has("name") && <TableCell className="font-semibold text-[#1e6bff]">{pod.name}</TableCell>}
+                  {visiblePodColumns.has("status") && <TableCell className="min-w-[220px]">
                     <div className={cn("font-medium", pod.statusError ? "text-[#dc2626]" : "text-[#334155]")}>{pod.status}</div>
                     {pod.statusMessage && <div className="mt-1 max-w-[320px] truncate text-xs text-[#94a3b8]" title={pod.statusMessage}>{pod.statusMessage}</div>}
+                  </TableCell>}
+                  {visiblePodColumns.has("containers") && <TableCell>{pod.readyContainers}/{pod.totalContainers}</TableCell>}
+                  {visiblePodColumns.has("ip") && <TableCell>{pod.podIP}</TableCell>}
+                  {visiblePodColumns.has("node") && <TableCell>{pod.nodeName}</TableCell>}
+                  {visiblePodColumns.has("restarts") && <TableCell>{pod.restartCount}</TableCell>}
+                  {visiblePodColumns.has("cpu") && <TableCell>{pod.cpu}</TableCell>}
+                  {visiblePodColumns.has("memory") && <TableCell>{pod.memory}</TableCell>}
+                  <TableCell className="text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button type="button" className="action-button" title="更多操作"><MoreHorizontal className="h-3.5 w-3.5" /></button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" sideOffset={8} className="z-[90] w-[168px] rounded-2xl border-[#eef2f7] bg-white p-2.5 shadow-[0_18px_45px_rgba(15,23,42,0.16)]">
+                        <DropdownMenuItem onSelect={() => setPodYaml(pod)} className="min-h-11 gap-2.5 rounded-xl px-3 text-xs font-semibold text-[#334155] [&_svg]:!h-[13px] [&_svg]:!w-[13px] [&_svg]:!text-[#334155]"><FileText />查看 YAML</DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => setPodLogs(pod)} className="min-h-11 gap-2.5 rounded-xl px-3 text-xs font-semibold text-[#334155] [&_svg]:!h-[13px] [&_svg]:!w-[13px] [&_svg]:!text-[#334155]"><FileText />日志</DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => setPodMonitor(pod)} className="min-h-11 gap-2.5 rounded-xl px-3 text-xs font-semibold text-[#334155] [&_svg]:!h-[13px] [&_svg]:!w-[13px] [&_svg]:!text-[#334155]"><Activity />监控</DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem variant="destructive" onSelect={() => void deletePod(pod)} className="min-h-11 gap-2.5 rounded-xl px-3 text-xs font-semibold [&_svg]:!h-[13px] [&_svg]:!w-[13px]"><Trash2 />删除</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </TableCell>
-                  <TableCell>{pod.readyContainers}/{pod.totalContainers}</TableCell><TableCell>{pod.podIP}</TableCell><TableCell>{pod.nodeName}</TableCell><TableCell>{pod.restartCount}</TableCell><TableCell>{pod.cpu}</TableCell><TableCell>{pod.memory}</TableCell><TableCell className="text-right"><button type="button" onClick={() => onAction("logs")} className="action-button" title="查看日志"><MoreHorizontal className="h-3.5 w-3.5" /></button></TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
           </div>
           <div className="mt-4 flex items-center justify-between text-xs text-[var(--color-text-secondary)]"><span>共 {visiblePods.length} 条</span><span>第 1 / 1 页</span></div>
+          {podYaml && <PodYamlDialog pod={podYaml} onClose={() => setPodYaml(null)} />}
+          {podLogs && <WorkloadLogsDrawer item={item} pod={podLogs} onClose={() => setPodLogs(null)} />}
+          {podMonitor && <WorkloadMonitorDrawer item={item} pod={podMonitor} onClose={() => setPodMonitor(null)} />}
         </section>
       )}
 
@@ -1720,6 +1867,11 @@ function WorkloadDetailTabContent({
   const templateMetadata = asRecord(template.metadata);
   const podSpec = asRecord(template.spec);
   const containers = asRecordArray(podSpec.containers);
+  const workloadMetadata = asRecord(item.raw?.metadata);
+  const workloadStatus = asRecord(item.raw?.status);
+  const generation = Number(workloadMetadata.generation || 0);
+  const observedGeneration = Number(workloadStatus.observedGeneration || 0);
+  const yamlSynced = generation > 0 && observedGeneration >= generation;
   const [activeContainerIndex, setActiveContainerIndex] = useState(0);
   const [containerSection, setContainerSection] = useState<"basic" | "lifecycle" | "health" | "env" | "storage" | "security">("basic");
 
@@ -1840,7 +1992,7 @@ function WorkloadDetailTabContent({
           ? "按节点亲和性规则调度"
           : "由 Kubernetes 调度器选择节点";
     return (
-      <DetailPanel title="节点调度" action={<button type="button" onClick={() => onEdit("scheduling")} className="detail-action-button"><Pencil className="mr-1 h-4 w-4" />编辑</button>}>
+      <DetailPanel title="节点调度" action={<button type="button" onClick={() => onEdit("scheduling")} className="detail-action-button inline-flex items-center gap-2"><Pencil className="h-4 w-4" />编辑</button>}>
         <div className="space-y-7">
           <DetailInfoItem label="调度策略" value={schedulingPolicy} />
           <div className="grid grid-cols-2 gap-6">
@@ -1895,7 +2047,7 @@ function WorkloadDetailTabContent({
       protocol: configuredValue(port.protocol || "TCP"),
     })));
     return (
-      <DetailPanel title="访问配置" action={<button type="button" onClick={() => onEdit("access")} className="detail-action-button"><Pencil className="mr-1 h-4 w-4" />编辑</button>}>
+      <DetailPanel title="访问配置" action={<button type="button" onClick={() => onEdit("access")} className="detail-action-button inline-flex items-center gap-2"><Pencil className="h-4 w-4" />编辑</button>}>
         <div className="space-y-6">
           <DetailInfoItem label="网络类型" value={<span className="rounded-lg bg-[#f3f4f6] px-2.5 py-1 text-sm font-semibold">{podSpec.hostNetwork === true ? "主机网络" : "容器网络"}</span>} />
           <div className="h-px bg-[#eef2f7]" />
@@ -1926,7 +2078,33 @@ function WorkloadDetailTabContent({
   }
 
   return (
-    <DetailPanel title="YAML" action={<button type="button" onClick={() => onAction("yaml")} className="detail-action-button">编辑 YAML</button>}>
+    <DetailPanel
+      title="YAML"
+      action={(
+        <div className="flex items-center gap-3">
+          <span className={cn("inline-flex h-8 items-center gap-2 rounded-xl px-3 text-sm font-semibold", yamlSynced ? "bg-[#dcfce7] text-[#16a34a]" : "bg-[#fff7ed] text-[#d97706]")}>
+            <span className={cn("h-2 w-2 rounded-full", yamlSynced ? "bg-[#22c55e]" : "bg-[#f59e0b]")} />
+            {yamlSynced ? "已同步" : "同步中"}
+          </span>
+          <button type="button" onClick={() => onAction("yaml")} className="h-10 rounded-xl bg-[#0f172a] px-5 text-sm font-semibold text-white hover:bg-[#172033]">编辑 YAML</button>
+        </div>
+      )}
+    >
+      <p className="-mt-3 mb-5 text-sm text-[#64748b]">当前资源定义，可进入编辑态修改并二次确认提交</p>
+      <div className="mb-5 grid grid-cols-4 gap-8">
+        <DetailInfoItem label="资源类型" value={String(item.raw?.kind || "Deployment")} />
+        <DetailInfoItem label="资源名称" value={item.name} />
+        <DetailInfoItem label="命名空间" value={item.namespace} />
+        <DetailInfoItem
+          label="版本状态"
+          value={(
+            <span className={cn("inline-flex items-center gap-2 rounded-lg px-3 py-1 text-sm font-semibold", yamlSynced ? "bg-[#dcfce7] text-[#16a34a]" : "bg-[#fff7ed] text-[#d97706]")}>
+              <span className={cn("h-2 w-2 rounded-full", yamlSynced ? "bg-[#22c55e]" : "bg-[#f59e0b]")} />
+              {yamlSynced ? "已同步" : "同步中"}
+            </span>
+          )}
+        />
+      </div>
       <div className="max-h-[520px] overflow-auto rounded-xl bg-[#1e1e1e] p-5 font-mono text-xs leading-6 text-[#d4d4d4]">
         <pre dangerouslySetInnerHTML={{ __html: highlightYaml(yaml) }} />
       </div>
@@ -1944,7 +2122,9 @@ function WorkloadEventsPanel({ events, warning, loading, onRefresh }: { events: 
       {warning && <div className="mb-3 rounded-lg border border-[#F7BA1E]/30 bg-[var(--color-warning-soft)] px-3 py-2 text-sm text-[#D25F00]">{warning}</div>}
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="relative w-[320px]"><Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#94a3b8]" /><Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索事件名称、对象或描述" className="h-10 rounded-xl pl-9" /></div>
-        <button type="button" onClick={() => void onRefresh()} disabled={loading} className="detail-action-button"><RefreshCw className={cn("mr-1 h-4 w-4", loading && "animate-spin")} />刷新</button>
+        <button type="button" onClick={() => void onRefresh()} disabled={loading} className="action-button h-10 w-10 rounded-xl" title="刷新事件列表" aria-label="刷新事件列表">
+          <RotateCcw className={cn("h-4 w-4", loading && "animate-spin")} />
+        </button>
       </div>
       <Table>
         <TableHeader><TableRow><TableHead>事件级别</TableHead><TableHead>K8S 对象</TableHead><TableHead>事件名称</TableHead><TableHead>详细描述</TableHead><TableHead>次数</TableHead><TableHead>时间</TableHead></TableRow></TableHeader>
@@ -1962,7 +2142,8 @@ function WorkloadVersionsPanel({ item, onReload }: { item: Workload; onReload: (
   const [revisions, setRevisions] = useState<DeploymentRevision[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [selectedRevision, setSelectedRevision] = useState<number | null>(null);
+  const [yamlRevision, setYamlRevision] = useState<DeploymentRevision | null>(null);
+  const [rollbackTarget, setRollbackTarget] = useState<DeploymentRevision | null>(null);
   const [rollingBack, setRollingBack] = useState<number | null>(null);
   const load = useCallback(async () => {
     setLoading(true);
@@ -1978,11 +2159,11 @@ function WorkloadVersionsPanel({ item, onReload }: { item: Workload; onReload: (
   }, [item.name, item.namespace]);
   useEffect(() => { void load(); }, [load]);
   const rollback = async (revision: number) => {
-    if (!window.confirm(`确认将 ${item.name} 回退到 Revision ${revision}？这会真实更新集群中的 Deployment。`)) return;
     setRollingBack(revision);
     setError("");
     try {
       await rollbackDeploymentRevision(item.namespace, item.name, revision);
+      setRollbackTarget(null);
       await Promise.all([load(), onReload()]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "回退失败");
@@ -1996,12 +2177,42 @@ function WorkloadVersionsPanel({ item, onReload }: { item: Workload; onReload: (
       {loading ? <DetailEmpty text="正在读取真实 ReplicaSet 版本..." /> : revisions.length === 0 ? <DetailEmpty text="当前 Deployment 没有可用的 ReplicaSet revision" /> : (
         <div className="space-y-4">{revisions.map((revision) => (
           <div key={revision.revision} className="rounded-2xl border border-[#e2e8f0] bg-[#f8fafc] p-5">
-            <div className="flex items-center justify-between gap-4"><div className="flex items-center gap-3"><span className="rounded-lg bg-[#dbeafe] px-3 py-1 text-sm font-semibold text-[#2563eb]">Revision {revision.revision}</span>{revision.current && <span className="text-sm font-semibold text-[#16a34a]">当前版本</span>}</div><div className="flex gap-2"><button type="button" onClick={() => setSelectedRevision(selectedRevision === revision.revision ? null : revision.revision)} className="detail-action-button">{selectedRevision === revision.revision ? "收起 YAML" : "查看 YAML"}</button>{!revision.current && <button type="button" onClick={() => void rollback(revision.revision)} disabled={rollingBack !== null} className="h-9 rounded-xl bg-[#0f172a] px-4 text-sm font-semibold text-white disabled:bg-[#94a3b8]">{rollingBack === revision.revision ? "回退中..." : "回退到此版本"}</button>}</div></div>
+            <div className="flex items-center justify-between gap-4"><div className="flex items-center gap-3"><span className="rounded-lg bg-[#dbeafe] px-3 py-1 text-sm font-semibold text-[#2563eb]">Revision {revision.revision}</span>{revision.current && <span className="text-sm font-semibold text-[#16a34a]">当前版本</span>}</div><div className="flex gap-2"><button type="button" onClick={() => setYamlRevision(revision)} className="detail-action-button">查看 YAML</button>{!revision.current && <button type="button" onClick={() => setRollbackTarget(revision)} disabled={rollingBack !== null} className="h-9 rounded-xl bg-[#0f172a] px-4 text-sm font-semibold text-white disabled:bg-[#94a3b8]">回退到此版本</button>}</div></div>
             <div className="mt-4 grid grid-cols-4 gap-4 text-sm"><DetailInfoItem label="ReplicaSet" value={revision.replicaSetName} /><DetailInfoItem label="镜像" value={revision.images.join(", ") || "-"} /><DetailInfoItem label="副本" value={`${revision.availableReplicas}/${revision.replicas}`} /><DetailInfoItem label="创建时间" value={formatDateTime(revision.createdAt)} /></div>
-            {selectedRevision === revision.revision && <pre className="mt-4 max-h-[360px] overflow-auto rounded-xl bg-[#111827] p-4 text-xs leading-6 text-[#d1d5db]">{yaml.dump(revision.yaml, { lineWidth: -1, noRefs: true })}</pre>}
           </div>
         ))}</div>
       )}
+      {yamlRevision && (
+        <ReadonlyYamlDialog
+          title={`查看 YAML - Revision ${yamlRevision.revision}`}
+          source={yaml.dump(yamlRevision.yaml, { lineWidth: 120, noRefs: true })}
+          downloadName={`${item.name}-revision-${yamlRevision.revision}.yaml`}
+          onClose={() => setYamlRevision(null)}
+        />
+      )}
+      <Dialog open={rollbackTarget !== null} onOpenChange={(open) => !open && rollingBack === null && setRollbackTarget(null)}>
+        <DialogContent className="w-[min(520px,calc(100vw-32px))] max-w-none gap-0 overflow-hidden rounded-[24px] p-0 sm:max-w-[520px]" showCloseButton={false}>
+          <DialogHeader className="h-[72px] justify-center border-b border-[#eef2f7] px-7">
+            <div className="flex items-center justify-between gap-4">
+              <DialogTitle className="flex min-w-0 items-center gap-3 text-base">
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#fff7ed] text-[#f97316]"><AlertTriangle className="h-4 w-4" /></span>
+                <span className="truncate">确认回退版本「Revision {rollbackTarget?.revision}」吗？</span>
+              </DialogTitle>
+              <button type="button" onClick={() => setRollbackTarget(null)} disabled={rollingBack !== null} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[#e2e8f0] text-[#64748b] hover:bg-[#f8fafc] disabled:opacity-50"><X className="h-4 w-4" /></button>
+            </div>
+          </DialogHeader>
+          <div className="px-7 py-6">
+            <div className="flex items-start gap-3 rounded-xl border border-[#fdba74] bg-[#fff7ed] px-4 py-4 text-sm leading-6 text-[#c2410c]">
+              <AlertTriangle className="mt-1 h-4 w-4 shrink-0 text-[#f97316]" />
+              <span>将工作负载「{item.name}」回退到 Revision {rollbackTarget?.revision}，当前版本配置会被替换。</span>
+            </div>
+          </div>
+          <div className="flex h-[72px] items-center justify-end gap-3 border-t border-[#eef2f7] px-7">
+            <button type="button" onClick={() => setRollbackTarget(null)} disabled={rollingBack !== null} className="h-10 rounded-xl border border-[#dfe5ee] bg-white px-5 text-sm font-semibold text-[#334155] hover:bg-[#f8fafc] disabled:opacity-50">取消</button>
+            <button type="button" onClick={() => rollbackTarget && void rollback(rollbackTarget.revision)} disabled={rollingBack !== null} className="h-10 rounded-xl bg-[#ff7a00] px-5 text-sm font-semibold text-white hover:bg-[#f56f00] disabled:bg-[#fdba74]">{rollingBack !== null ? "回退中..." : "确认回退"}</button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </DetailPanel>
   );
 }
@@ -2339,17 +2550,25 @@ function WorkloadConsoleDialog({ item, onClose }: { item: Workload; onClose: () 
           {error && <div className="rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#b91c1c]">{error}</div>}
           <div>
             <label className="mb-1.5 block text-sm font-medium text-[#111827]">容器组</label>
-            <select value={podName} disabled={loading} onChange={(event) => { const next = pods.find((pod) => pod.name === event.target.value); setPodName(event.target.value); setContainerName(next?.containers[0] || ""); setOutput(""); }} className="blueedge-native-select h-9 w-full rounded-[10px] border-2 border-[#e6eaf0] bg-white px-3 text-sm">
-              <option value="">{loading ? "正在加载真实 Pod..." : "请选择容器组"}</option>
-              {pods.map((pod) => <option key={pod.name} value={pod.name}>{pod.name}</option>)}
-            </select>
+            <Select value={podName || undefined} disabled={loading || pods.length === 0} onValueChange={(value) => { const next = pods.find((pod) => pod.name === value); setPodName(value); setContainerName(next?.containers[0] || ""); setOutput(""); }}>
+              <SelectTrigger className="h-11 w-full rounded-xl border-2 border-[#e6eaf0] px-4 text-sm shadow-none">
+                <SelectValue placeholder={loading ? "正在加载真实 Pod..." : "请选择容器组"} />
+              </SelectTrigger>
+              <SelectContent position="popper" align="start" className="z-[150] w-[var(--radix-select-trigger-width)] rounded-2xl p-2 shadow-[0_16px_36px_rgba(15,23,42,0.14)]" viewportClassName="h-auto">
+                {pods.map((pod) => <SelectItem key={pod.name} value={pod.name} className="min-h-11 rounded-xl px-4 py-3 text-sm data-[state=checked]:bg-[#eaf2ff] data-[state=checked]:text-[#2563eb]">{pod.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
           <div>
             <label className="mb-1.5 block text-sm font-medium text-[#111827]">容器</label>
-            <select value={containerName} onChange={(event) => { setContainerName(event.target.value); setOutput(""); }} className="blueedge-native-select h-9 w-full rounded-[10px] border-2 border-[#e6eaf0] bg-white px-3 text-sm">
-              <option value="">请选择容器</option>
-              {(selectedPod?.containers || []).map((container) => <option key={container} value={container}>{container}</option>)}
-            </select>
+            <Select value={containerName || undefined} disabled={!selectedPod || selectedPod.containers.length === 0} onValueChange={(value) => { setContainerName(value); setOutput(""); }}>
+              <SelectTrigger className="h-11 w-full rounded-xl border-2 border-[#e6eaf0] px-4 text-sm shadow-none">
+                <SelectValue placeholder="请选择容器" />
+              </SelectTrigger>
+              <SelectContent position="popper" align="start" className="z-[150] w-[var(--radix-select-trigger-width)] rounded-2xl p-2 shadow-[0_16px_36px_rgba(15,23,42,0.14)]" viewportClassName="h-auto">
+                {(selectedPod?.containers || []).map((container) => <SelectItem key={container} value={container} className="min-h-11 rounded-xl px-4 py-3 text-sm data-[state=checked]:bg-[#eaf2ff] data-[state=checked]:text-[#2563eb]">{container}</SelectItem>)}
+              </SelectContent>
+            </Select>
           </div>
           <div className="overflow-hidden rounded-xl border border-[#1f2937] bg-[#0b1220]">
             <div className="border-b border-[#1f2937] px-4 py-2 font-mono text-xs text-[#94a3b8]">{podName || "-"} / {containerName || "-"}</div>
@@ -2414,30 +2633,113 @@ function WorkloadStatusDialog({ item, onClose, onReload }: { item: Workload; onC
   );
 }
 
-function WorkloadLogsDrawer({ item, onClose }: { item: Workload; onClose: () => void }) {
+function PodYamlDialog({ pod, onClose }: { pod: DeploymentPodRow; onClose: () => void }) {
+  const displayResource = JSON.parse(JSON.stringify(pod.raw)) as KubeResource;
+  if (displayResource.metadata) {
+    delete (displayResource.metadata as Record<string, unknown>).managedFields;
+  }
+  const source = yaml.dump(displayResource, { noRefs: true, lineWidth: 120 });
+  return <ReadonlyYamlDialog title={`查看 YAML - ${pod.name}`} source={source} downloadName={`${pod.name}.yaml`} onClose={onClose} />;
+}
+
+function ReadonlyYamlDialog({ title, source, downloadName, onClose }: { title: string; source: string; downloadName: string; onClose: () => void }) {
+  const [fullscreen, setFullscreen] = useState(false);
+  const lines = source.split("\n");
+  const download = () => {
+    const url = URL.createObjectURL(new Blob([source], { type: "text/yaml" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = downloadName;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className={cn(
+        "flex flex-col gap-0 overflow-hidden p-0",
+        fullscreen
+          ? "!inset-0 !h-screen !max-h-none !w-screen !max-w-none !translate-x-0 !translate-y-0 !rounded-none !border-0 sm:!max-w-none"
+          : "h-[min(800px,calc(100vh-48px))] w-[min(780px,calc(100vw-48px))] max-w-none rounded-[24px] sm:max-w-[780px]",
+      )} showCloseButton={false}>
+        <DialogHeader className="h-14 shrink-0 justify-center border-b border-[var(--color-border)] px-5">
+          <div className="flex min-w-0 items-center justify-between gap-4">
+            <DialogTitle className="min-w-0 truncate whitespace-nowrap text-base font-semibold text-[#111827]">{title}</DialogTitle>
+            <div className="flex shrink-0 items-center gap-1 whitespace-nowrap">
+              <button type="button" onClick={download} className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]"><Download className="h-3.5 w-3.5" />下载</button>
+              <button type="button" onClick={() => setFullscreen((current) => !current)} className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-semibold text-[var(--color-text-secondary)] hover:bg-[var(--color-bg-hover)]">{fullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}{fullscreen ? "退出全屏" : "全屏"}</button>
+              <div className="mx-1 h-5 w-px bg-[var(--color-border)]" />
+              <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--color-text-tertiary)] hover:bg-[var(--color-bg-hover)]"><X className="h-[18px] w-[18px]" /></button>
+            </div>
+          </div>
+        </DialogHeader>
+        <div className="mx-5 mt-4 flex shrink-0 items-center gap-3 rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3 text-sm">
+            <Info className="h-[18px] w-[18px] shrink-0 text-[#3b82f6]" />
+            <span>为保证工作负载能被正常调度，请先阅读</span>
+            <a href="https://docs.daocloud.io/kant/user-guide/edge-app/create-app.html#yaml" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-semibold text-[#2563eb] hover:underline">YAML 创建须知<ExternalLink className="h-3 w-3" /></a>
+        </div>
+        <div className="mx-5 my-3 min-h-0 flex-1 overflow-auto rounded-xl border border-[var(--color-border)] bg-[#1e1e1e] py-3 font-mono text-xs leading-6 text-[#d4d4d4]">
+            {lines.map((line, index) => (
+              <div key={`${index}-${line}`} className="flex min-w-max">
+                <span className="w-12 shrink-0 select-none px-2 text-right text-[#858585]">{index + 1}</span>
+                <code className="whitespace-pre px-3" dangerouslySetInnerHTML={{ __html: highlightYamlLine(line) }} />
+              </div>
+            ))}
+        </div>
+        <div className="flex h-14 shrink-0 items-center justify-end border-t border-[var(--color-border)] px-5">
+          <button type="button" onClick={onClose} className="h-9 rounded-xl bg-[var(--color-bg-hover)] px-5 text-sm font-semibold text-[var(--color-text-primary)] hover:bg-[#eef2f7]">关闭</button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function WorkloadLogsDrawer({ item, pod, onClose }: { item: Workload; pod?: DeploymentPodRow; onClose: () => void }) {
   const [content, setContent] = useState("正在加载日志...");
   const [warning, setWarning] = useState("");
   const [podName, setPodName] = useState("");
   const [container, setContainer] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [lookupError, setLookupError] = useState("");
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15_000);
+    setLoading(true);
     setContent("正在加载日志...");
     setWarning("");
-    getResourceLogs("deployment", item.namespace, item.name, { tailLines: 200 })
+    setPodName("");
+    setContainer("");
+    setLookupError("");
+    getResourceLogs("deployment", item.namespace, item.name, { tailLines: 200, pod: pod?.name }, { signal: controller.signal })
       .then((res) => {
         if (cancelled) return;
         const first = res.item.pods.find((pod) => pod.available) || res.item.pods[0];
         setPodName(first?.podName || "");
         setContainer(first?.container || "");
-        setContent(first?.content || "未找到关联 Pod 日志");
+        setContent(first
+          ? first.content || (first.available ? "当前容器暂无日志" : "容器尚未启动或日志暂不可用")
+          : "未找到关联 Pod");
         setWarning((res.warnings || []).map((warning) => warning.message).join("；"));
       })
       .catch((err) => {
-        if (!cancelled) setContent(err instanceof Error ? err.message : "加载日志失败");
+        if (!cancelled) {
+          const timedOut = controller.signal.aborted;
+          setLookupError(timedOut ? "查询超时" : "查询失败");
+          setContent(timedOut ? "日志请求超时，请稍后重试或检查边缘节点连接" : err instanceof Error ? err.message : "加载日志失败");
+          setWarning(timedOut ? "日志查询已超时，页面不会继续等待" : "");
+        }
+      })
+      .finally(() => {
+        window.clearTimeout(timeout);
+        if (!cancelled) setLoading(false);
       });
-    return () => { cancelled = true; };
-  }, [item.name, item.namespace]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [item.name, item.namespace, pod?.name]);
 
   return (
     <div className="fixed inset-0 z-[120]">
@@ -2448,8 +2750,8 @@ function WorkloadLogsDrawer({ item, onClose }: { item: Workload; onClose: () => 
           <button type="button" onClick={onClose} className="action-button"><X className="h-4 w-4" /></button>
         </div>
         <div className="border-b border-[#eef2f7] p-5 text-sm text-[var(--color-text-secondary)]">
-          <div>Pod：{podName || "未找到关联 Pod"}</div>
-          <div className="mt-1">Container：{container || "-"}</div>
+          <div>Pod：{loading ? "正在查找关联 Pod..." : podName || lookupError || "未找到关联 Pod"}</div>
+          <div className="mt-1">Container：{loading ? "正在加载..." : container || "-"}</div>
           {warning && <div className="mt-2 rounded-lg border border-[#F7BA1E]/30 bg-[var(--color-warning-soft)] px-3 py-2 text-xs text-[#D25F00]">{warning}</div>}
         </div>
         <div className="min-h-0 flex-1 p-5">
@@ -2463,7 +2765,7 @@ function WorkloadLogsDrawer({ item, onClose }: { item: Workload; onClose: () => 
   );
 }
 
-function WorkloadMonitorDrawer({ item, onClose }: { item: Workload; onClose: () => void }) {
+function WorkloadMonitorDrawer({ item, pod, onClose }: { item: Workload; pod?: DeploymentPodRow; onClose: () => void }) {
   const [summary, setSummary] = useState<ObservabilitySummary | null>(null);
   const [history, setHistory] = useState<Array<{ time: string; cpu: number; memory: number }>>([]);
   const [warning, setWarning] = useState("");
@@ -2475,7 +2777,7 @@ function WorkloadMonitorDrawer({ item, onClose }: { item: Workload; onClose: () 
     setError("");
     setWarning("");
     try {
-      const response = await getResourceObservability("deployment", item.namespace, item.name, {
+      const response = await getResourceObservability(pod ? "pod" : "deployment", item.namespace, pod?.name || item.name, {
         includeMetrics: true,
         includeEvents: false,
         includeLogs: false,
@@ -2488,11 +2790,11 @@ function WorkloadMonitorDrawer({ item, onClose }: { item: Workload; onClose: () 
         setHistory((current) => [...current, { time: new Date().toLocaleTimeString("zh-CN", { hour12: false }), cpu, memory }].slice(-24));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "加载工作负载监控失败");
+      setError(err instanceof Error ? err.message : `加载${pod ? "容器组" : "工作负载"}监控失败`);
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [item.name, item.namespace]);
+  }, [item.name, item.namespace, pod?.name]);
 
   useEffect(() => {
     void loadMonitor(true);
@@ -2511,8 +2813,8 @@ function WorkloadMonitorDrawer({ item, onClose }: { item: Workload; onClose: () 
       <div className="relative flex max-h-[calc(100vh-48px)] w-full max-w-[1040px] flex-col overflow-hidden rounded-[28px] bg-white shadow-[0_28px_80px_rgba(15,23,42,0.24)]">
         <div className="flex h-20 shrink-0 items-center justify-between border-b border-[#eef2f7] px-7">
           <div>
-            <h2 className="text-lg font-semibold text-[#111827]">负载监控（{item.name}）</h2>
-            <p className="mt-0.5 text-xs text-[#94a3b8]">{item.namespace} / {item.name}</p>
+            <h2 className="text-lg font-semibold text-[#111827]">{pod ? "容器组" : "负载"}监控（{pod?.name || item.name}）</h2>
+            <p className="mt-0.5 text-xs text-[#94a3b8]">{item.namespace} / {pod?.name || item.name}</p>
           </div>
           <div className="flex items-center gap-2">
             <button type="button" onClick={() => void loadMonitor(true)} disabled={loading} className="action-button" title="刷新监控"><RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} /></button>

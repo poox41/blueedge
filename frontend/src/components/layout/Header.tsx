@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { ArrowLeftRight, Bell, ChevronDown, ChevronLeft, LogOut, RefreshCw, Server, Settings, User } from "lucide-react";
 import {
@@ -66,8 +65,6 @@ export function Header() {
         : "";
   const title = accessConfigDetailMatch ? "边缘节点" : configDetailMatch ? "配置项与密钥" : ruleEndpointDetailMatch ? "消息端点" : nodeGroupDetailMatch ? "边缘节点组" : deviceModelDetailMatch ? "设备模型" : deviceInstanceDetailMatch ? "终端设备" : batchTaskDetailMatch ? "批量任务" : routeTitles[location.pathname] || "概览";
   const showNamespace = !new Set(["/nodes", "/nodes/access", "/nodegroups", "/batchtasks"]).has(location.pathname) && !accessConfigDetailMatch && !nodeGroupDetailMatch && !batchTaskDetailMatch;
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
-
   return (
     <header className="flex h-[72px] shrink-0 items-center justify-between border-b border-[var(--color-border)] bg-white px-6">
       <div className="flex items-center gap-2 text-sm">
@@ -124,17 +121,32 @@ export function Header() {
           <Bell className="h-4 w-4" />
           <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-[var(--color-danger)]" />
         </button>
-        <div className="relative ml-1" onMouseEnter={() => setUserMenuOpen(true)} onMouseLeave={() => setUserMenuOpen(false)}>
-          <button type="button" className="flex h-8 w-8 items-center justify-center rounded-full bg-[#111827] text-white transition-colors hover:bg-[#374151]" aria-label="用户菜单"><User className="h-3.5 w-3.5" /></button>
-          {userMenuOpen && (
-            <div className="absolute right-0 top-full z-50 mt-2 min-w-[160px] rounded-xl border border-[var(--color-border)] bg-white py-1.5 shadow-[var(--shadow-md)]">
-              <button type="button" className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-[#111827] transition-colors hover:bg-[var(--color-bg-hover)]"><Settings className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />个人设置</button>
-              <button type="button" className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-[#111827] transition-colors hover:bg-[var(--color-bg-hover)]"><ArrowLeftRight className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />切换账号</button>
-              <div className="mx-3 my-1 border-t border-[var(--color-border)]" />
-              <button type="button" onClick={logout} className="flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-sm text-[var(--color-danger)] transition-colors hover:bg-[var(--color-bg-hover)]"><LogOut className="h-3.5 w-3.5" />退出登录</button>
-            </div>
-          )}
-        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="ml-1 flex h-8 w-8 items-center justify-center rounded-full bg-[#111827] text-white transition-colors hover:bg-[#374151]"
+              aria-label="用户菜单"
+            >
+              <User className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" sideOffset={8} className="min-w-[160px] rounded-xl border-[var(--color-border)] p-1.5 shadow-[var(--shadow-md)]">
+            <DropdownMenuItem className="flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-[#111827]">
+              <Settings className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
+              个人设置
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={logout} className="flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-[#111827]">
+              <ArrowLeftRight className="h-3.5 w-3.5 text-[var(--color-text-tertiary)]" />
+              切换账号
+            </DropdownMenuItem>
+            <div className="mx-2 my-1 border-t border-[var(--color-border)]" />
+            <DropdownMenuItem onSelect={logout} className="flex cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-[var(--color-danger)] focus:text-[var(--color-danger)]">
+              <LogOut className="h-3.5 w-3.5" />
+              退出登录
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </header>
   );

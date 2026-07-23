@@ -1107,7 +1107,7 @@ export default function Home() {
       <header className="flex h-[72px] items-center justify-between border-b border-[var(--color-border)] bg-white px-5">
         <div className="flex items-center gap-3">
           <BrandMark />
-          <span className="text-base font-bold text-[var(--color-text-primary)]">BlueEdge</span>
+          <span className="text-base font-bold text-[var(--color-text-primary)]">BlueEdge 云边协同平台</span>
         </div>
         <div className="flex items-center gap-2">
           <button className="blueedge-icon-button" aria-label="刷新" onClick={() => void loadData()}>

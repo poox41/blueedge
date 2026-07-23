@@ -26,8 +26,8 @@ export function hasServerK8sAuthorization(): boolean {
   return Boolean(getServerK8sAuthorization());
 }
 
-function timeoutSignal() {
-  return AbortSignal.timeout(config.requestTimeoutMs);
+function timeoutSignal(timeoutMs = config.requestTimeoutMs) {
+  return AbortSignal.timeout(timeoutMs);
 }
 
 export async function requestK8sJson(path: string, options: { method?: string; body?: unknown } = {}) {
@@ -59,14 +59,14 @@ export async function getK8sJson(path: string) {
   return requestK8sJson(path);
 }
 
-export async function getK8sText(path: string) {
+export async function getK8sText(path: string, timeoutMs = config.requestTimeoutMs) {
   if (!config.k8sApiServer) {
     throw new Error("K8S_API_SERVER is not configured");
   }
 
   const authorization = getServerK8sAuthorization();
   const response = await fetch(`${config.k8sApiServer}${path}`, {
-    signal: timeoutSignal(),
+    signal: timeoutSignal(timeoutMs),
     headers: authorization ? { Authorization: authorization } : {},
   });
 

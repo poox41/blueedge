@@ -126,7 +126,7 @@ function WorkbenchSidebar({ unit }: { unit: WorkbenchEdgeUnit }) {
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[var(--color-text-primary)]">
           <Box className="h-4 w-4 text-white" />
         </div>
-        <span className="ml-3 text-sm font-bold text-[var(--color-text-primary)]">BlueEdge</span>
+        <span className="ml-3 text-sm font-bold text-[var(--color-text-primary)]">BlueEdge 云边协同平台</span>
       </div>
 
       <nav className="min-h-0 flex-1 overflow-y-auto py-3">

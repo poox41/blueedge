@@ -75,7 +75,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         </div>
         {!collapsed && (
           <span className="ml-3 text-sm font-semibold tracking-tight text-[var(--color-text-primary)]">
-            BlueEdge
+            BlueEdge 云边协同平台
           </span>
         )}
       </div>

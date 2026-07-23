@@ -574,9 +574,11 @@ export async function getResourceLogs(
   namespace: string,
   name: string,
   options: { pod?: string; container?: string; tailLines?: number; sinceSeconds?: number; previous?: boolean } = {},
+  requestOptions: { signal?: AbortSignal } = {},
 ): Promise<ObservabilityLogsResponse> {
   const res = await gatewayRequest<ObservabilityLogsResponse>(`/blueedge/observability/resources/${encodeURIComponent(kind)}/${encodeURIComponent(namespace || "_")}/${encodeURIComponent(name)}/logs`, {
     params: options,
+    signal: requestOptions.signal,
   });
   return res.data;
 }

@@ -759,11 +759,44 @@ export async function getBatchWorkloadEvents(id: string) {
   const warnings: EdgeUnitWarning[] = [];
   const namespace = found.plan?.namespace || "default";
   if (dataOf(found.control).executionMode === "edgeapplication") {
-    const rows = (await Promise.all(found.edgeApplications.map(async (resource) => {
+    const edgeApplicationRows = await Promise.all(found.edgeApplications.map(async (resource) => {
       const name = String(metadataOf(resource).name);
       const events = await getResourceEvents(namespace, "EdgeApplication", name, warnings);
       return events.map((event) => ({ ...event, component: "EdgeApplication", object: name, time: event.lastTimestamp }));
-    }))).flat().sort((a, b) => String(b.time).localeCompare(String(a.time)));
+    }));
+    const manifests = found.edgeApplications.flatMap(edgeApplicationManifests);
+    const deploymentNames = new Set(manifests.filter((manifest) => manifest?.kind === "Deployment").map((manifest) => String(manifest?.metadata?.name || "")).filter(Boolean));
+    const selectorLabels = manifests.flatMap((manifest) => Object.entries(manifest?.spec?.selector?.matchLabels || {}));
+    const matchesWorkload = (resource: any) => {
+      const name = String(metadataOf(resource).name || "");
+      const labels = labelsOf(resource);
+      return labels[workloadIdLabel] === id
+        || [...deploymentNames].some((deploymentName) => name === deploymentName || name.startsWith(`${deploymentName}-`))
+        || selectorLabels.some(([key, value]) => labels[key] === String(value));
+    };
+    const [allDeployments, allPods] = await Promise.all([
+      getK8sJson(deploymentPath(namespace)).then(itemsOf).catch((error) => {
+        warnings.push({ source: "batch-workload-deployments", message: error instanceof Error ? error.message : "Deployments API is unavailable" });
+        return [];
+      }),
+      getK8sJson(`/api/v1/namespaces/${encodeURIComponent(namespace)}/pods`).then(itemsOf).catch((error) => {
+        warnings.push({ source: "batch-workload-pods", message: error instanceof Error ? error.message : "Pods API is unavailable" });
+        return [];
+      }),
+    ]);
+    const deployments = allDeployments.filter(matchesWorkload);
+    const pods = allPods.filter(matchesWorkload);
+    const deploymentRows = await Promise.all(deployments.map(async (deployment) => {
+      const name = String(metadataOf(deployment).name);
+      const events = await getResourceEvents(namespace, "Deployment", name, warnings);
+      return events.map((event) => ({ ...event, component: "Deployment", object: name, time: event.lastTimestamp }));
+    }));
+    const podRows = await Promise.all(pods.map(async (pod) => {
+      const name = String(metadataOf(pod).name);
+      const events = await getResourceEvents(namespace, "Pod", name, warnings);
+      return events.map((event) => ({ ...event, component: "Pod", object: name, time: event.lastTimestamp }));
+    }));
+    const rows = [...edgeApplicationRows, ...deploymentRows, ...podRows].flat().sort((a, b) => String(b.time).localeCompare(String(a.time)));
     return { status: 200, body: { items: rows, summary: { total: rows.length, warning: rows.filter((item) => item.type === "Warning").length }, ...(warnings.length ? { warnings } : {}) } };
   }
   const selector = encodeURIComponent(`${workloadIdLabel}=${id}`);
@@ -823,7 +856,7 @@ export async function addBatchWorkloadDeployments(id: string, body: any) {
     const targetPlan = { ...patchPlan, targetGroups: newGroups };
     try { await validateTargets(targetPlan); }
     catch (error) { return { status: 400, body: { message: error instanceof Error ? error.message : "目标校验失败" } }; }
-    const mergedPlan: BatchWorkloadPlan = { ...found.plan, targetGroups: [...new Set([...found.plan.targetGroups, ...newGroups])] };
+    const mergedPlan: BatchWorkloadPlan = { ...patchPlan, targetGroups: [...new Set([...found.plan.targetGroups, ...newGroups])] };
     const document = buildBatchEdgeApplication(mergedPlan, id, await validateTargets(mergedPlan), edgeApplication);
     document.metadata.resourceVersion = metadataOf(edgeApplication).resourceVersion;
     try {
@@ -844,7 +877,7 @@ export async function addBatchWorkloadDeployments(id: string, body: any) {
   try { groups = await validateTargets(patchPlan); }
   catch (error) { return { status: 400, body: { message: error instanceof Error ? error.message : "目标校验失败" } }; }
   const created = await createDeployments(patchPlan, id, groups);
-  const mergedPlan: BatchWorkloadPlan = { ...found.plan, targetGroups: [...new Set([...found.plan.targetGroups, ...newGroups])] };
+  const mergedPlan: BatchWorkloadPlan = { ...patchPlan, targetGroups: [...new Set([...found.plan.targetGroups, ...newGroups])] };
   found.control.data.planJson = JSON.stringify(mergedPlan);
   found.control.data.targetRefs = JSON.stringify(mergedPlan.targetGroups);
   found.control.data.deploymentsJson = JSON.stringify([...found.deployments.map((item) => metadataOf(item).name), ...created.map((item) => metadataOf(item).name)]);

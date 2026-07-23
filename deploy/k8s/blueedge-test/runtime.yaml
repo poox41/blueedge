@@ -35,6 +35,7 @@ data:
   JWT_EXPIRES_IN: 30d
   K8S_API_SERVER: https://kubernetes.default.svc
   K8S_SKIP_TLS_VERIFY: "true"
+  BLUEEDGE_SYSTEM_NAMESPACE: blueedge-system
   KUBEEDGE_TOKEN_MIN_VALIDITY_SECONDS: "300"
   KUBEEDGE_TOKEN_SECRET_KEY: tokendata
   KUBEEDGE_TOKEN_SECRET_NAME: tokensecret

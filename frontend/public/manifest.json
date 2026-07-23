@@ -1,0 +1,10 @@
+{
+  "name": "BlueEdge 云边协同平台",
+  "short_name": "BlueEdge 云边协同平台",
+  "description": "BlueEdge 云边协同平台",
+  "lang": "zh-CN",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#111827"
+}

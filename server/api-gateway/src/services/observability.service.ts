@@ -24,6 +24,7 @@ import {
 export const observabilityKinds = new Set(["node", "pod", "deployment", "edgeapplication", "device"]);
 const observabilityMaxEvents = 50;
 const observabilityMaxLogPods = 5;
+const podLogRequestTimeoutMs = 10_000;
 
 function boolQuery(value: unknown, fallback: boolean): boolean {
   if (value === undefined) return fallback;
@@ -50,6 +51,15 @@ function podContainers(pod: any): string[] {
     ...(Array.isArray(pod?.spec?.initContainers) ? pod.spec.initContainers : []),
   ];
   return containers.map((item: any) => String(item?.name || "")).filter(Boolean);
+}
+
+function containerWaitingReason(pod: any, container: string): string {
+  const statuses = [
+    ...(Array.isArray(pod?.status?.initContainerStatuses) ? pod.status.initContainerStatuses : []),
+    ...(Array.isArray(pod?.status?.containerStatuses) ? pod.status.containerStatuses : []),
+  ];
+  const status = statuses.find((item: any) => String(item?.name || "") === container);
+  return String(status?.state?.waiting?.reason || "");
 }
 
 function emptyMetrics(reason = "not_configured") {
@@ -315,7 +325,19 @@ async function logsForPods(kind: string, name: string, pods: any[], query: Obser
       warnings.push({ source: "logs", code: "invalid_container", message: `Container ${container} does not belong to Pod ${podName(pod)}` });
       return { podName: podName(pod), container, available: false, content: "", truncated: false, reason: "invalid_container" };
     }
-    const content = await getK8sText(podLogPath(pod, { container: selectedContainer, tailLines, sinceSeconds, previous })).catch((error) => {
+    const waitingReason = containerWaitingReason(pod, selectedContainer);
+    if (waitingReason && !previous) {
+      warnings.push({
+        source: "logs",
+        code: "container_not_running",
+        message: `容器尚未启动（${waitingReason}），当前没有可读取的日志`,
+      });
+      return { podName: podName(pod), container: selectedContainer, available: false, content: "", truncated: false, reason: "container_not_running" };
+    }
+    const content = await getK8sText(
+      podLogPath(pod, { container: selectedContainer, tailLines, sinceSeconds, previous }),
+      podLogRequestTimeoutMs,
+    ).catch((error) => {
       warnings.push(warning("logs", error, `Pod ${podName(pod)} logs unavailable`));
       return null;
     });

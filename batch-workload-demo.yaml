@@ -1,0 +1,47 @@
+apiVersion: apps.kubeedge.io/v1alpha1
+kind: EdgeApplication
+metadata:
+  name: batch-nginx-yaml-demo
+  namespace: default
+  labels:
+    app: batch-nginx-yaml-demo
+  annotations:
+    blueedge.io/description: YAML 手动创建批量工作负载演示
+spec:
+  workloadScope:
+    targetNodeGroups:
+      - name: laptop-edge-group
+        overrides: {}
+  workloadTemplate:
+    manifests:
+      - apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: batch-nginx-yaml-demo
+          labels:
+            app: batch-nginx-yaml-demo
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: batch-nginx-yaml-demo
+          template:
+            metadata:
+              labels:
+                app: batch-nginx-yaml-demo
+            spec:
+              containers:
+                - name: nginx
+                  image: nginx:1.27-alpine
+                  imagePullPolicy: IfNotPresent
+                  ports:
+                    - name: http
+                      containerPort: 80
+                      protocol: TCP
+                  resources:
+                    requests:
+                      cpu: 10m
+                      memory: 16Mi
+                    limits:
+                      cpu: 100m
+                      memory: 64Mi

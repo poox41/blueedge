@@ -229,14 +229,15 @@ export async function deleteNodeResource(name: string): Promise<void> {
   return deleteClusterResource("node", name);
 }
 
-export async function listPods(namespace?: string): Promise<any[]> {
+export async function listPods(namespace?: string, forceRefresh = false): Promise<any[]> {
+  const params = forceRefresh ? { _refresh: Date.now() } : undefined;
   try {
     const path = namespace ? `/pod/${namespace}` : "/pod";
-    const res = await bffRequest<unknown>(path);
+    const res = await bffRequest<unknown>(path, { params });
     return asItems(res.data);
   } catch {
     const res = await gatewayRequest<unknown>("/workloads/pods", {
-      params: { namespace },
+      params: { namespace, ...params },
     });
     return asItems(res.data);
   }
