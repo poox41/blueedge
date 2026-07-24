@@ -658,6 +658,7 @@ export function BatchWorkloads() {
 
   const copyDeleteName = async () => {
     if (!deleteTarget) return;
+    setDeleteConfirmName(deleteTarget.name);
     const copied = await copyToClipboard(deleteTarget.name);
     if (!copied) {
       setDeleteCopied(false);

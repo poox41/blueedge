@@ -1266,6 +1266,7 @@ function WorkloadDeleteDialog({ target, loading, onCancel, onConfirm }: { target
   }, [target]);
   const copyName = async () => {
     if (!target) return;
+    setConfirmName(target.name);
     const copySucceeded = await copyToClipboard(target.name);
     if (!copySucceeded) {
       setCopied(false);
