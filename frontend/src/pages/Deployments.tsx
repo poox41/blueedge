@@ -1261,12 +1261,8 @@ function WorkloadDeleteDialog({ target, loading, onCancel, onConfirm }: { target
   const [confirmName, setConfirmName] = useState("");
   const [copied, setCopied] = useState(false);
   useEffect(() => {
-    if (!target) return;
-    const timer = window.setTimeout(() => {
-      setConfirmName("");
-      setCopied(false);
-    }, 0);
-    return () => window.clearTimeout(timer);
+    setConfirmName("");
+    setCopied(false);
   }, [target]);
   const copyName = async () => {
     if (!target) return;
@@ -1276,7 +1272,6 @@ function WorkloadDeleteDialog({ target, loading, onCancel, onConfirm }: { target
       return;
     }
     setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
   };
   const confirmed = Boolean(target && confirmName === target.name);
   return (

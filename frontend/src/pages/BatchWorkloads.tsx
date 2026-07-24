@@ -664,7 +664,6 @@ export function BatchWorkloads() {
       return;
     }
     setDeleteCopied(true);
-    window.setTimeout(() => setDeleteCopied(false), 1600);
   };
 
   if (definitionTarget) {
