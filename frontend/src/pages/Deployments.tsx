@@ -60,6 +60,7 @@ import {
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ListPagination, useListPagination } from "@/components/common/ListPagination";
 import { Textarea } from "@/components/ui/textarea";
+import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import {
@@ -1269,13 +1270,13 @@ function WorkloadDeleteDialog({ target, loading, onCancel, onConfirm }: { target
   }, [target]);
   const copyName = async () => {
     if (!target) return;
-    try {
-      await navigator.clipboard.writeText(target.name);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
-    } catch {
+    const copySucceeded = await copyToClipboard(target.name);
+    if (!copySucceeded) {
       setCopied(false);
+      return;
     }
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1600);
   };
   const confirmed = Boolean(target && confirmName === target.name);
   return (

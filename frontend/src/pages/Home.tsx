@@ -18,9 +18,9 @@ import {
   Server,
   SlidersHorizontal,
   Trash2,
-  User,
   XCircle,
 } from "lucide-react";
+import { UserMenu } from "@/components/layout/UserMenu";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -47,7 +47,6 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { toHomeEdgeUnit, type EdgeUnitUiModel, type EdgeUnitWarning } from "@/api/adapters/edge-unit.adapter";
 import { createEdgeUnit, deleteEdgeUnit, listConnectedClusters, listEdgeUnits, updateEdgeUnit, type EdgeUnitCreatePayload, type EdgeUnitUpdatePayload } from "@/api/services/product";
-import { useAuth } from "@/contexts/AuthContext";
 import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 import { cn } from "@/lib/utils";
 
@@ -999,7 +998,6 @@ export default function Home() {
   const [editingUnit, setEditingUnit] = useState<EdgeUnit | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<EdgeUnit | null>(null);
   const [clusterOptions, setClusterOptions] = useState<string[]>([]);
-  const { logout } = useAuth();
   const { refreshEdgeUnits } = useEdgeUnits();
   const loadData = useCallback(async () => {
     setIsLoading(true);
@@ -1113,9 +1111,7 @@ export default function Home() {
           <button className="blueedge-icon-button" aria-label="刷新" onClick={() => void loadData()}>
             <RefreshCw className="h-4 w-4" />
           </button>
-          <button className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-text-primary)] text-white" aria-label="退出登录" onClick={logout}>
-            <User className="h-4 w-4" />
-          </button>
+          <UserMenu />
         </div>
       </header>
 

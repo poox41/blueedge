@@ -68,6 +68,7 @@ import {
   type BatchWorkloadPlanContainer,
 } from "@/api/services/product";
 import { listNamespaces, listNodeGroups } from "@/api/services/resources";
+import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 
@@ -657,13 +658,13 @@ export function BatchWorkloads() {
 
   const copyDeleteName = async () => {
     if (!deleteTarget) return;
-    try {
-      await navigator.clipboard.writeText(deleteTarget.name);
-      setDeleteCopied(true);
-      window.setTimeout(() => setDeleteCopied(false), 1600);
-    } catch {
+    const copied = await copyToClipboard(deleteTarget.name);
+    if (!copied) {
       setDeleteCopied(false);
+      return;
     }
+    setDeleteCopied(true);
+    window.setTimeout(() => setDeleteCopied(false), 1600);
   };
 
   if (definitionTarget) {

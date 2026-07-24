@@ -395,7 +395,11 @@ export function isPodReady(pod: any): boolean {
 }
 
 export function isDeploymentHealthyOnNodes(deployment: any, pods: any[], nodeNames: Set<string>): boolean {
-  return deploymentPodsOnNodes(deployment, pods, nodeNames).some(isPodReady);
+  const desiredReplicas = Number(deployment?.spec?.replicas ?? deployment?.replicas ?? 1);
+  if (!Number.isFinite(desiredReplicas) || desiredReplicas <= 0) return false;
+
+  const readyReplicas = deploymentPodsOnNodes(deployment, pods, nodeNames).filter(isPodReady).length;
+  return readyReplicas >= desiredReplicas;
 }
 
 function resourceDirectlyTargetsEdgeUnit(resource: any, edgeUnitName: string): boolean {

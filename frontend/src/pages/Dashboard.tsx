@@ -22,9 +22,9 @@ import {
   Route,
   Server,
   Settings2,
-  User,
   X,
 } from "lucide-react";
+import { UserMenu } from "@/components/layout/UserMenu";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
@@ -38,7 +38,6 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toWorkbenchEdgeUnit, type WorkbenchEdgeUnitModel } from "@/api/adapters/edge-unit.adapter";
 import { updateEdgeUnit, type EdgeUnitUpdatePayload } from "@/api/services/product";
-import { useAuth } from "@/contexts/AuthContext";
 import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 import { cn } from "@/lib/utils";
 
@@ -189,7 +188,6 @@ function WorkbenchTopbar({
   onSelectUnit: (name: string) => void;
   onRefresh: () => Promise<void>;
 }) {
-  const { logout } = useAuth();
   return (
     <header className="flex h-[72px] shrink-0 items-center justify-between border-b border-[var(--color-border)] bg-white px-6">
       <div className="flex items-center gap-2 text-sm">
@@ -235,9 +233,7 @@ function WorkbenchTopbar({
         <button type="button" className="blueedge-icon-button" aria-label="刷新边缘单元" onClick={() => void onRefresh()} disabled={loading}>
           <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
         </button>
-        <button onClick={logout} className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--color-text-primary)] text-white" aria-label="退出登录">
-          <User className="h-4 w-4" />
-        </button>
+        <UserMenu />
       </div>
     </header>
   );

@@ -460,6 +460,26 @@ test("workload totals and health use directly owned nodes and workloads", () => 
   assert.deepEqual(result.applications, { healthy: 1, total: 2 });
 });
 
+test("a partially ready Deployment stays in totals but is not counted as healthy", () => {
+  const partiallyReady = deployment("partial-deployment", "partial-app", 2);
+  partiallyReady.spec.replicas = 3;
+  const aux = {
+    nodes: [externalReadyNode("edge-a", { "node-role.kubernetes.io/edge": "" })],
+    pods: [
+      pod("partial-ready-1", "partial-app", "edge-a"),
+      pod("partial-ready-2", "partial-app", "edge-a"),
+      pod("partial-pending", "partial-app", "edge-a", { phase: "Pending", ready: false }),
+    ],
+    deployments: [partiallyReady],
+    edgeApplications: [],
+    accessConfigs: [],
+  };
+
+  const result = buildEdgeUnitRuntime(aux, "unit-a");
+
+  assert.deepEqual(result.workloads, { healthy: 0, total: 1 });
+});
+
 test("a currently cloud-scheduled Deployment is not rescued by a stale terminating edge Pod", () => {
   const aux = {
     nodes: [externalReadyNode("k8s-laptop-edge", { "node-role.kubernetes.io/edge": "", "blueedge.io/edge-unit": "demo-edge-unit" }), readyNode("k8s-master")],
