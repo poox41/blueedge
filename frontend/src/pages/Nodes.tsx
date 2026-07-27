@@ -184,8 +184,15 @@ function toPageNode(
   const metrics = metricsByName.get(node.name);
   const labels = raw.metadata?.labels || {};
   const taints = Array.isArray(raw.spec?.taints) ? raw.spec.taints : [];
+  const ignoredRoleTaintKeys = new Set([
+    "node-role.kubernetes.io/edge",
+    "node-role.kubernetes.io/agent",
+  ]);
   const blockingTaints = taints
-    .filter((taint: any) => taint?.effect === "NoSchedule" || taint?.effect === "NoExecute")
+    .filter((taint: any) =>
+      (taint?.effect === "NoSchedule" || taint?.effect === "NoExecute") &&
+      !ignoredRoleTaintKeys.has(String(taint?.key || "")),
+    )
     .map((taint: any) => `${String(taint?.key || "未知污点")}${taint?.effect ? `:${taint.effect}` : ""}`);
   const cordoned = Boolean(raw.spec?.unschedulable);
   const cpuCapacity = formatCapacityCpu(allocatable.cpu || capacity.cpu);
