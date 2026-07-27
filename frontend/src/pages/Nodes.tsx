@@ -353,7 +353,15 @@ export function Nodes() {
       const visibleNodeRows = allowedNodeNames
         ? nodeRows.filter((node) => allowedNodeNames.has(node.name))
         : nodeRows;
-      setData(visibleNodeRows.map((node) => toPageNode(node, metricsByName, podCountByNode)));
+      // The node list API returns summaries without spec.taints or
+      // spec.unschedulable. Load details for visible nodes so scheduling state
+      // reflects NoSchedule/NoExecute taints and cordon state.
+      const detailResults = await Promise.allSettled(visibleNodeRows.map((node) => getNode(node.name)));
+      const detailedNodeRows = visibleNodeRows.map((node, index) => {
+        const detail = detailResults[index];
+        return detail.status === "fulfilled" ? detail.value : node;
+      });
+      setData(detailedNodeRows.map((node) => toPageNode(node, metricsByName, podCountByNode)));
       setCurrentPage(1);
     } catch (err) {
       setError(err instanceof Error ? err.message : "节点数据加载失败");
