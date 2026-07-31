@@ -21,6 +21,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ListPagination, useListPagination } from "@/components/common/ListPagination";
+import { ConfirmNameDeleteDialog } from "@/components/common/ConfirmNameDeleteDialog";
 import { cn } from "@/lib/utils";
 import {
   createConfigMapResource,
@@ -860,23 +861,10 @@ export function ConfigMaps() {
 }
 
 function ConfigDeleteDialog({ target, onOpenChange, onConfirm }: { target: ConfigItem | null; onOpenChange: (open: boolean) => void; onConfirm: () => Promise<void> }) {
-  return (
-    <AlertDialog open={!!target} onOpenChange={onOpenChange}>
-      <AlertDialogContent className="max-w-[520px] rounded-[24px]">
-        <AlertDialogHeader>
-          <AlertDialogTitle>确认删除{target?.type}？</AlertDialogTitle>
-          <AlertDialogDescription>
-            即将删除 <span className="font-medium text-[var(--color-text-primary)]">{target?.name}</span>
-            {target?.mountTargets.length ? `，当前已被 ${target.mountTargets.join("、")} 引用，删除后相关工作负载可能无法读取配置或凭证。` : "，删除成功后将重新拉取最新列表。"}
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel className="h-9 rounded-xl">取消</AlertDialogCancel>
-          <AlertDialogAction className="h-9 rounded-xl bg-[#ff4d4f] text-white hover:bg-[#dc2626]" onClick={() => void onConfirm()}>删除</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
+  const warning = target?.mountTargets.length
+    ? `此操作不可恢复。当前已被 ${target.mountTargets.join("、")} 引用，删除后相关工作负载可能无法读取配置或凭证。`
+    : `此操作不可恢复。删除后相关${target?.type || "配置"}资源将被永久移除。`;
+  return <ConfirmNameDeleteDialog name={target?.name} warning={warning} onOpenChange={onOpenChange} onConfirm={onConfirm} />;
 }
 
 function ConfigMutationConfirmDialog({

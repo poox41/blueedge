@@ -34,6 +34,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ListPagination, useListPagination } from "@/components/common/ListPagination";
+import { ConfirmNameDeleteDialog } from "@/components/common/ConfirmNameDeleteDialog";
 import { Textarea } from "@/components/ui/textarea";
 import { toBatchTaskRow } from "@/api/adapters/batch-task.adapter";
 import type { BatchTaskApiItem } from "@/api/adapters/batch-task.adapter";
@@ -166,6 +167,7 @@ export function BatchTasks() {
   const [createUpgradeOpen, setCreateUpgradeOpen] = useState(false);
   const [createPreheatOpen, setCreatePreheatOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<BatchTask | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const [detailTarget, setDetailTarget] = useState<BatchTask | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [error, setError] = useState("");
@@ -214,6 +216,7 @@ export function BatchTasks() {
 
   const deleteTask = async () => {
     if (!deleteTarget) return;
+    setDeleting(true);
     setError("");
     try {
       await deleteBatchTask(deleteTarget.id);
@@ -221,6 +224,8 @@ export function BatchTasks() {
       await loadTasks();
     } catch (err) {
       setError(err instanceof Error ? err.message : "删除批量任务失败");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -429,22 +434,13 @@ export function BatchTasks() {
         nodeOptions={nodeOptions}
       />
 
-      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle className="text-base">确认删除任务？</AlertDialogTitle>
-            <AlertDialogDescription className="text-sm">
-              即将删除任务 <span className="font-medium text-[var(--color-text-primary)]">{deleteTarget?.name}</span>，此操作不可恢复。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel>
-            <AlertDialogAction className="h-8 bg-[var(--color-danger)] text-sm hover:bg-[var(--color-danger)]/90" onClick={deleteTask}>
-              确认删除
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmNameDeleteDialog
+        name={deleteTarget?.name}
+        warning="此操作不可恢复。删除后相关批量任务资源和执行记录将被永久移除。"
+        loading={deleting}
+        onOpenChange={(open) => !open && setDeleteTarget(null)}
+        onConfirm={deleteTask}
+      />
     </div>
   );
 }
@@ -1265,22 +1261,12 @@ function BatchTaskDetailPage({ task, onBack, onRefresh, onDelete, onRetry, onRol
 
   return (
     <div className="blueedge-page space-y-5">
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <AlertDialogContent className="w-[420px] rounded-2xl">
-          <AlertDialogHeader>
-            <AlertDialogTitle className="text-base">确认删除任务？</AlertDialogTitle>
-            <AlertDialogDescription>
-              即将删除任务 <span className="font-medium text-[var(--color-text-primary)]">{task.name}</span>，此操作不可恢复。
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel className="h-10 rounded-xl">取消</AlertDialogCancel>
-            <AlertDialogAction className="h-10 rounded-xl bg-[var(--color-danger)] hover:bg-[var(--color-danger)]/90" onClick={onDelete}>
-              确认删除
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmNameDeleteDialog
+        name={deleteOpen ? task.name : null}
+        warning="此操作不可恢复。删除后相关批量任务资源和执行记录将被永久移除。"
+        onOpenChange={setDeleteOpen}
+        onConfirm={onDelete}
+      />
       <section className="flex items-start justify-between gap-4">
         <div className="flex items-start gap-4">
           <button type="button" onClick={onBack} className="action-button bg-white">

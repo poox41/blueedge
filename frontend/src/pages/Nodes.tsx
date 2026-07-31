@@ -11,6 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { ListPagination, useListPagination } from "@/components/common/ListPagination";
+import { ConfirmNameDeleteDialog } from "@/components/common/ConfirmNameDeleteDialog";
 import { AlertTriangle, Trash2, Copy, Ban, CheckCircle2, MoreHorizontal, Pause, Pencil, Plus, Search, X } from "lucide-react";
 import { StatusBadge } from "@/components/common/StatusBadge";
 import { formatMemory, listNodeMetrics } from "@/api/services/metrics";
@@ -1103,12 +1104,13 @@ export function Nodes() {
           )}
         </SheetContent>
       </Sheet>
-      <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle className="text-base">确认删除节点？</AlertDialogTitle><AlertDialogDescription className="text-sm">即将删除节点 <span className="font-medium text-[var(--color-text-primary)]">{deleteItem?.name}</span>，此操作不可恢复。</AlertDialogDescription></AlertDialogHeader>
-          <AlertDialogFooter><AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel><AlertDialogAction className="h-8 text-sm" onClick={confirmDelete}>确认删除</AlertDialogAction></AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmNameDeleteDialog
+        name={deleteOpen ? deleteItem?.name : null}
+        warning="此操作不可恢复。删除后相关边缘节点资源将被永久移除。"
+        loading={isLoading}
+        onOpenChange={(open) => { setDeleteOpen(open); if (!open) setDeleteItem(null); }}
+        onConfirm={confirmDelete}
+      />
     </div>
   );
 }

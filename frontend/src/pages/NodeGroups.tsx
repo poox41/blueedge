@@ -264,12 +264,13 @@ export function NodeGroups() {
   };
   const copyDeleteName = async () => {
     if (!delItem) return;
+    setDelConfirmText(delItem.name);
     try {
       await navigator.clipboard.writeText(delItem.name);
       setDelNameCopied(true);
       window.setTimeout(() => setDelNameCopied(false), 2000);
     } catch {
-      setDelConfirmText(delItem.name);
+      setDelNameCopied(false);
     }
   };
   const confirmDel = async () => {

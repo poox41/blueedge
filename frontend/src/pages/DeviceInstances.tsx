@@ -24,6 +24,7 @@ import type { EdgeNodeView } from "@/types/kubeedge";
 import { validateAccessConfigYaml, validateDeviceTwin, type DeviceTwinFormValue } from "@/lib/device-config";
 import { useNavigate, useParams } from "react-router-dom";
 import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
+import { ConfirmNameDeleteDialog } from "@/components/common/ConfirmNameDeleteDialog";
 
 interface DI { namespace: string; name: string; model: string; node: string; edgeUnitRef?: string; nodeGroupRef?: string; status: string; statusColor: string; twins: number; createdAt: string; lastReport: string; protocol?: string; description: string; labels: Record<string, string>; raw: KubeResource | any; }
 interface LabelRule { id: string; key: string; value: string; }
@@ -676,9 +677,13 @@ export function DeviceInstances() {
         </div>
         <ListPagination total={filtered.length} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
       </div>
-      <AlertDialog open={delOpen} onOpenChange={setDelOpen}>
-        <AlertDialogContent><AlertDialogHeader><AlertDialogTitle className="text-base">确认删除？</AlertDialogTitle><AlertDialogDescription className="text-sm">即将删除终端设备 <span className="font-medium text-[var(--color-text-primary)]">{delItem?.name}</span>，此操作不可恢复。</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel className="h-8 text-sm">取消</AlertDialogCancel><AlertDialogAction className="h-8 text-sm" onClick={confirmDel}>确认删除</AlertDialogAction></AlertDialogFooter></AlertDialogContent>
-      </AlertDialog>
+      <ConfirmNameDeleteDialog
+        name={delOpen ? delItem?.name : null}
+        warning="此操作不可恢复。删除后相关终端设备资源将被永久移除。"
+        loading={isLoading}
+        onOpenChange={(open) => { setDelOpen(open); if (!open) setDelItem(null); }}
+        onConfirm={confirmDel}
+      />
     </div>
     </>
   );

@@ -1,4 +1,5 @@
 import { ListPagination } from "@/components/common/ListPagination";
+import { ConfirmNameDeleteDialog } from "@/components/common/ConfirmNameDeleteDialog";
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -8,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-import { Search, Plus, RefreshCw, Trash2, ChevronLeft, ChevronRight, X, ArrowLeft, Pencil, Settings, Tag, Cpu, Bug, ClipboardList, TriangleAlert, Copy } from "lucide-react";
+import { Search, Plus, RefreshCw, Trash2, ChevronLeft, ChevronRight, X, ArrowLeft, Pencil, Settings, Tag, Cpu, Bug, ClipboardList, TriangleAlert } from "lucide-react";
 import { createDeviceModelResource, deleteDeviceModelResource, listNamespaces, updateDeviceModelResource } from "@/api/services/resources";
 import { getDeviceModelSummary, listDeviceModelSummaries } from "@/api/services/product";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
@@ -146,7 +147,6 @@ export function DeviceModels() {
   const [detailTwinTarget, setDetailTwinTarget] = useState<DM | null>(null);
   const [delOpen, setDelOpen] = useState(false);
   const [delItem, setDelItem] = useState<DM | null>(null);
-  const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [editingTwinIndex, setEditingTwinIndex] = useState<number | null>(null);
   const [form, setForm] = useState({ name: "", namespace: "default", properties: 0, protocol: "MQTT", description: "", propertiesText: "[]", labels: [{ id: "label-1", key: "", value: "" }] });
   const [twinForm, setTwinForm] = useState<TwinPropertyForm>({ name: "", type: "string", accessMode: "ReadOnly", minimum: "", maximum: "", unit: "" });
@@ -220,7 +220,7 @@ export function DeviceModels() {
       setError(err instanceof Error ? err.message : "加载设备模型详情失败");
     }
   };
-  const openDel = (d: DM) => { setDelItem(d); setDeleteConfirmation(""); setDelOpen(true); };
+  const openDel = (d: DM) => { setDelItem(d); setDelOpen(true); };
   const confirmDel = async () => {
     if (!delItem) return;
     setIsLoading(true);
@@ -233,7 +233,6 @@ export function DeviceModels() {
     } finally {
       setDelOpen(false);
       setDelItem(null);
-      setDeleteConfirmation("");
       setIsLoading(false);
     }
   };
@@ -597,18 +596,13 @@ export function DeviceModels() {
         </div>
         <ListPagination total={filtered.length} page={page} pageSize={pageSize} onPageChange={setPage} onPageSizeChange={(size) => { setPageSize(size); setPage(1); }} />
       </div>
-      <AlertDialog open={delOpen} onOpenChange={(open) => { setDelOpen(open); if (!open) setDeleteConfirmation(""); }}>
-        <AlertDialogContent className="!w-[calc(100%-2rem)] !max-w-[480px] gap-0 overflow-hidden rounded-2xl p-0 sm:!max-w-[480px]">
-          <AlertDialogHeader className="border-b border-[var(--color-border)] px-6 py-4">
-            <div className="flex items-center justify-between"><AlertDialogTitle className="flex items-center gap-2.5 text-sm font-semibold"><span className="flex h-7 w-7 items-center justify-center rounded-full bg-[var(--color-danger-soft)] text-[var(--color-danger)]"><TriangleAlert className="h-4 w-4" /></span>确认删除「{delItem?.name}」吗？</AlertDialogTitle><AlertDialogCancel className="m-0 h-8 w-8 rounded-lg p-0"><X className="h-4 w-4" /></AlertDialogCancel></div>
-          </AlertDialogHeader>
-          <div className="space-y-4 px-6 py-5">
-            <AlertDialogDescription className="flex items-start gap-2 rounded-lg border border-[#ffd591] bg-[#fff7e6] p-3 text-xs leading-5 text-[#ad6800]"><TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[#fa8c16]" />此操作不可恢复。删除后相关设备模型资源将被永久移除。</AlertDialogDescription>
-            <div><div className="mb-2 flex items-center justify-between"><label className="text-xs font-semibold text-[var(--color-text-primary)]">请输入 <span className="text-[var(--color-danger)]">{delItem?.name}</span> 以确认删除</label><button type="button" onClick={() => { if (delItem) { setDeleteConfirmation(delItem.name); void navigator.clipboard?.writeText(delItem.name); } }} className="inline-flex items-center gap-1 text-xs font-medium text-[var(--color-brand)]"><Copy className="h-3.5 w-3.5" />复制名称</button></div><Input autoFocus value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} placeholder={delItem?.name} className="h-10 rounded-[10px] text-sm" /></div>
-          </div>
-          <AlertDialogFooter className="border-t border-[var(--color-border)] px-6 py-4"><AlertDialogCancel className="h-9 rounded-[10px] px-4 text-sm">取消</AlertDialogCancel><AlertDialogAction disabled={!delItem || deleteConfirmation !== delItem.name || isLoading} className="h-9 rounded-[10px] bg-[var(--color-danger)] px-5 text-sm text-white hover:bg-[var(--color-danger)]/90 disabled:bg-[#ffccc7]" onClick={confirmDel}>删除</AlertDialogAction></AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmNameDeleteDialog
+        name={delOpen ? delItem?.name : null}
+        warning="此操作不可恢复。删除后相关设备模型资源将被永久移除。"
+        loading={isLoading}
+        onOpenChange={(open) => { setDelOpen(open); if (!open) setDelItem(null); }}
+        onConfirm={confirmDel}
+      />
     </div>
     </>
   );

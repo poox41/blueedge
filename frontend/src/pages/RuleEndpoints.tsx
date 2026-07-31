@@ -19,9 +19,10 @@ import { listClusterEvents } from "@/api/services/product";
 import type { ClusterEvent } from "@/api/services/product";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, RuleEndpointView } from "@/types/kubeedge";
+import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 import { useNamespace } from "@/contexts/NamespaceContext";
-import { Activity, AlertTriangle, ArrowLeft, Bug, ChevronDown, ClipboardList, Copy, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Terminal, Trash2, Wifi, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowLeft, Bug, Check, ChevronDown, ClipboardList, Copy, MoreHorizontal, Pencil, Plus, RefreshCw, Search, Terminal, Trash2, Wifi, X } from "lucide-react";
 import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 
 type EndpointType = "rest" | "eventbus" | "servicebus";
@@ -32,7 +33,7 @@ interface MessageEndpointRow {
   ruleEndpointType: string;
   targetResource: string;
   createdAt: string;
-  connected: boolean;
+  connected: boolean | null;
   raw: KubeResource;
 }
 
@@ -80,11 +81,14 @@ function endpointLocation(type: string): string {
   return normalizeRuleEndpointType(type) === "rest" ? "云端" : "边端";
 }
 
-function isEndpointConnected(item: RuleEndpointView): boolean {
+function endpointConnectionState(item: RuleEndpointView): boolean | null {
   const status = item.raw.status || {};
-  const phase = String(status.phase || status.state || status.connectionStatus || "").toLowerCase();
-  if (phase) return ["ready", "running", "connected", "online", "true"].includes(phase);
-  return false;
+  const rawValue = status.phase || status.state || status.connectionStatus || status.connected || status.ready;
+  if (typeof rawValue === "boolean") return rawValue;
+  const phase = String(rawValue || "").trim().toLowerCase();
+  if (["ready", "running", "connected", "online", "true", "healthy", "active"].includes(phase)) return true;
+  if (["notready", "not ready", "stopped", "disconnected", "offline", "false", "unhealthy", "inactive", "failed"].includes(phase)) return false;
+  return null;
 }
 
 function toRuleEndpointRow(item: RuleEndpointView): MessageEndpointRow {
@@ -94,7 +98,7 @@ function toRuleEndpointRow(item: RuleEndpointView): MessageEndpointRow {
     ruleEndpointType: item.type,
     targetResource: item.targetResource,
     createdAt: item.createdAt,
-    connected: isEndpointConnected(item),
+    connected: endpointConnectionState(item),
     raw: item.raw,
   };
 }
@@ -542,16 +546,22 @@ export function RuleEndpoints() {
   );
 }
 
-function StatusPill({ connected }: { connected: boolean }) {
+function StatusPill({ connected }: { connected: boolean | null }) {
+  const label = connected === true ? "在线" : connected === false ? "离线" : "未上报";
   return (
     <span
       className={cn(
         "inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-xs font-medium",
-        connected === true ? "bg-[var(--color-success-soft)] text-[var(--color-success)]" : "bg-[#f3f4f6] text-[#9ca3af]",
+        connected === true
+          ? "bg-[var(--color-success-soft)] text-[var(--color-success)]"
+          : connected === false
+            ? "bg-[#f3f4f6] text-[#9ca3af]"
+            : "bg-[#fff7e6] text-[#ad6800]",
       )}
+      title={connected === null ? "KubeEdge RuleEndpoint 原生资源不提供连接状态" : undefined}
     >
       <span className="h-1.5 w-1.5 rounded-full bg-current" />
-      {connected ? "在线" : "离线"}
+      {label}
     </span>
   );
 }
@@ -796,11 +806,14 @@ function EndpointPropertiesPanel({ row }: { row: MessageEndpointRow }) {
 
 function EndpointConnectivityPanel({ row }: { row: MessageEndpointRow }) {
   const healthy = row.connected === true;
+  const unknown = row.connected === null;
   return (
     <section className="rounded-2xl border border-[#f0f1f3] bg-white px-7 py-6 text-center shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
-      <div className={cn("mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full", healthy ? "bg-[#dcfce7] text-[#16a34a]" : "bg-[#fee2e2] text-[#dc2626]")}><Wifi className="h-5 w-5" /></div>
-      <h2 className="mb-1 text-sm font-medium text-[#111827]">{healthy ? "连接正常" : "连接异常"}</h2>
-      <p className="mx-auto max-w-[620px] text-xs leading-5 text-[var(--color-text-tertiary)]">{healthy ? "状态来自 RuleEndpoint.status。" : "RuleEndpoint 未返回在线状态或已明确断开，当前按离线处理。"}</p>
+      <div className={cn("mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full", healthy ? "bg-[#dcfce7] text-[#16a34a]" : unknown ? "bg-[#fff7e6] text-[#d97706]" : "bg-[#fee2e2] text-[#dc2626]")}><Wifi className="h-5 w-5" /></div>
+      <h2 className="mb-1 text-sm font-medium text-[#111827]">{healthy ? "连接正常" : unknown ? "状态未上报" : "连接异常"}</h2>
+      <p className="mx-auto max-w-[620px] text-xs leading-5 text-[var(--color-text-tertiary)]">
+        {healthy ? "状态来自集群返回的 RuleEndpoint.status。" : unknown ? "KubeEdge 原生 RuleEndpoint 资源不提供 status，当前无法从 Kubernetes API 判断实际连接状态。" : "集群已明确返回端点断开或不可用状态。"}
+      </p>
       <div className="mx-auto mt-4 w-fit rounded-xl bg-[#f8f9fb] px-4 py-2 font-mono text-xs text-[#475569]">{endpointAddress(row)}</div>
     </section>
   );
@@ -861,11 +874,19 @@ function EditEndpointDialog({ open, row, isLoading, onOpenChange, onSave, onDele
 
 function EndpointDeleteDialog({ target, isLoading, onOpenChange, onConfirm }: { target: MessageEndpointRow | null; isLoading: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => Promise<void> }) {
   const [confirmName, setConfirmName] = useState("");
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
-    if (!target) return;
-    const timer = window.setTimeout(() => setConfirmName(""), 0);
+    const timer = window.setTimeout(() => {
+      setConfirmName("");
+      setCopied(false);
+    }, 0);
     return () => window.clearTimeout(timer);
   }, [target]);
+  const copyName = async () => {
+    if (!target) return;
+    setConfirmName(target.name);
+    setCopied(await copyToClipboard(target.name));
+  };
   const confirmed = Boolean(target && confirmName === target.name);
   return (
     <AlertDialog open={Boolean(target)} onOpenChange={onOpenChange}>
@@ -885,7 +906,10 @@ function EndpointDeleteDialog({ target, isLoading, onOpenChange, onConfirm }: { 
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium text-[#111827]">请输入 <strong className="text-[#ff4d4f]">{target?.name}</strong> 以确认删除</label>
-              <button type="button" onClick={() => target && void navigator.clipboard.writeText(target.name)} className="flex items-center gap-1 text-xs text-[#1a73e8]"><Copy className="h-3 w-3" />复制名称</button>
+              <button type="button" onClick={() => void copyName()} className="flex items-center gap-1 text-xs text-[#1a73e8]">
+                {copied ? <Check className="h-3 w-3" strokeWidth={2.5} /> : <Copy className="h-3 w-3" />}
+                {copied ? "已复制" : "复制名称"}
+              </button>
             </div>
             <Input value={confirmName} onChange={(event) => setConfirmName(event.target.value)} placeholder={target?.name} className="h-10 rounded-[10px]" />
           </div>

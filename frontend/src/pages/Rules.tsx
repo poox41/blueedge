@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   ArrowRight,
   Bug,
+  Check,
   ClipboardList,
   ChevronDown,
   Copy,
@@ -38,6 +39,7 @@ import { getRuleAudit, getRuleDelivery, getRuleEvents } from "@/api/services/pro
 import type { ClusterEvent, RuleAuditResponse, RuleDeliverySummary } from "@/api/services/product";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, RuleEndpointView, RuleView } from "@/types/kubeedge";
+import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
 
 type EndpointKind = "rest" | "eventbus" | "servicebus";
@@ -1238,11 +1240,19 @@ function AuditPanel({ data, loading, error, onRefresh }: { data: RuleAuditRespon
 
 function ConfirmDeleteDialog({ target, loading, onCancel, onConfirm }: { target: MessageRouteRow | null; loading: boolean; onCancel: () => void; onConfirm: () => void }) {
   const [confirmName, setConfirmName] = useState("");
+  const [copied, setCopied] = useState(false);
   useEffect(() => {
-    if (!target) return;
-    const timer = window.setTimeout(() => setConfirmName(""), 0);
+    const timer = window.setTimeout(() => {
+      setConfirmName("");
+      setCopied(false);
+    }, 0);
     return () => window.clearTimeout(timer);
   }, [target]);
+  const copyName = async () => {
+    if (!target) return;
+    setConfirmName(target.name);
+    setCopied(await copyToClipboard(target.name));
+  };
   const confirmed = Boolean(target && confirmName === target.name);
   return (
     <AlertDialog open={Boolean(target)} onOpenChange={(open) => !open && onCancel()}>
@@ -1262,7 +1272,10 @@ function ConfirmDeleteDialog({ target, loading, onCancel, onConfirm }: { target:
           <div className="space-y-2">
             <div className="flex items-center justify-between">
               <label className="text-xs font-medium text-[#111827]">请输入 <strong className="text-[#ff4d4f]">{target?.name}</strong> 以确认删除</label>
-              <button type="button" onClick={() => target && void navigator.clipboard.writeText(target.name)} className="flex items-center gap-1 text-xs text-[#1a73e8]"><Copy className="h-3 w-3" />复制名称</button>
+              <button type="button" onClick={() => void copyName()} className="flex items-center gap-1 text-xs text-[#1a73e8]">
+                {copied ? <Check className="h-3 w-3" strokeWidth={2.5} /> : <Copy className="h-3 w-3" />}
+                {copied ? "已复制" : "复制名称"}
+              </button>
             </div>
             <Input value={confirmName} onChange={(event) => setConfirmName(event.target.value)} placeholder={target?.name} className="h-10 rounded-[10px]" />
           </div>
