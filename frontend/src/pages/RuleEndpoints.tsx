@@ -119,9 +119,6 @@ function buildRuleEndpointResource(form: CreateForm): KubeResource {
     },
     spec: {
       ruleEndpointType: form.type,
-      properties: {
-        [propertyKeyForType(form.type)]: "",
-      },
     },
   };
 }

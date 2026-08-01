@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNamespace } from "@/contexts/NamespaceContext";
 import {
   AlertCircle,
@@ -35,12 +35,13 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ListPagination, useListPagination } from "@/components/common/ListPagination";
 import { RequiredFieldError, useRequiredFieldValidation } from "@/hooks/useRequiredFieldValidation";
 import { createRuleResource, deleteRuleResource, getRule, listNamespaces, listRuleEndpoints, listRules, updateRuleResource } from "@/api/services/resources";
-import { getRuleAudit, getRuleDelivery, getRuleEvents } from "@/api/services/product";
+import { getEdgeUnitResources, getRuleAudit, getRuleDelivery, getRuleEvents } from "@/api/services/product";
 import type { ClusterEvent, RuleAuditResponse, RuleDeliverySummary } from "@/api/services/product";
 import { useNamespaceOptions } from "@/hooks/useNamespaceOptions";
 import type { KubeResource, RuleEndpointView, RuleView } from "@/types/kubeedge";
 import { copyToClipboard } from "@/lib/clipboard";
 import { cn } from "@/lib/utils";
+import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 
 type EndpointKind = "rest" | "eventbus" | "servicebus";
 type RouteTab = "delivery" | "events" | "audit";
@@ -194,14 +195,15 @@ function validName(name: string) {
 
 function buildResource(type: EndpointKind, role: "source" | "target", value: string, nodeName: string): Record<string, string> {
   const trimmed = value.trim();
+  const sourceNode: Record<string, string> = role === "source" && nodeName.trim() ? { node_name: nodeName.trim() } : {};
   if (type === "eventbus") {
     return {
-      ...(role === "source" && nodeName.trim() ? { node_name: nodeName.trim() } : {}),
+      ...sourceNode,
       ...(trimmed ? { topic: trimmed } : {}),
     };
   }
-  if (type === "rest") return trimmed ? { [role === "source" ? "path" : "resource"]: trimmed } : {};
-  return trimmed ? { path: trimmed } : {};
+  if (type === "rest") return { ...sourceNode, ...(trimmed ? { [role === "source" ? "path" : "resource"]: trimmed } : {}) };
+  return { ...sourceNode, ...(trimmed ? { path: trimmed } : {}) };
 }
 
 function buildRuleResource(form: RouteForm, source?: RuleEndpointView, target?: RuleEndpointView, current?: MessageRouteRow): KubeResource {
@@ -277,6 +279,7 @@ const emptyForm: RouteForm = {
 
 export function Rules() {
   const { selectedNamespace } = useNamespace();
+  const { selectedEdgeUnitName } = useEdgeUnits();
   const namespaces = useNamespaceOptions();
   const [refreshedNamespaces, setRefreshedNamespaces] = useState<Array<{ value: string; label: string }> | null>(null);
   const namespaceItems = useMemo(
@@ -285,6 +288,7 @@ export function Rules() {
   );
   const [routes, setRoutes] = useState<MessageRouteRow[]>([]);
   const [endpoints, setEndpoints] = useState<RuleEndpointView[]>([]);
+  const [edgeUnitNodeNames, setEdgeUnitNodeNames] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -310,20 +314,27 @@ export function Rules() {
     else setIsLoading(true);
     setError("");
     try {
-      const [ruleItems, endpointItems] = await Promise.all([listRules(), listRuleEndpoints()]);
+      const [ruleItems, endpointItems, edgeUnitScope] = await Promise.all([
+        listRules(),
+        listRuleEndpoints(),
+        selectedEdgeUnitName ? getEdgeUnitResources(selectedEdgeUnitName).catch(() => null) : Promise.resolve(null),
+      ]);
       setEndpoints(endpointItems);
+      const nodeNames = Array.from(new Set(edgeUnitScope?.item.nodeNames || [])).sort();
+      setEdgeUnitNodeNames(nodeNames);
       setRoutes(ruleItems.map(toRouteRow));
     } catch (err) {
       setError(err instanceof Error ? err.message : "消息路由数据加载失败");
       if (!preserveData) {
         setEndpoints([]);
+        setEdgeUnitNodeNames([]);
         setRoutes([]);
       }
     } finally {
       if (preserveData) setIsRefreshing(false);
       else setIsLoading(false);
     }
-  }, []);
+  }, [selectedEdgeUnitName]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadData(), 0);
@@ -359,6 +370,8 @@ export function Rules() {
     return items.filter((endpoint) => sourceTargetAllowed(sourceEndpoint.type, endpoint.type));
   }, [endpoints, form.namespace, form.targetSearch, sourceEndpoint]);
   const validDirection = sourceEndpoint && targetEndpoint ? sourceTargetAllowed(sourceEndpoint.type, targetEndpoint.type) : false;
+  const sourceIsEventBus = sourceEndpoint ? normalizeEndpointType(sourceEndpoint.type) === "eventbus" : false;
+  const effectiveNodeName = sourceIsEventBus ? form.sourceNodeName : "";
   const canSave =
     validName(form.name.trim()) &&
     Boolean(
@@ -366,6 +379,7 @@ export function Rules() {
         form.source &&
         form.target &&
         validDirection &&
+        (!sourceIsEventBus || effectiveNodeName.trim()) &&
         (editing || (form.sourceResource.trim() && form.targetResource.trim())),
     );
 
@@ -433,8 +447,12 @@ export function Rules() {
   const saveRoute = async () => {
     const source = findEndpoint(endpoints, form.namespace, form.source);
     const target = findEndpoint(endpoints, form.namespace, form.target);
+    if (sourceIsEventBus && !effectiveNodeName.trim()) {
+      setError(edgeUnitNodeNames.length > 0 ? "请选择源端点资源中的边缘节点" : selectedEdgeUnitName ? `边缘单元 ${selectedEdgeUnitName} 没有关联可用节点` : "请先选择边缘单元");
+      return;
+    }
     if (!source || !target || !canSave) return;
-    const resource = buildRuleResource(form, source, target, editing || undefined);
+    const resource = buildRuleResource({ ...form, sourceNodeName: effectiveNodeName }, source, target, editing || undefined);
     setIsLoading(true);
     setError("");
     setNotice("");
@@ -543,6 +561,7 @@ export function Rules() {
           targetOptions={targetOptions}
           sourceEndpoint={sourceEndpoint}
           targetEndpoint={targetEndpoint}
+          edgeUnitNodeNames={edgeUnitNodeNames}
           refreshingNamespaces={refreshingNamespaces}
           onOpenChange={(open) => {
             setCreateOpen(open);
@@ -677,6 +696,7 @@ export function Rules() {
         targetOptions={targetOptions}
         sourceEndpoint={sourceEndpoint}
         targetEndpoint={targetEndpoint}
+        edgeUnitNodeNames={edgeUnitNodeNames}
         refreshingNamespaces={refreshingNamespaces}
         onOpenChange={(open) => {
           setCreateOpen(open);
@@ -737,6 +757,7 @@ function CreateRouteDialog({
   targetOptions,
   sourceEndpoint,
   targetEndpoint,
+  edgeUnitNodeNames,
   refreshingNamespaces,
   onOpenChange,
   onChange,
@@ -751,6 +772,7 @@ function CreateRouteDialog({
   targetOptions: RuleEndpointView[];
   sourceEndpoint?: RuleEndpointView;
   targetEndpoint?: RuleEndpointView;
+  edgeUnitNodeNames: string[];
   refreshingNamespaces: boolean;
   onOpenChange: (open: boolean) => void;
   onChange: (form: RouteForm) => void;
@@ -758,7 +780,7 @@ function CreateRouteDialog({
   onSave: () => void;
 }) {
   const [showHelp, setShowHelp] = useState(true);
-  const validation = useRequiredFieldValidation<"name" | "namespace" | "source" | "sourceResource" | "target" | "targetResource">();
+  const validation = useRequiredFieldValidation<"name" | "namespace" | "source" | "sourceResource" | "sourceNodeName" | "target" | "targetResource">();
   const submit = () => {
     const directionValid = Boolean(sourceEndpoint && targetEndpoint && sourceTargetAllowed(sourceEndpoint.type, targetEndpoint.type));
     if (!validation.validate([
@@ -766,6 +788,7 @@ function CreateRouteDialog({
       { field: "namespace", valid: Boolean(form.namespace), message: "请选择命名空间", elementId: "message-route-namespace" },
       { field: "source", valid: Boolean(form.source) && directionValid, message: form.source && !directionValid ? "当前源端点与目的端点组合不受支持" : "请选择源端点", elementId: "message-route-source" },
       { field: "sourceResource", valid: Boolean(editing || form.sourceResource.trim()), message: "请输入源端点资源", elementId: "message-route-source-resource" },
+      { field: "sourceNodeName", valid: !sourceEndpoint || normalizeEndpointType(sourceEndpoint.type) !== "eventbus" || Boolean(form.sourceNodeName.trim()), message: "请选择边缘节点", elementId: "message-route-source-node" },
       { field: "target", valid: Boolean(form.target) && directionValid, message: form.target && !directionValid ? "当前源端点与目的端点组合不受支持" : "请选择目的端点", elementId: "message-route-target" },
       { field: "targetResource", valid: Boolean(editing || form.targetResource.trim()), message: "请输入目的端点资源", elementId: "message-route-target-resource" },
     ])) return;
@@ -833,11 +856,43 @@ function CreateRouteDialog({
                 selectPlaceholder="请选择源端点"
                 options={sourceOptions}
                 onSearchChange={(value) => onChange({ ...form, sourceSearch: value })}
-                onSelectChange={(value) => { onChange({ ...form, source: value, target: "", targetResource: "" }); validation.clearError("source"); validation.clearError("target"); }}
+                onSelectChange={(value) => { onChange({ ...form, source: value, sourceSearch: "", sourceNodeName: "", target: "", targetSearch: "", targetResource: "" }); validation.clearError("source"); validation.clearError("sourceNodeName"); validation.clearError("target"); }}
                 id="message-route-source"
                 error={validation.errors.source}
               />
-              {!editing && <RouteTextField id="message-route-source-resource" label="源端点资源" required value={form.sourceResource} onChange={(value) => { onChange({ ...form, sourceResource: value }); validation.clearError("sourceResource"); }} placeholder={resourcePlaceholder(sourceEndpoint, "source")} error={validation.errors.sourceResource} />}
+              {!editing && sourceEndpoint && normalizeEndpointType(sourceEndpoint.type) === "eventbus" ? (
+                <div>
+                  <RouteLabel required>源端点资源</RouteLabel>
+                  <div className="flex gap-2">
+                    <div className="relative w-[42%] shrink-0">
+                      <select
+                        id="message-route-source-node"
+                        value={form.sourceNodeName}
+                        onChange={(event) => { onChange({ ...form, sourceNodeName: event.target.value }); validation.clearError("sourceNodeName"); }}
+                        aria-invalid={Boolean(validation.errors.sourceNodeName)}
+                        className="h-9 w-full appearance-none rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 pr-9 text-sm outline-none focus:border-[var(--color-brand)]"
+                      >
+                        <option value="">请选择节点</option>
+                        {edgeUnitNodeNames.map((name) => <option key={name} value={name}>{name}</option>)}
+                      </select>
+                      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+                    </div>
+                    <Input
+                      id="message-route-source-resource"
+                      value={form.sourceResource}
+                      onChange={(event) => { onChange({ ...form, sourceResource: event.target.value }); validation.clearError("sourceResource"); }}
+                      placeholder="请输入 EventBus Topic"
+                      aria-invalid={Boolean(validation.errors.sourceResource)}
+                      className="h-9 min-w-0 flex-1 rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 text-sm"
+                    />
+                  </div>
+                  <RequiredFieldError id="message-route-source-node-error" message={validation.errors.sourceNodeName} />
+                  <RequiredFieldError id="message-route-source-resource-error" message={validation.errors.sourceResource} />
+                  {edgeUnitNodeNames.length === 0 && <p className="mt-1.5 text-xs text-[var(--color-danger)]">当前边缘单元没有关联可用节点。</p>}
+                </div>
+              ) : !editing ? (
+                <RouteTextField id="message-route-source-resource" label="源端点资源" required value={form.sourceResource} onChange={(value) => { onChange({ ...form, sourceResource: value }); validation.clearError("sourceResource"); }} placeholder={resourcePlaceholder(sourceEndpoint, "source")} error={validation.errors.sourceResource} />
+              ) : null}
 
               <EndpointPicker
                 label="目的端点"
@@ -849,7 +904,7 @@ function CreateRouteDialog({
                 selectPlaceholder="请选择目的端点"
                 options={targetOptions}
                 onSearchChange={(value) => onChange({ ...form, targetSearch: value })}
-                onSelectChange={(value) => { onChange({ ...form, target: value }); validation.clearError("target"); }}
+                onSelectChange={(value) => { onChange({ ...form, target: value, targetSearch: "" }); validation.clearError("target"); }}
                 id="message-route-target"
                 error={validation.errors.target}
               />
@@ -940,20 +995,61 @@ function EndpointPicker({
   id?: string;
   error?: string;
 }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const selectedEndpoint = options.find((endpoint) => endpoint.name === selectValue);
+
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", closeOnOutsideClick);
+    return () => document.removeEventListener("mousedown", closeOnOutsideClick);
+  }, [open]);
+
   return (
     <div>
       <RouteLabel required={required}>{label}</RouteLabel>
-      {showSearch && <Input value={searchValue} onChange={(event) => onSearchChange(event.target.value)} placeholder={searchPlaceholder} className="mb-2 h-9 rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 text-sm" />}
-      <div className="relative">
-        <select id={id} value={selectValue} onChange={(event) => onSelectChange(event.target.value)} aria-invalid={Boolean(error)} className="h-9 w-full appearance-none rounded-[10px] border-2 border-[var(--color-input-border)] bg-white px-4 pr-9 text-sm text-[var(--color-text-primary)] outline-none focus:border-[var(--color-brand)]">
-          <option value="">{selectPlaceholder}</option>
-          {options.map((endpoint) => (
-            <option key={`${endpoint.namespace}-${endpoint.name}`} value={endpoint.name}>
-              {endpoint.name}    {endpointTagText(endpoint)}
-            </option>
-          ))}
-        </select>
-        <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+      <div ref={containerRef} className="relative">
+        <button
+          id={id}
+          type="button"
+          onClick={() => setOpen((current) => !current)}
+          aria-expanded={open}
+          aria-invalid={Boolean(error)}
+          className={cn("flex h-9 w-full items-center rounded-[10px] border-2 bg-white px-4 pr-9 text-left text-sm outline-none", error ? "border-[var(--color-danger)]" : "border-[var(--color-input-border)]", open && "border-[var(--color-brand)]")}
+        >
+          {selectedEndpoint ? (
+            <><span className="min-w-0 flex-1 truncate text-[var(--color-text-primary)]">{selectedEndpoint.name}</span><EndpointTag type={selectedEndpoint.type} /></>
+          ) : (
+            <span className="text-[var(--color-text-tertiary)]">{selectPlaceholder}</span>
+          )}
+        </button>
+        <ChevronDown className={cn("pointer-events-none absolute right-3 top-[18px] h-3.5 w-3.5 -translate-y-1/2 text-[var(--color-text-tertiary)] transition-transform", open && "rotate-180")} />
+        {open && (
+          <div className="absolute left-0 right-0 top-[calc(100%+8px)] z-[120] rounded-xl border border-[var(--color-border)] bg-white p-2 shadow-[0_14px_36px_rgba(15,23,42,0.16)]">
+            {showSearch && (
+              <div className="relative mb-2">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--color-text-tertiary)]" />
+                <Input autoFocus value={searchValue} onChange={(event) => onSearchChange(event.target.value)} placeholder={searchPlaceholder} className="h-9 rounded-[10px] border-2 border-[var(--color-input-border)] bg-white pl-9 pr-3 text-sm" />
+              </div>
+            )}
+            <div className="max-h-48 overflow-y-auto">
+              {options.length === 0 ? <p className="px-3 py-5 text-center text-xs text-[var(--color-text-tertiary)]">没有匹配的端点</p> : options.map((endpoint) => (
+                <button
+                  key={`${endpoint.namespace}-${endpoint.name}`}
+                  type="button"
+                  onClick={() => { onSelectChange(endpoint.name); setOpen(false); }}
+                  className={cn("flex h-10 w-full items-center rounded-lg px-3 text-left text-sm hover:bg-[var(--color-bg-hover)]", endpoint.name === selectValue && "bg-[var(--color-brand-light)] text-[var(--color-brand)]")}
+                >
+                  <span className="min-w-0 flex-1 truncate">{endpoint.name}</span>
+                  <EndpointTag type={endpoint.type} />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
       <RequiredFieldError id={id ? `${id}-error` : undefined} message={error} />
     </div>
