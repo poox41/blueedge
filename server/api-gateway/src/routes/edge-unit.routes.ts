@@ -1,20 +1,37 @@
 import type express from "express";
 import {
-  createEdgeUnit,
   createEdgeUnitDeployment,
-  deleteEdgeUnit,
+  enableEdgeUnitIncrementalSync,
   getEdgeUnit,
   getEdgeUnitResources,
   listEdgeUnits,
   updateEdgeUnit,
   updateEdgeUnitDeployment,
 } from "../services/edge-unit.service.js";
+import { getIncrementalSyncStatus } from "../services/cloudcore-sync.service.js";
+import { getEdgeUnitOperation, startCreateEdgeUnit, startDeleteEdgeUnit } from "../services/edge-unit-operation.service.js";
 
 function sendServiceResult(res: express.Response, result: { status: number; body: any }) {
   res.status(result.status).json(result.body);
 }
 
 export function registerEdgeUnitRoutes(app: express.Express) {
+  app.get("/blueedge/cloudcore/incremental-sync", async (_req, res) => {
+    try {
+      res.json({ item: await getIncrementalSyncStatus() });
+    } catch (error) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "增量同步状态读取失败" });
+    }
+  });
+
+  app.put("/blueedge/edge-units/:name/incremental-sync", async (req, res) => {
+    try {
+      sendServiceResult(res, await enableEdgeUnitIncrementalSync(req.params.name));
+    } catch (error) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "增量同步启用失败" });
+    }
+  });
+
   app.get("/blueedge/edge-units", async (_req, res) => {
     try {
       res.json(await listEdgeUnits());
@@ -25,9 +42,17 @@ export function registerEdgeUnitRoutes(app: express.Express) {
 
   app.post("/blueedge/edge-units", async (req, res) => {
     try {
-      sendServiceResult(res, await createEdgeUnit(req.body));
+      sendServiceResult(res, await startCreateEdgeUnit(req.body));
     } catch (error) {
       res.status(500).json({ message: error instanceof Error ? error.message : "edge unit create API is unavailable" });
+    }
+  });
+
+  app.get("/blueedge/edge-unit-operations/:id", async (req, res) => {
+    try {
+      sendServiceResult(res, await getEdgeUnitOperation(req.params.id));
+    } catch (error) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "edge unit operation API is unavailable" });
     }
   });
 
@@ -73,7 +98,7 @@ export function registerEdgeUnitRoutes(app: express.Express) {
 
   app.delete("/blueedge/edge-units/:name", async (req, res) => {
     try {
-      sendServiceResult(res, await deleteEdgeUnit(req.params.name));
+      sendServiceResult(res, await startDeleteEdgeUnit(req.params.name));
     } catch (error) {
       res.status(500).json({ message: error instanceof Error ? error.message : "edge unit delete API is unavailable" });
     }

@@ -163,10 +163,14 @@ type WorkloadForm = {
   containerName: string;
   image: string;
   pullPolicy: "IfNotPresent" | "Always" | "Never";
+  imagePullSecret: string;
   cpuRequest: string;
   cpuLimit: string;
   memoryRequest: string;
   memoryLimit: string;
+  gpuEnabled: boolean;
+  gpuResourceName: string;
+  gpuCount: string;
   privileged: boolean;
   port: string;
   lifecyclePostStart: string;
@@ -193,7 +197,10 @@ type WorkloadForm = {
   maxSurge: string;
   maxUnavailable: string;
   partition: string;
+  revisionHistoryLimit: string;
+  minReadySeconds: string;
   timeoutSeconds: string;
+  terminationGracePeriodSeconds: string;
 };
 
 type KeyValueDraft = {
@@ -215,10 +222,14 @@ type ContainerDraft = {
   name: string;
   image: string;
   pullPolicy: WorkloadForm["pullPolicy"];
+  imagePullSecret: string;
   cpuRequest: string;
   cpuLimit: string;
   memoryRequest: string;
   memoryLimit: string;
+  gpuEnabled: boolean;
+  gpuResourceName: string;
+  gpuCount: string;
   privileged: boolean;
   lifecyclePostStart: string;
   lifecyclePreStop: string;
@@ -238,10 +249,14 @@ const createContainerDraft = (index: number): ContainerDraft => ({
   name: "",
   image: "",
   pullPolicy: "IfNotPresent",
+  imagePullSecret: "",
   cpuRequest: "",
   cpuLimit: "",
   memoryRequest: "",
   memoryLimit: "",
+  gpuEnabled: false,
+  gpuResourceName: "nvidia.com/gpu",
+  gpuCount: "1",
   privileged: false,
   lifecyclePostStart: "",
   lifecyclePreStop: "",
@@ -265,10 +280,14 @@ const defaultForm: WorkloadForm = {
   containerName: "",
   image: "",
   pullPolicy: "IfNotPresent",
+  imagePullSecret: "",
   cpuRequest: "",
   cpuLimit: "",
   memoryRequest: "",
   memoryLimit: "",
+  gpuEnabled: false,
+  gpuResourceName: "nvidia.com/gpu",
+  gpuCount: "1",
   privileged: false,
   port: "80",
   lifecyclePostStart: "",
@@ -295,7 +314,10 @@ const defaultForm: WorkloadForm = {
   maxSurge: "25%",
   maxUnavailable: "25%",
   partition: "0",
+  revisionHistoryLimit: "10",
+  minReadySeconds: "0",
   timeoutSeconds: "600",
+  terminationGracePeriodSeconds: "30",
 };
 
 const wizardLocationForDetailTab = (tab: WorkloadDetailTab): WorkloadWizardLocation | null => {
@@ -685,6 +707,12 @@ const buildDeploymentResource = (form: WorkloadForm): KubeResource => {
       ...(form.memoryLimit ? { memory: form.memoryLimit } : {}),
     };
   }
+  if (form.gpuEnabled && form.gpuResourceName.trim()) {
+    const gpuResourceName = form.gpuResourceName.trim();
+    const gpuCount = String(Math.max(1, Math.floor(Number(form.gpuCount) || 1)));
+    resources.requests = { ...(resources.requests || {}), [gpuResourceName]: gpuCount };
+    resources.limits = { ...(resources.limits || {}), [gpuResourceName]: gpuCount };
+  }
   if (Object.keys(resources).length) container.resources = resources;
   if (form.privileged || form.runAsUser || form.runAsGroup || form.readOnlyRootFilesystem || form.allowPrivilegeEscalation) {
     container.securityContext = {
@@ -696,6 +724,12 @@ const buildDeploymentResource = (form: WorkloadForm): KubeResource => {
     };
   }
   const podSpec: Record<string, any> = { containers: [container] };
+  const imagePullSecrets = form.imagePullSecret.split(",").map((name) => name.trim()).filter(Boolean);
+  if (imagePullSecrets.length > 0) podSpec.imagePullSecrets = imagePullSecrets.map((name) => ({ name }));
+  const terminationGracePeriodSeconds = Number(form.terminationGracePeriodSeconds);
+  if (Number.isFinite(terminationGracePeriodSeconds) && terminationGracePeriodSeconds >= 0) {
+    podSpec.terminationGracePeriodSeconds = terminationGracePeriodSeconds;
+  }
   if (form.networkType === "hostNetwork") {
     podSpec.hostNetwork = true;
     podSpec.dnsPolicy = "ClusterFirstWithHostNet";
@@ -750,6 +784,8 @@ const buildDeploymentResource = (form: WorkloadForm): KubeResource => {
           },
         } : {}),
       },
+      revisionHistoryLimit: Math.max(0, Number(form.revisionHistoryLimit) || 0),
+      minReadySeconds: Math.max(0, Number(form.minReadySeconds) || 0),
       progressDeadlineSeconds: Number(form.timeoutSeconds) || 600,
       template: {
         metadata: { labels: podLabels },
@@ -769,6 +805,10 @@ const workloadWizardValues = (item: Workload): { form: WorkloadForm; containers:
   const template = asRecord(spec.template);
   const templateMetadata = asRecord(template.metadata);
   const podSpec = asRecord(template.spec);
+  const imagePullSecret = asRecordArray(podSpec.imagePullSecrets)
+    .map((secret) => configuredValue(secret.name))
+    .filter((name) => name !== "未配置")
+    .join(", ");
   const nodeSelector = asStringRecord(podSpec.nodeSelector);
   const rawContainers = asRecordArray(podSpec.containers);
   const firstPort = asRecord(asRecordArray(rawContainers[0]?.ports)[0]);
@@ -784,6 +824,10 @@ const workloadWizardValues = (item: Workload): { form: WorkloadForm; containers:
     const resources = asRecord(rawContainer.resources);
     const requests = asRecord(resources.requests);
     const limits = asRecord(resources.limits);
+    const gpuResourceName = Object.keys(limits).find((key) => key.includes("gpu"))
+      || Object.keys(requests).find((key) => key.includes("gpu"))
+      || "nvidia.com/gpu";
+    const gpuValue = limits[gpuResourceName] ?? requests[gpuResourceName];
     const securityContext = asRecord(rawContainer.securityContext);
     const envs = asRecordArray(rawContainer.env).map((entry, envIndex) => ({
       id: `env-edit-${index}-${envIndex}`,
@@ -796,10 +840,14 @@ const workloadWizardValues = (item: Workload): { form: WorkloadForm; containers:
       name: configuredValue(rawContainer.name) === "未配置" ? "" : configuredValue(rawContainer.name),
       image: configuredValue(rawContainer.image) === "未配置" ? "" : configuredValue(rawContainer.image),
       pullPolicy: (["Always", "Never", "IfNotPresent"].includes(String(rawContainer.imagePullPolicy)) ? rawContainer.imagePullPolicy : "IfNotPresent") as WorkloadForm["pullPolicy"],
+      imagePullSecret,
       cpuRequest: configuredValue(requests.cpu) === "未配置" ? "" : configuredValue(requests.cpu),
       cpuLimit: configuredValue(limits.cpu) === "未配置" ? "" : configuredValue(limits.cpu),
       memoryRequest: configuredValue(requests.memory) === "未配置" ? "" : configuredValue(requests.memory),
       memoryLimit: configuredValue(limits.memory) === "未配置" ? "" : configuredValue(limits.memory),
+      gpuEnabled: gpuValue !== undefined,
+      gpuResourceName,
+      gpuCount: gpuValue === undefined ? "1" : String(gpuValue),
       privileged: securityContext.privileged === true,
       startupProbe: Boolean(rawContainer.startupProbe),
       readinessProbe: Boolean(rawContainer.readinessProbe),
@@ -823,10 +871,14 @@ const workloadWizardValues = (item: Workload): { form: WorkloadForm; containers:
       containerName: containers[0].name,
       image: containers[0].image,
       pullPolicy: containers[0].pullPolicy,
+      imagePullSecret,
       cpuRequest: containers[0].cpuRequest,
       cpuLimit: containers[0].cpuLimit,
       memoryRequest: containers[0].memoryRequest,
       memoryLimit: containers[0].memoryLimit,
+      gpuEnabled: containers[0].gpuEnabled,
+      gpuResourceName: containers[0].gpuResourceName,
+      gpuCount: containers[0].gpuCount,
       privileged: containers[0].privileged,
       port: firstPort.containerPort ? String(firstPort.containerPort) : "",
       schedulingMode,
@@ -842,7 +894,10 @@ const workloadWizardValues = (item: Workload): { form: WorkloadForm; containers:
       strategy: strategy.type === "Recreate" ? "Recreate" : "RollingUpdate",
       maxSurge: configuredValue(rollingUpdate.maxSurge) === "未配置" ? "25%" : configuredValue(rollingUpdate.maxSurge),
       maxUnavailable: configuredValue(rollingUpdate.maxUnavailable) === "未配置" ? "25%" : configuredValue(rollingUpdate.maxUnavailable),
+      revisionHistoryLimit: spec.revisionHistoryLimit === undefined ? "10" : String(spec.revisionHistoryLimit),
+      minReadySeconds: spec.minReadySeconds === undefined ? "0" : String(spec.minReadySeconds),
       timeoutSeconds: spec.progressDeadlineSeconds ? String(spec.progressDeadlineSeconds) : "600",
+      terminationGracePeriodSeconds: podSpec.terminationGracePeriodSeconds === undefined ? "30" : String(podSpec.terminationGracePeriodSeconds),
     },
     containers,
   };
@@ -1120,7 +1175,10 @@ export function Deployments() {
   const handleMenuAction = (action: WorkloadMenuAction, item: Workload) => {
     setMenuOpenId(null);
     if (action === "update") {
-      setActionPanel({ type: action, item });
+      setActionPanel(null);
+      setWizardEditTarget(item);
+      setWizardLocation({ step: 0 });
+      setWizardOpen(true);
       return;
     }
     setActionPanel({ type: action, item });
@@ -3091,6 +3149,7 @@ function CreateWorkloadWizard({
     if (Number(form.replicas) < 1) next.replicas = "实例数必须大于 0";
     if (step >= 1 && containers.some((container) => !container.image.trim())) next.image = "请输入镜像地址";
     if (step >= 1 && containers.some((container) => !container.name.trim())) next.containerName = "请输入容器名称";
+    if (step >= 1 && containers.some((container) => container.gpuEnabled && (!container.gpuResourceName.trim() || !Number.isInteger(Number(container.gpuCount)) || Number(container.gpuCount) < 1))) next.gpu = "请填写有效的 GPU 资源名称和数量";
     if (step >= 2 && form.schedulingMode === "nodeName" && !form.nodeSelectorValue.trim()) next.scheduling = "请选择边缘节点";
     if (step >= 2 && form.schedulingMode === "nodeSelector" && !form.nodeSelectors.some((item) => item.key.trim() && item.value.trim())) next.scheduling = "请填写节点标签选择器";
     setErrors(next);
@@ -3129,10 +3188,14 @@ function CreateWorkloadWizard({
       containerName: primaryContainer.name,
       image: primaryContainer.image,
       pullPolicy: primaryContainer.pullPolicy,
+      imagePullSecret: primaryContainer.imagePullSecret,
       cpuRequest: primaryContainer.cpuRequest,
       cpuLimit: primaryContainer.cpuLimit,
       memoryRequest: primaryContainer.memoryRequest,
       memoryLimit: primaryContainer.memoryLimit,
+      gpuEnabled: primaryContainer.gpuEnabled,
+      gpuResourceName: primaryContainer.gpuResourceName,
+      gpuCount: primaryContainer.gpuCount,
       privileged: primaryContainer.privileged,
       lifecyclePostStart: primaryContainer.lifecyclePostStart,
       lifecyclePreStop: primaryContainer.lifecyclePreStop,
@@ -3165,7 +3228,7 @@ function CreateWorkloadWizard({
       <DialogContent className="!flex max-h-[min(800px,calc(100vh-48px))] w-[min(600px,calc(100vw-48px))] max-w-none flex-col gap-0 overflow-hidden rounded-[24px] p-0 shadow-[0_24px_60px_rgba(16,24,40,0.18)] sm:max-w-[600px]" showCloseButton={false}>
         <DialogHeader className="h-14 shrink-0 border-b border-[#f0f1f3] px-6 py-0">
           <div className="flex h-full items-center justify-between">
-            <DialogTitle className="text-base font-semibold text-[#111827]">{editItem ? "编辑工作负载" : "创建工作负载"}</DialogTitle>
+            <DialogTitle className="text-base font-semibold text-[#111827]">{editItem ? `更新 ${editItem.name}` : "创建工作负载"}</DialogTitle>
             <button type="button" onClick={close} className="flex h-9 w-9 items-center justify-center rounded-xl border border-[#e5e7eb] text-[#64748b] hover:bg-[#f8fafc]">
               <X className="h-[18px] w-[18px]" />
             </button>
@@ -3424,6 +3487,9 @@ function ContainerStep({ containers, setContainers, activeIndex, setActiveIndex,
               特权容器
             </label>
           </div>
+          <CreateField label="镜像仓库 Secret" compact>
+            <Input value={container.imagePullSecret} onChange={(event) => updateContainer({ imagePullSecret: event.target.value })} placeholder="多个 Secret 使用英文逗号分隔" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+          </CreateField>
         </div>
       </Accordion>
       <Accordion title="资源配置" defaultOpen>
@@ -3443,6 +3509,26 @@ function ContainerStep({ containers, setContainers, activeIndex, setActiveIndex,
             <CreateField label="内存限制 (limit)" compact>
               <Input value={container.memoryLimit} onChange={(event) => updateContainer({ memoryLimit: event.target.value })} placeholder="512Mi" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
             </CreateField>
+          </div>
+          <div className="rounded-xl border border-[#e5e7eb] bg-[#fafbfc] p-4">
+            <label className="flex items-center gap-3 text-sm font-medium text-[#111827]">
+              <input type="checkbox" checked={container.gpuEnabled} onChange={(event) => { updateContainer({ gpuEnabled: event.target.checked }); clearError("gpu"); }} className="h-4 w-4 rounded border-[#9ca3af] accent-[#1a73e8]" />
+              GPU 配额
+              <span className="text-xs font-normal text-[var(--color-text-tertiary)]">{container.gpuEnabled ? "已启用" : "未启用"}</span>
+            </label>
+            {container.gpuEnabled && (
+              <div className="mt-4 space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <CreateField label="设备资源名称" required compact>
+                    <Input value={container.gpuResourceName} onChange={(event) => { updateContainer({ gpuResourceName: event.target.value }); clearError("gpu"); }} placeholder="如 nvidia.com/gpu" className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                  </CreateField>
+                  <CreateField label="GPU 数量" required error={errors.gpu} compact>
+                    <Input type="number" min={1} value={container.gpuCount} onChange={(event) => { updateContainer({ gpuCount: event.target.value }); clearError("gpu"); }} className="h-10 rounded-[10px] border-2 border-[#e2e8f0] px-3 text-sm shadow-sm focus-visible:ring-0" />
+                  </CreateField>
+                </div>
+              </div>
+            )}
+            <p className="mt-4 rounded-lg border border-[#fde68a] bg-[#fffbeb] px-3 py-2 text-xs leading-5 text-[#92400e]">集群未启用 GPU 卡时，工作负载无法申请 GPU 配额；如需使用 GPU 算力，请先在目标边缘节点安装设备插件并确认已上报对应扩展资源。</p>
           </div>
         </div>
       </Accordion>
@@ -3689,35 +3775,37 @@ function AdvancedStep({ form, setForm, edgeNodes, nodeLoadError, schedulingError
           )}
         </section>
       )}
-      {activeTab === 3 && <section className="space-y-3">
-        <h3 className="text-sm font-medium text-[#111827]">升级策略</h3>
-        <div className="flex gap-5">
-          {([
-            ["RollingUpdate", "滚动更新"],
-            ["Recreate", "重建"],
-          ] as const).map(([value, label]) => (
-            <label key={value} className="flex cursor-pointer items-center gap-2 text-sm text-[#111827]">
-              <input type="radio" checked={form.strategy === value} onChange={() => setForm({ ...form, strategy: value })} className="h-4 w-4" />
-              {label}
-            </label>
-          ))}
-        </div>
+      {activeTab === 3 && <section className="mx-auto max-w-[720px] space-y-5 py-2">
+        <CreateField label="升级方式" compact>
+          <select value={form.strategy} onChange={(event) => setForm({ ...form, strategy: event.target.value as WorkloadForm["strategy"] })} className="blueedge-native-select h-10 w-full rounded-[10px] border-2 text-sm">
+            <option value="RollingUpdate">滚动升级 (RollingUpdate)</option>
+            <option value="Recreate">重建升级 (Recreate)</option>
+          </select>
+        </CreateField>
         {form.strategy === "RollingUpdate" && (
-          <div className="grid grid-cols-2 gap-3 pt-2">
-            <CreateField label="最大峰值 (Max Surge)" compact>
-              <Input value={form.maxSurge} onChange={(event) => setForm({ ...form, maxSurge: event.target.value })} className="h-10 rounded-[10px]" />
+          <div className="space-y-5">
+            <CreateField label="最大无效 Pod 数" required compact help="滚动升级最大无效 Pod 数（最小可用 Pod 数 = 期望 Pod 数 - 最大无效 Pod 数）">
+              <IntOrPercentControl value={form.maxUnavailable} onChange={(maxUnavailable) => setForm({ ...form, maxUnavailable })} />
             </CreateField>
-            <CreateField label="最大不可用 (Max Unavailable)" compact>
-              <Input value={form.maxUnavailable} onChange={(event) => setForm({ ...form, maxUnavailable: event.target.value })} className="h-10 rounded-[10px]" />
-            </CreateField>
-            <CreateField label="分区 (Partition)" compact>
-              <Input value={form.partition} onChange={(event) => setForm({ ...form, partition: event.target.value })} className="h-10 rounded-[10px]" />
-            </CreateField>
-            <CreateField label="超时时间 (秒)" compact>
-              <Input value={form.timeoutSeconds} onChange={(event) => setForm({ ...form, timeoutSeconds: event.target.value })} className="h-10 rounded-[10px]" />
+            <CreateField label="最大浪涌" required compact help="每次滚动升级允许超出所需规模的最大 Pod 数">
+              <IntOrPercentControl value={form.maxSurge} onChange={(maxSurge) => setForm({ ...form, maxSurge })} />
             </CreateField>
           </div>
         )}
+        <div className="space-y-5">
+          <CreateField label="最大保留版本数" compact help="用于回退的历史版本数量；设置为 0 时不保留历史版本">
+            <Input type="number" min={0} value={form.revisionHistoryLimit} onChange={(event) => setForm({ ...form, revisionHistoryLimit: event.target.value })} className="h-10 rounded-[10px]" />
+          </CreateField>
+          <CreateField label="Pod 可用最短时间" required compact help="Pod 就绪的最短时间，只有超过这个时间 Pod 才被认为可用">
+            <UnitInput value={form.minReadySeconds} min={0} unit="秒" onChange={(minReadySeconds) => setForm({ ...form, minReadySeconds })} />
+          </CreateField>
+          <CreateField label="升级最大持续时间" required compact help="在标记 Deployment 失败之前，等待部署进行的最小持续时间">
+            <UnitInput value={form.timeoutSeconds} min={0} unit="秒" onChange={(timeoutSeconds) => setForm({ ...form, timeoutSeconds })} />
+          </CreateField>
+          <CreateField label="缩容时间窗" required compact help="工作负载停止前命令的执行时间窗（0-9,999 秒），默认 30 秒">
+            <UnitInput value={form.terminationGracePeriodSeconds} min={0} max={9999} unit="秒" onChange={(terminationGracePeriodSeconds) => setForm({ ...form, terminationGracePeriodSeconds })} />
+          </CreateField>
+        </div>
       </section>}
     </div>
   );
@@ -3767,13 +3855,37 @@ function Accordion({ title, children, defaultOpen = false }: { title: string; ch
   );
 }
 
-function CreateField({ label, required, error, children, compact = false }: { label: string; required?: boolean; error?: string; children: ReactNode; compact?: boolean }) {
+function IntOrPercentControl({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const percent = value.trim().endsWith("%");
+  const numericValue = value.replace(/%$/, "");
+  return (
+    <div className="flex">
+      <Input type="number" min={0} value={numericValue} onChange={(event) => onChange(`${event.target.value}${percent ? "%" : ""}`)} className="h-10 rounded-r-none rounded-l-[10px]" />
+      <select value={percent ? "%" : "个"} onChange={(event) => onChange(`${numericValue}${event.target.value === "%" ? "%" : ""}`)} className="blueedge-native-select h-10 w-20 rounded-l-none rounded-r-[10px] border-l-0 text-sm">
+        <option value="%">%</option>
+        <option value="个">个</option>
+      </select>
+    </div>
+  );
+}
+
+function UnitInput({ value, unit, min, max, onChange }: { value: string; unit: string; min?: number; max?: number; onChange: (value: string) => void }) {
+  return (
+    <div className="flex">
+      <Input type="number" min={min} max={max} value={value} onChange={(event) => onChange(event.target.value)} className="h-10 rounded-r-none rounded-l-[10px]" />
+      <span className="flex h-10 w-16 items-center justify-center rounded-r-[10px] border border-l-0 border-[#e2e8f0] bg-[#f8fafc] text-sm text-[#64748b]">{unit}</span>
+    </div>
+  );
+}
+
+function CreateField({ label, required, error, help, children, compact = false }: { label: string; required?: boolean; error?: string; help?: string; children: ReactNode; compact?: boolean }) {
   return (
     <div>
       <Label className={cn("block font-medium text-[#111827]", compact ? "mb-1 text-xs text-[var(--color-text-secondary)]" : "mb-1.5 text-sm")}>
         {label} {required && <span className="text-[var(--color-danger)]">*</span>}
       </Label>
       {children}
+      {help && <p className="mt-1.5 text-xs leading-5 text-[var(--color-text-tertiary)]">{help}</p>}
       {error && <p className="mt-1 text-xs text-[var(--color-danger)]">{error}</p>}
     </div>
   );

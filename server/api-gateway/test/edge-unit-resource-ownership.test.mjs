@@ -8,6 +8,7 @@ import {
   cloudCoreRuntimeStatus,
   deploymentBelongsToEdgeUnit,
   deploymentTargetsEdgeUnit,
+  edgeUnitOwnsCloudCore,
   edgeApplicationBelongsToEdgeUnit,
   edgeApplicationTargetsEdgeUnit,
   findEdgeUnitClusterConflict,
@@ -15,6 +16,13 @@ import {
   nodeTargetsEdgeUnit,
 } from "../dist/services/edge-unit.service.js";
 import { knownEdgeUnitNames } from "../dist/services/edge-unit-source.service.js";
+
+test("only server-managed dedicated EdgeUnits own the CloudCore lifecycle", () => {
+  assert.equal(edgeUnitOwnsCloudCore({ accessType: "dedicated", managedCloudCore: "true" }), true);
+  assert.equal(edgeUnitOwnsCloudCore({ accessType: "dedicated", managedCloudCore: "false" }), false);
+  assert.equal(edgeUnitOwnsCloudCore({ accessType: "external", managedCloudCore: "true" }), false);
+  assert.equal(edgeUnitOwnsCloudCore({ accessType: "external" }), false);
+});
 
 test("EdgeUnit workload creation injects ownership without forcing NodeGroup scheduling", () => {
   const resource = bindDeploymentToEdgeUnit({

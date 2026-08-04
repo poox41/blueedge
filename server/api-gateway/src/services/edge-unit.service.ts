@@ -39,6 +39,8 @@ import {
   isValidEdgeUnitConfigMap,
 } from "./edge-unit-source.service.js";
 import { edgeApplicationTargetsOnlyMatchingNodes } from "./edge-application-placement.service.js";
+import { enableIncrementalSync, getIncrementalSyncStatus } from "./cloudcore-sync.service.js";
+import { cloudCoreAlreadyInstalled, installCloudCore, uninstallCloudCore } from "./cloudcore-installer.service.js";
 
 const edgeUnitAccessTypes = new Set(["external", "dedicated", "unknown"]);
 const edgeUnitComponentStates = new Set(["installed", "notInstalled", "unknown"]);
@@ -161,6 +163,9 @@ export function buildEdgeUnitConfigMapData(body: any, existingData?: Record<stri
     accessAddresses: readStringArrayConfig(body, "accessAddresses", existingData?.accessAddresses),
     ports: readPortsConfig(body, existingData?.ports),
     uninstallPolicy: readEnumConfig(body, "uninstallPolicy", edgeUnitUninstallPolicies, existingData?.uninstallPolicy),
+    // This is server-owned lifecycle state. Never allow clients to claim an
+    // externally installed CloudCore and later uninstall it through BlueEdge.
+    managedCloudCore: existingData?.managedCloudCore || "",
   };
 }
 
@@ -221,6 +226,10 @@ function normalizeComponentState(value: string): "installed" | "notInstalled" | 
   if (["installed", "true", "enabled", "已安装", "已启用"].includes(value)) return "installed";
   if (["notInstalled", "false", "disabled", "未安装", "未启用"].includes(value)) return "notInstalled";
   return "unknown";
+}
+
+export function edgeUnitOwnsCloudCore(data: Record<string, string>): boolean {
+  return normalizeAccessType(data.accessType || "unknown") === "dedicated" && data.managedCloudCore === "true";
 }
 
 export function deploymentTargetsEdgeUnit(deployment: any, edgeUnitName: string): boolean {
@@ -631,8 +640,16 @@ export async function listEdgeUnits() {
 
   const aux = await collectEdgeUnitAuxSources(warnings);
 
+  const incrementalSync = await getIncrementalSyncStatus().catch((error) => {
+    warnings.push({ source: "cloudcore.incrementalSync", message: error instanceof Error ? error.message : "增量同步状态读取失败" });
+    return undefined;
+  });
+
   return {
-    items: validEdgeUnitConfigMaps.map((configMap) => buildConfigMapEdgeUnitView(configMap, aux)),
+    items: validEdgeUnitConfigMaps.map((configMap) => ({
+      ...buildConfigMapEdgeUnitView(configMap, aux),
+      ...(incrementalSync ? { incrementalSync } : {}),
+    })),
     ...(warnings.length > 0 ? { warnings } : {}),
   };
 }
@@ -666,9 +683,34 @@ export async function createEdgeUnit(body: any) {
   if (clusterConflict) {
     return { status: 409, body: { message: `工作集群 ${data.clusterName} 已安装边缘单元 ${clusterConflict}，一个工作集群只能创建一个边缘单元`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
+  let installedCloudCore = false;
+  if (data.accessType === "dedicated") {
+    if (await cloudCoreAlreadyInstalled()) {
+      return { status: 409, body: { message: "目标集群已安装 CloudCore，不能按专有模式重复安装；如需纳管现有 CloudCore，请选择外接模式" } };
+    }
+    const configuration = buildEdgeUnitConfiguration(data);
+    try {
+      await installCloudCore({
+        version: data.kubeEdgeVersion,
+        accessAddresses: configuration.accessAddresses || [],
+        protocols: configuration.protocols || [],
+        mqttEnabled: configuration.mqttEnabled ?? false,
+        ports: configuration.ports as EdgeUnitPorts,
+      });
+      installedCloudCore = true;
+      configMap.data.managedCloudCore = "true";
+    } catch (error) {
+      return { status: 502, body: { message: error instanceof Error ? error.message : "CloudCore 安装失败" } };
+    }
+  }
   await ensureNamespace();
-  const created = await create(configMap);
-  return { status: 201, body: await buildConfigMapEdgeUnitResponse(created, warnings) };
+  try {
+    const created = await create(configMap);
+    return { status: 201, body: await buildConfigMapEdgeUnitResponse(created, warnings) };
+  } catch (error) {
+    if (installedCloudCore) await uninstallCloudCore(false).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function getEdgeUnit(name: string) {
@@ -696,6 +738,23 @@ export async function getEdgeUnit(name: string) {
   }
 
   return { status: 404, body: { message: `EdgeUnit ${name} not found`, ...(warnings.length > 0 ? { warnings } : {}) } };
+}
+
+export async function enableEdgeUnitIncrementalSync(name: string) {
+  const warnings: EdgeUnitWarning[] = [];
+  const existing = await findEdgeUnitConfigMap(name, warnings);
+  if (!existing) return { status: 404, body: { message: `EdgeUnit ${name} not found` } };
+  if (!edgeUnitOwnsCloudCore(dataOf(existing))) {
+    return {
+      status: 403,
+      body: { message: "外接边缘单元的 CloudCore 由外部系统管理，BlueEdge 仅检测增量同步状态，不能修改配置" },
+    };
+  }
+  try {
+    return { status: 200, body: { item: await enableIncrementalSync() } };
+  } catch (error) {
+    return { status: 500, body: { message: error instanceof Error ? error.message : "增量同步启用失败" } };
+  }
 }
 
 export async function getEdgeUnitResources(name: string) {
@@ -787,6 +846,11 @@ export async function updateEdgeUnit(name: string, body: any) {
     return { status: 400, body: { message: `EdgeUnit ${name} metadata ConfigMap is invalid`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
 
+  const existingData = dataOf(existing);
+  if (hasOwnField(body, "accessType") && normalizeEdgeUnitAccessType(readStringField(body, "accessType")) !== existingData.accessType) {
+    return { status: 400, body: { message: "边缘单元接入类型创建后不可修改；请删除后重新创建" } };
+  }
+
   let configMap;
   try {
     configMap = buildEdgeUnitConfigMap(body, existing);
@@ -804,8 +868,32 @@ export async function updateEdgeUnit(name: string, body: any) {
     return { status: 409, body: { message: `工作集群 ${data.clusterName} 已安装边缘单元 ${clusterConflict}，一个工作集群只能创建一个边缘单元`, ...(warnings.length > 0 ? { warnings } : {}) } };
   }
 
-  const updated = await update(metadataOf(existing).name, configMap);
-  return { status: 200, body: await buildConfigMapEdgeUnitResponse(updated, warnings) };
+  const managedCloudCore = existingData.managedCloudCore === "true";
+  const nextConfiguration = buildEdgeUnitConfiguration(data);
+  const previousConfiguration = buildEdgeUnitConfiguration(existingData);
+  const installOptions = (sourceData: Record<string, string>, configuration: ReturnType<typeof buildEdgeUnitConfiguration>) => ({
+    version: sourceData.kubeEdgeVersion,
+    accessAddresses: configuration.accessAddresses || [],
+    protocols: configuration.protocols || [],
+    mqttEnabled: configuration.mqttEnabled ?? false,
+    ports: configuration.ports as EdgeUnitPorts,
+  });
+
+  if (managedCloudCore) {
+    try {
+      await installCloudCore(installOptions(data, nextConfiguration));
+    } catch (error) {
+      return { status: 502, body: { message: error instanceof Error ? error.message : "CloudCore 配置更新失败" } };
+    }
+  }
+
+  try {
+    const updated = await update(metadataOf(existing).name, configMap);
+    return { status: 200, body: await buildConfigMapEdgeUnitResponse(updated, warnings) };
+  } catch (error) {
+    if (managedCloudCore) await installCloudCore(installOptions(existingData, previousConfiguration)).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function deleteEdgeUnit(name: string) {
@@ -822,6 +910,14 @@ export async function deleteEdgeUnit(name: string) {
     };
   }
 
+  const data = dataOf(existing);
+  if (data.managedCloudCore === "true") {
+    try {
+      await uninstallCloudCore(data.uninstallPolicy === "删除相关命名空间");
+    } catch (error) {
+      return { status: 502, body: { message: error instanceof Error ? error.message : "CloudCore 卸载失败；边缘单元元数据已保留" } };
+    }
+  }
   await remove(metadataOf(existing).name);
 
   return {
@@ -831,7 +927,9 @@ export async function deleteEdgeUnit(name: string) {
         ...warnings,
         {
           source: "edgeunit.delete",
-          message: `EdgeUnit ${name} metadata deleted. Labeled Kubernetes and KubeEdge resources are retained.`,
+          message: data.managedCloudCore === "true"
+            ? `EdgeUnit ${name} and its managed CloudCore release were deleted.`
+            : `EdgeUnit ${name} metadata deleted. External Kubernetes and KubeEdge resources are retained.`,
         },
       ],
     },

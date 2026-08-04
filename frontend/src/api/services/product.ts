@@ -11,6 +11,7 @@ import type { DeviceSummaryListResponse, DeviceSummaryResponse } from "@/api/ada
 import type { DeviceConfigPayload } from "@/lib/device-config";
 import type { EdgeAppSummaryResponse } from "@/api/adapters/edgeapp-summary.adapter";
 import type { EdgeUnitDetailResponse, EdgeUnitListResponse, EdgeUnitView, EdgeUnitWarning } from "@/api/adapters/edge-unit.adapter";
+import type { IncrementalSyncStatus } from "@/api/adapters/edge-unit.adapter";
 import type { NodeGroupSummaryResponse } from "@/api/adapters/nodegroup-summary.adapter";
 import type { NodeSummaryResponse } from "@/api/adapters/node-summary.adapter";
 import type { ObservabilityKind, ObservabilityLogsResponse, ObservabilitySummaryResponse } from "@/api/adapters/observability.adapter";
@@ -42,6 +43,38 @@ export interface EdgeUnitCreatePayload {
 }
 
 export type EdgeUnitUpdatePayload = Omit<EdgeUnitCreatePayload, "name">;
+
+export interface EdgeUnitOperation {
+  id: string;
+  type: "create" | "delete";
+  edgeUnitName: string;
+  status: "pending" | "running" | "succeeded" | "failed";
+  stage: string;
+  message: string;
+  startedAt: string;
+  finishedAt?: string;
+  result?: unknown;
+}
+
+async function waitForEdgeUnitOperation<T>(operation: EdgeUnitOperation, onProgress?: (operation: EdgeUnitOperation) => void): Promise<T> {
+  const deadline = Date.now() + 12 * 60 * 1000;
+  let current = operation;
+  while (["pending", "running"].includes(current.status)) {
+    onProgress?.(current);
+    if (Date.now() >= deadline) throw new Error(`任务仍在后台执行，可通过任务 ID ${current.id} 继续查询`);
+    await new Promise((resolve) => window.setTimeout(resolve, 1500));
+    const response = await gatewayRequest<{ operation: EdgeUnitOperation }>(`/blueedge/edge-unit-operations/${encodeURIComponent(current.id)}`);
+    current = response.data.operation;
+  }
+  onProgress?.(current);
+  if (current.status === "failed") throw new Error(current.message || "边缘单元操作失败");
+  return current.result as T;
+}
+
+export async function enableCloudCoreIncrementalSync(edgeUnitName: string): Promise<IncrementalSyncStatus> {
+  const response = await gatewayRequest<{ item: IncrementalSyncStatus }>(`/blueedge/edge-units/${encodeURIComponent(edgeUnitName)}/incremental-sync`, { method: "PUT" });
+  return response.data.item;
+}
 
 export interface EdgeUnitResourceRef {
   namespace: string;
@@ -300,12 +333,12 @@ export async function getEdgeUnitResources(name: string): Promise<EdgeUnitResour
   return res.data;
 }
 
-export async function createEdgeUnit(payload: EdgeUnitCreatePayload): Promise<EdgeUnitDetailResponse> {
-  const res = await gatewayRequest<EdgeUnitDetailResponse, EdgeUnitCreatePayload>("/blueedge/edge-units", {
+export async function createEdgeUnit(payload: EdgeUnitCreatePayload, onProgress?: (operation: EdgeUnitOperation) => void): Promise<EdgeUnitDetailResponse> {
+  const res = await gatewayRequest<{ operation: EdgeUnitOperation }, EdgeUnitCreatePayload>("/blueedge/edge-units", {
     method: "POST",
     body: payload,
   });
-  return res.data;
+  return waitForEdgeUnitOperation<EdgeUnitDetailResponse>(res.data.operation, onProgress);
 }
 
 export async function updateEdgeUnit(name: string, payload: EdgeUnitUpdatePayload): Promise<EdgeUnitDetailResponse> {
@@ -316,11 +349,11 @@ export async function updateEdgeUnit(name: string, payload: EdgeUnitUpdatePayloa
   return res.data;
 }
 
-export async function deleteEdgeUnit(name: string): Promise<{ warnings?: EdgeUnitWarning[] }> {
-  const res = await gatewayRequest<{ warnings?: EdgeUnitWarning[] }>(`/blueedge/edge-units/${encodeURIComponent(name)}`, {
+export async function deleteEdgeUnit(name: string, onProgress?: (operation: EdgeUnitOperation) => void): Promise<{ warnings?: EdgeUnitWarning[] }> {
+  const res = await gatewayRequest<{ operation: EdgeUnitOperation }>(`/blueedge/edge-units/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });
-  return res.data;
+  return waitForEdgeUnitOperation<{ warnings?: EdgeUnitWarning[] }>(res.data.operation, onProgress);
 }
 
 export async function listAccessConfigs(): Promise<AccessConfigListResponse> {

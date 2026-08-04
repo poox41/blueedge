@@ -46,7 +46,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { toHomeEdgeUnit, type EdgeUnitUiModel, type EdgeUnitWarning } from "@/api/adapters/edge-unit.adapter";
-import { createEdgeUnit, deleteEdgeUnit, listConnectedClusters, listEdgeUnits, updateEdgeUnit, type EdgeUnitCreatePayload, type EdgeUnitUpdatePayload } from "@/api/services/product";
+import { createEdgeUnit, deleteEdgeUnit, enableCloudCoreIncrementalSync, listConnectedClusters, listEdgeUnits, updateEdgeUnit, type EdgeUnitCreatePayload, type EdgeUnitUpdatePayload } from "@/api/services/product";
 import { useEdgeUnits } from "@/contexts/EdgeUnitContext";
 import { cn } from "@/lib/utils";
 
@@ -79,7 +79,7 @@ type CreateForm = {
   uninstallPolicy: "保留相关命名空间" | "删除相关命名空间";
 };
 
-const versions = ["v1.21.0", "v1.20.0", "v1.19.0"];
+const versions = ["v1.22.1", "v1.21.0", "v1.20.0", "v1.19.0"];
 const PAAS_CONSOLE_URL = import.meta.env.VITE_PAAS_CONSOLE_URL || "https://183.95.195.121:31417/";
 
 const defaultCreateForm: CreateForm = {
@@ -87,7 +87,7 @@ const defaultCreateForm: CreateForm = {
   name: "",
   description: "",
   cluster: "",
-  version: "v1.21.0",
+  version: "v1.22.1",
   insightStatus: "unknown",
   monitorStatus: "unknown",
   nodeScale: "小型",
@@ -313,12 +313,14 @@ function CreateEdgeUnitDialog({
   onOpenChange,
   clusterOptions,
   isSubmitting,
+  operationMessage,
   onCreate,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   clusterOptions: ClusterOption[];
   isSubmitting: boolean;
+  operationMessage: string;
   onCreate: (form: CreateForm) => Promise<void>;
 }) {
   const [step, setStep] = useState(1);
@@ -406,6 +408,24 @@ function CreateEdgeUnitDialog({
 
   const create = async () => {
     if (!validateBasic()) return;
+    if (form.unitType === "专有") {
+      if (!form.accessAddresses.some((item) => item.trim())) {
+        setErrors({ submit: "专有边缘单元必须填写至少一个边缘节点可访问的 CloudCore 地址" });
+        return;
+      }
+      if (form.protocols.length === 0) {
+        setErrors({ submit: "请至少启用 WebSocket 或 QUIC 一种组件通信协议" });
+        return;
+      }
+      const invalidPort = Object.entries(form.ports).find(([, value]) => {
+        const port = Number(value);
+        return !Number.isInteger(port) || port < 30000 || port > 32767;
+      });
+      if (invalidPort) {
+        setErrors({ submit: `${invalidPort[0]} NodePort 必须在 30000-32767 范围内` });
+        return;
+      }
+    }
     try {
       await onCreate(form);
       resetAndClose();
@@ -520,7 +540,7 @@ function CreateEdgeUnitDialog({
                   ))}
                 </div>
               </FormField>
-              <FormField label="云端节点访问地址" remark="云端 CloudCore 开放给边端访问的 NodePort 端口，如有冲突，请修改。端口范围 0-65535">
+              <FormField label="云端节点访问地址" required={form.unitType === "专有"} remark="填写边缘节点能够访问的云端 IP 或域名；该地址会写入 CloudCore 证书 SAN。">
                 <div className="space-y-2">
                   <div ref={accessAddressListRef} className="max-h-[132px] space-y-2 overflow-y-auto pr-1">
                     {form.accessAddresses.map((address, index) => (
@@ -540,7 +560,7 @@ function CreateEdgeUnitDialog({
                   </button>
                 </div>
               </FormField>
-              <FormField label="端口设置" remark="云端 CloudCore 开放给边端访问的 NodePort 端口，如有冲突，请修改。端口范围 0-65535">
+              <FormField label="端口设置" remark="CloudCore 对边端开放的 NodePort；如有冲突请修改，合法范围 30000-32767。">
                 <div className="grid grid-cols-2 gap-x-3 gap-y-3">
                   {([
                     ["websocket", "WebSocket"],
@@ -569,6 +589,7 @@ function CreateEdgeUnitDialog({
                 </div>
               </FormField>
               {errors.submit && <p className="rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-3 py-2 text-xs text-[#c2410c]">{errors.submit}</p>}
+              {isSubmitting && operationMessage && <p className="rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-3 py-2 text-xs text-[#2563eb]">{operationMessage}</p>}
             </div>
           )}
         </div>
@@ -579,7 +600,7 @@ function CreateEdgeUnitDialog({
           {step < 3 ? (
             <Button onClick={next}>下一步<ChevronRight className="h-3.5 w-3.5" /></Button>
           ) : (
-            <Button onClick={() => void create()} disabled={isSubmitting}>{isSubmitting ? "创建中..." : "确定"}</Button>
+            <Button onClick={() => void create()} disabled={isSubmitting}>{isSubmitting ? "任务执行中…" : "确定"}</Button>
           )}
         </DialogFooter>
       </DialogContent>
@@ -904,10 +925,14 @@ function UnitCard({
   unit,
   onEdit,
   onDelete,
+  onEnableSync,
+  syncMutating,
 }: {
   unit: EdgeUnit;
   onEdit: (unit: EdgeUnit) => void;
   onDelete: (unitName: string) => void;
+  onEnableSync: () => void;
+  syncMutating: boolean;
 }) {
   const navigate = useNavigate();
   const { selectEdgeUnit } = useEdgeUnits();
@@ -972,6 +997,23 @@ function UnitCard({
 
       <div className="mt-7 flex items-center justify-between border-t border-[var(--color-border)] pt-4">
         <div className="flex flex-wrap items-center gap-3">
+          <Capability label="增量同步" enabled={Boolean(unit.incrementalSync?.enabled)} />
+          {!unit.incrementalSync?.enabled && unit.accessType === "dedicated" && (
+            <button
+              type="button"
+              className="text-xs font-semibold text-[var(--color-brand)] hover:underline disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={syncMutating || !unit.incrementalSync?.installed}
+              title={unit.incrementalSync?.message || "未能读取 CloudCore 增量同步状态"}
+              onClick={onEnableSync}
+            >
+              {unit.incrementalSync?.installed ? (syncMutating ? "正在启用…" : "启用增量同步") : "CloudCore 未安装"}
+            </button>
+          )}
+          {!unit.incrementalSync?.enabled && unit.accessType === "external" && (
+            <span className="text-xs text-[var(--color-text-tertiary)]" title="外接 CloudCore 由外部系统管理，请在原系统中启用增量同步">
+              外接模式只读
+            </span>
+          )}
           <Capability label="Insight" enabled={unit.insight} />
           <Capability label="Monitor" enabled={unit.monitor} />
           <a href={PAAS_CONSOLE_URL} target="_blank" rel="noreferrer" className="text-xs font-semibold text-[var(--color-brand)] transition-colors hover:text-[var(--color-brand-hover)] hover:underline">边缘监控组件下载</a>
@@ -992,6 +1034,8 @@ export default function Home() {
   const [warnings, setWarnings] = useState<EdgeUnitWarning[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isMutating, setIsMutating] = useState(false);
+  const [syncMutating, setSyncMutating] = useState(false);
+  const [operationMessage, setOperationMessage] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -1057,7 +1101,7 @@ export default function Home() {
         ports: form.ports,
         uninstallPolicy: form.uninstallPolicy,
       };
-      await createEdgeUnit(payload);
+      await createEdgeUnit(payload, (operation) => setOperationMessage(operation.message));
       await Promise.all([loadData(), refreshEdgeUnits()]);
       setNotice(`边缘单元 ${payload.name} 已创建。`);
     } catch (err) {
@@ -1066,6 +1110,7 @@ export default function Home() {
       throw err;
     } finally {
       setIsMutating(false);
+      setOperationMessage("");
     }
   };
 
@@ -1089,7 +1134,7 @@ export default function Home() {
     setIsMutating(true);
     setNotice("");
     try {
-      const result = await deleteEdgeUnit(deleteTarget.name);
+      const result = await deleteEdgeUnit(deleteTarget.name, (operation) => setOperationMessage(operation.message));
       await Promise.all([loadData(), refreshEdgeUnits()]);
       setDeleteTarget(null);
       setNotice(result.warnings?.map((item) => item.message).join("；") || `边缘单元 ${deleteTarget.name} 元数据已删除。`);
@@ -1097,6 +1142,21 @@ export default function Home() {
       setNotice(messageOfError(err, "边缘单元删除失败"));
     } finally {
       setIsMutating(false);
+      setOperationMessage("");
+    }
+  };
+
+  const handleEnableSync = async (edgeUnitName: string) => {
+    setSyncMutating(true);
+    setNotice("");
+    try {
+      const status = await enableCloudCoreIncrementalSync(edgeUnitName);
+      await Promise.all([loadData(), refreshEdgeUnits()]);
+      setNotice(status.message);
+    } catch (err) {
+      setNotice(messageOfError(err, "CloudCore 增量同步启用失败"));
+    } finally {
+      setSyncMutating(false);
     }
   };
 
@@ -1172,6 +1232,8 @@ export default function Home() {
                 unit={unit}
                 onEdit={setEditingUnit}
                 onDelete={(unitName) => setDeleteTarget(edgeUnits.find((item) => item.name === unitName) || null)}
+                onEnableSync={() => void handleEnableSync(unit.name)}
+                syncMutating={syncMutating}
               />
             ))}
           </div>
@@ -1182,6 +1244,7 @@ export default function Home() {
         onOpenChange={setCreateOpen}
         clusterOptions={edgeUnitClusterOptions}
         isSubmitting={isMutating}
+        operationMessage={operationMessage}
         onCreate={handleCreate}
       />
       <EditEdgeUnitDialog
@@ -1198,12 +1261,15 @@ export default function Home() {
           <AlertDialogHeader>
             <AlertDialogTitle>删除边缘单元元数据</AlertDialogTitle>
             <AlertDialogDescription>
-              将只删除 BlueEdge EdgeUnit ConfigMap 元数据，不会删除带归属标签的节点、工作负载或边缘应用。
+              {deleteTarget?.accessType === "dedicated"
+                ? `将卸载 BlueEdge 管理的 CloudCore，并按“${deleteTarget.uninstallPolicy || "保留相关命名空间"}”执行；边缘节点和工作负载将暂时不可用。`
+                : "将只删除 BlueEdge EdgeUnit ConfigMap 元数据，不会卸载外接 CloudCore。"}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="rounded-xl bg-[var(--color-bg-soft)] px-4 py-3 text-sm text-[var(--color-text-primary)]">
             {deleteTarget?.name}
           </div>
+          {isMutating && operationMessage && <div className="rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3 text-sm text-[#2563eb]">{operationMessage}</div>}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={isMutating}>取消</AlertDialogCancel>
             <AlertDialogAction onClick={(event) => {

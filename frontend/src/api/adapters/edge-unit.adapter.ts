@@ -34,10 +34,24 @@ export interface EdgeUnitView {
     tunnel: string;
   };
   uninstallPolicy?: "保留相关命名空间" | "删除相关命名空间";
+  incrementalSync?: IncrementalSyncStatus;
   rawRef: {
     kind: "EdgeUnitConfigMap";
     name: string;
   };
+}
+
+export interface IncrementalSyncStatus {
+  installed: boolean;
+  enabled: boolean;
+  edgeController: boolean;
+  syncController: boolean;
+  cloudHub: boolean;
+  taskManager: boolean;
+  namespace: string;
+  configMap: string;
+  message: string;
+  restarted?: boolean;
 }
 
 export interface EdgeUnitListResponse {
@@ -80,6 +94,7 @@ export interface EdgeUnitUiModel {
     tunnel: string;
   };
   uninstallPolicy?: "保留相关命名空间" | "删除相关命名空间";
+  incrementalSync?: IncrementalSyncStatus;
 }
 
 export interface WorkbenchEdgeUnitModel {
@@ -169,6 +184,7 @@ export function toHomeEdgeUnit(item: EdgeUnitView): EdgeUnitUiModel {
     accessAddresses: item.accessAddresses,
     ports: item.ports,
     uninstallPolicy: item.uninstallPolicy,
+    incrementalSync: item.incrementalSync,
   };
 }
 
