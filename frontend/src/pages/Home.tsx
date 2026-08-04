@@ -189,12 +189,14 @@ function Metric({ type, label, value }: { type: "nodes" | "workloads" | "apps"; 
   );
 }
 
-function Capability({ label, enabled }: { label: string; enabled: boolean }) {
-  const Icon = enabled ? CheckCircle2 : XCircle;
+function Capability({ label, enabled }: { label: string; enabled?: boolean }) {
+  const unknown = enabled === undefined;
+  const Icon = unknown ? HelpCircle : enabled ? CheckCircle2 : XCircle;
   return (
     <span className={cn("inline-flex items-center gap-1 text-xs font-medium", enabled ? "text-[var(--color-success)]" : "text-[var(--color-text-tertiary)]")}>
       <Icon className="h-3.5 w-3.5" />
       {label}
+      {unknown && "：状态未知"}
     </span>
   );
 }
@@ -997,7 +999,12 @@ function UnitCard({
 
       <div className="mt-7 flex items-center justify-between border-t border-[var(--color-border)] pt-4">
         <div className="flex flex-wrap items-center gap-3">
-          <Capability label="增量同步" enabled={Boolean(unit.incrementalSync?.enabled)} />
+          <span title={unit.incrementalSync?.message || "未能读取 CloudCore 增量同步状态"}>
+            <Capability
+              label="增量同步"
+              enabled={unit.incrementalSync?.installed ? unit.incrementalSync.enabled : undefined}
+            />
+          </span>
           {!unit.incrementalSync?.enabled && unit.accessType === "dedicated" && (
             <button
               type="button"
@@ -1009,8 +1016,8 @@ function UnitCard({
               {unit.incrementalSync?.installed ? (syncMutating ? "正在启用…" : "启用增量同步") : "CloudCore 未安装"}
             </button>
           )}
-          {!unit.incrementalSync?.enabled && unit.accessType === "external" && (
-            <span className="text-xs text-[var(--color-text-tertiary)]" title="外接 CloudCore 由外部系统管理，请在原系统中启用增量同步">
+          {unit.accessType === "external" && (
+            <span className="text-xs text-[var(--color-text-tertiary)]" title="BlueEdge 只读取外接 CloudCore 配置，不会修改或重启外部组件">
               外接模式只读
             </span>
           )}
