@@ -2,7 +2,7 @@
   "version": 1,
   "project": {
     "name": "BlueEdge",
-    "gitOrigin": "https://github.com/bluedot-ai/blueedge.git",
+    "gitOrigin": "https://github.com/poox41/blueedge.git",
     "markerFiles": [
       "frontend/Dockerfile",
       "server/api-gateway/Dockerfile",

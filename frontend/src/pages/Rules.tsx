@@ -380,7 +380,8 @@ export function Rules() {
         form.target &&
         validDirection &&
         (!sourceIsEventBus || effectiveNodeName.trim()) &&
-        (editing || (form.sourceResource.trim() && form.targetResource.trim())),
+        form.sourceResource.trim() &&
+        form.targetResource.trim(),
     );
 
   const openCreate = () => {
@@ -787,10 +788,10 @@ function CreateRouteDialog({
       { field: "name", valid: validName(form.name.trim()), message: form.name.trim() ? "名称格式不正确，仅支持小写字母、数字和中划线" : "请输入消息路由名称", elementId: "message-route-name" },
       { field: "namespace", valid: Boolean(form.namespace), message: "请选择命名空间", elementId: "message-route-namespace" },
       { field: "source", valid: Boolean(form.source) && directionValid, message: form.source && !directionValid ? "当前源端点与目的端点组合不受支持" : "请选择源端点", elementId: "message-route-source" },
-      { field: "sourceResource", valid: Boolean(editing || form.sourceResource.trim()), message: "请输入源端点资源", elementId: "message-route-source-resource" },
+      { field: "sourceResource", valid: Boolean(form.sourceResource.trim()), message: "请输入源端点资源", elementId: "message-route-source-resource" },
       { field: "sourceNodeName", valid: !sourceEndpoint || normalizeEndpointType(sourceEndpoint.type) !== "eventbus" || Boolean(form.sourceNodeName.trim()), message: "请选择边缘节点", elementId: "message-route-source-node" },
       { field: "target", valid: Boolean(form.target) && directionValid, message: form.target && !directionValid ? "当前源端点与目的端点组合不受支持" : "请选择目的端点", elementId: "message-route-target" },
-      { field: "targetResource", valid: Boolean(editing || form.targetResource.trim()), message: "请输入目的端点资源", elementId: "message-route-target-resource" },
+      { field: "targetResource", valid: Boolean(form.targetResource.trim()), message: "请输入目的端点资源", elementId: "message-route-target-resource" },
     ])) return;
     onSave();
   };
@@ -860,7 +861,7 @@ function CreateRouteDialog({
                 id="message-route-source"
                 error={validation.errors.source}
               />
-              {!editing && sourceEndpoint && normalizeEndpointType(sourceEndpoint.type) === "eventbus" ? (
+              {sourceEndpoint && normalizeEndpointType(sourceEndpoint.type) === "eventbus" ? (
                 <div>
                   <RouteLabel required>源端点资源</RouteLabel>
                   <div className="flex gap-2">
@@ -890,9 +891,9 @@ function CreateRouteDialog({
                   <RequiredFieldError id="message-route-source-resource-error" message={validation.errors.sourceResource} />
                   {edgeUnitNodeNames.length === 0 && <p className="mt-1.5 text-xs text-[var(--color-danger)]">当前边缘单元没有关联可用节点。</p>}
                 </div>
-              ) : !editing ? (
+              ) : (
                 <RouteTextField id="message-route-source-resource" label="源端点资源" required value={form.sourceResource} onChange={(value) => { onChange({ ...form, sourceResource: value }); validation.clearError("sourceResource"); }} placeholder={resourcePlaceholder(sourceEndpoint, "source")} error={validation.errors.sourceResource} />
-              ) : null}
+              )}
 
               <EndpointPicker
                 label="目的端点"
@@ -908,7 +909,7 @@ function CreateRouteDialog({
                 id="message-route-target"
                 error={validation.errors.target}
               />
-              {!editing && <RouteTextField id="message-route-target-resource" label="目的端点资源" required value={form.targetResource} onChange={(value) => { onChange({ ...form, targetResource: value }); validation.clearError("targetResource"); }} placeholder={resourcePlaceholder(targetEndpoint, "target")} error={validation.errors.targetResource} />}
+              <RouteTextField id="message-route-target-resource" label="目的端点资源" required value={form.targetResource} onChange={(value) => { onChange({ ...form, targetResource: value }); validation.clearError("targetResource"); }} placeholder={resourcePlaceholder(targetEndpoint, "target")} error={validation.errors.targetResource} />
 
               <div>
                 <RouteLabel>描述</RouteLabel>
@@ -920,12 +921,12 @@ function CreateRouteDialog({
               <div className="space-y-3 border-t border-[var(--color-border)] pt-5">
                 <h3 className="text-sm font-semibold text-[var(--color-text-primary)]">路由预览</h3>
                 <div className="flex items-center gap-3">
-                  <RoutePreviewCard endpoint={sourceEndpoint} resource={editing ? undefined : form.sourceResource} />
+                  <RoutePreviewCard endpoint={sourceEndpoint} resource={form.sourceResource} />
                   <div className="flex shrink-0 flex-col items-center gap-1 text-[var(--color-text-tertiary)]">
                     <ArrowRight className="h-5 w-5 text-[var(--color-brand)]" />
                     <span className="text-xs">路由</span>
                   </div>
-                  <RoutePreviewCard endpoint={targetEndpoint} resource={editing ? undefined : form.targetResource} />
+                  <RoutePreviewCard endpoint={targetEndpoint} resource={form.targetResource} />
                 </div>
               </div>
             )}
