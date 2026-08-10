@@ -81,9 +81,13 @@ import {
   getResourceLogs,
   getResourceObservability,
   listDeploymentRevisions,
+  listModelRegistryModels,
+  listModelRegistryTags,
   rollbackDeploymentRevision,
   runDeploymentAction,
+  updateDeploymentModelImage,
 } from "@/api/services/product";
+import type { ModelRegistryRepository } from "@/api/services/product";
 import type { DeploymentAuditRecord, DeploymentRevision } from "@/api/services/product";
 import { observabilityUnavailableText } from "@/api/adapters/observability.adapter";
 import type { ObservabilityEvent, ObservabilitySummary } from "@/api/adapters/observability.adapter";
@@ -1625,6 +1629,8 @@ function WorkloadDetailPage({
   const [podYaml, setPodYaml] = useState<DeploymentPodRow | null>(null);
   const [podLogs, setPodLogs] = useState<DeploymentPodRow | null>(null);
   const [podMonitor, setPodMonitor] = useState<DeploymentPodRow | null>(null);
+  const [modelUpdateOpen, setModelUpdateOpen] = useState(false);
+  const [modelNotice, setModelNotice] = useState<string | null>(null);
   const podsRequestId = useRef(0);
   const eventsRequestId = useRef(0);
   const yaml = buildWorkloadYaml(item);
@@ -1713,6 +1719,7 @@ function WorkloadDetailPage({
 
   return (
     <div className="page-container space-y-5">
+      <ToastNotice message={modelNotice} onClose={() => setModelNotice(null)} />
       <section className="flex items-start justify-between gap-4">
         <div className="flex items-start gap-3">
           <button type="button" onClick={onBack} className="action-button mt-0.5">
@@ -1727,6 +1734,9 @@ function WorkloadDetailPage({
           </div>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
+          <button type="button" onClick={() => setModelUpdateOpen(true)} className="btn-secondary flex items-center gap-1.5 text-xs">
+            <RefreshCw className="h-[13px] w-[13px]" />更新模型
+          </button>
           <button type="button" onClick={() => onAction("yaml")} className="btn-secondary flex items-center gap-1.5 text-xs">
             <FileText className="h-[13px] w-[13px]" />编辑YAML
           </button>
@@ -1910,7 +1920,199 @@ function WorkloadDetailPage({
           onReload={onReload}
         />
       )}
+      {modelUpdateOpen && (
+        <ModelImageUpdateDialog
+          item={item}
+          onClose={() => setModelUpdateOpen(false)}
+          onUpdated={async () => {
+            await onReload();
+            setModelNotice("模型镜像已更新，工作负载正在重新创建容器组");
+            window.setTimeout(() => setModelNotice(null), 3000);
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+function parseConfiguredModelImage(image: string, imagePrefix: string) {
+  if (!imagePrefix || !image.startsWith(imagePrefix)) return null;
+  const value = image.slice(imagePrefix.length);
+  const separator = value.lastIndexOf(":");
+  if (separator <= 0 || separator === value.length - 1) return null;
+  return { model: value.slice(0, separator), tag: value.slice(separator + 1) };
+}
+
+function ModelImageUpdateDialog({ item, onClose, onUpdated }: { item: Workload; onClose: () => void; onUpdated: () => Promise<void> }) {
+  const podSpec = asRecord(asRecord(asRecord(item.raw?.spec).template).spec);
+  const initContainers = useMemo(() => asRecordArray(podSpec.initContainers).map((container) => ({
+    name: String(container.name || ""),
+    image: String(container.image || ""),
+  })).filter((container) => container.name && container.image), [podSpec.initContainers]);
+  const [models, setModels] = useState<ModelRegistryRepository[]>([]);
+  const [imagePrefix, setImagePrefix] = useState("");
+  const [containerName, setContainerName] = useState("");
+  const [model, setModel] = useState("");
+  const [tag, setTag] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(true);
+  const [loadingTags, setLoadingTags] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const tagsRequestId = useRef(0);
+
+  const modelContainers = useMemo(
+    () => imagePrefix ? initContainers.filter((container) => container.image.startsWith(imagePrefix)) : [],
+    [imagePrefix, initContainers],
+  );
+  const selectedContainer = modelContainers.find((container) => container.name === containerName);
+  const nextImage = imagePrefix && model && tag ? `${imagePrefix}${model}:${tag}` : "";
+
+  useEffect(() => {
+    let active = true;
+    void listModelRegistryModels()
+      .then((result) => {
+        if (!active) return;
+        setModels(result.items);
+        setImagePrefix(result.registry.imagePrefix);
+        const candidates = initContainers.filter((container) => container.image.startsWith(result.registry.imagePrefix));
+        const first = candidates[0];
+        if (!first) return;
+        const parsed = parseConfiguredModelImage(first.image, result.registry.imagePrefix);
+        setContainerName(first.name);
+        setModel(parsed?.model || "");
+        setTag(parsed?.tag || "");
+        setLoadingTags(Boolean(parsed?.model));
+      })
+      .catch((reason) => active && setError(reason instanceof Error ? reason.message : "模型仓库加载失败"))
+      .finally(() => active && setLoadingModels(false));
+    return () => { active = false; };
+  }, [initContainers]);
+
+  useEffect(() => {
+    if (!model) return;
+    const requestId = ++tagsRequestId.current;
+    void listModelRegistryTags(model)
+      .then((items) => {
+        if (requestId !== tagsRequestId.current) return;
+        setTags(items);
+        setTag((current) => items.includes(current) ? current : "");
+      })
+      .catch((reason) => {
+        if (requestId === tagsRequestId.current) setError(reason instanceof Error ? reason.message : "模型版本加载失败");
+      })
+      .finally(() => {
+        if (requestId === tagsRequestId.current) setLoadingTags(false);
+      });
+  }, [model]);
+
+  const selectContainer = (nextName: string) => {
+    const container = modelContainers.find((candidate) => candidate.name === nextName);
+    const parsed = container ? parseConfiguredModelImage(container.image, imagePrefix) : null;
+    setContainerName(nextName);
+    setModel(parsed?.model || "");
+    setTag(parsed?.tag || "");
+    setTags([]);
+    setLoadingTags(Boolean(parsed?.model));
+    setError("");
+  };
+
+  const selectModel = (nextModel: string) => {
+    const current = selectedContainer ? parseConfiguredModelImage(selectedContainer.image, imagePrefix) : null;
+    setModel(nextModel);
+    setTag(current?.model === nextModel ? current.tag : "");
+    setTags([]);
+    setLoadingTags(true);
+    setError("");
+  };
+
+  const submit = async () => {
+    if (!selectedContainer || !model || !tag) {
+      setError("请选择模型初始化容器、模型项目和版本");
+      return;
+    }
+    if (nextImage === selectedContainer.image) {
+      setError("请选择不同于当前镜像的模型或版本");
+      return;
+    }
+    setSubmitting(true);
+    setError("");
+    try {
+      await updateDeploymentModelImage(item.namespace, item.name, {
+        containerName: selectedContainer.name,
+        model,
+        tag,
+        expectedCurrentImage: selectedContainer.image,
+      });
+      await onUpdated();
+      onClose();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "模型镜像更新失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && !submitting && onClose()}>
+      <DialogContent className="max-w-[720px] rounded-[24px] p-0" showCloseButton={false}>
+        <DialogHeader className="h-16 border-b border-[#eef2f7] px-6 py-0">
+          <div className="flex h-full items-center justify-between">
+            <DialogTitle className="text-base font-semibold text-[#111827]">更新模型镜像</DialogTitle>
+            <button type="button" onClick={onClose} disabled={submitting} className="action-button"><X className="h-4 w-4" /></button>
+          </div>
+        </DialogHeader>
+        <div className="space-y-5 p-6">
+          <p className="text-sm text-[#64748b]">选择模型初始化容器及仓库版本，平台将更新 Deployment 并重新创建容器组。</p>
+          {error && <div className="rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#dc2626]">{error}</div>}
+          {loadingModels ? (
+            <div className="flex h-28 items-center justify-center gap-2 text-sm text-[#64748b]"><RefreshCw className="h-4 w-4 animate-spin" />正在查询模型仓库...</div>
+          ) : error ? null : modelContainers.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-[#dfe5ee] px-4 py-10 text-center text-sm text-[#64748b]">
+              当前工作负载未检测到镜像路径符合 <span className="font-mono text-[#334155]">{imagePrefix}模型名称:版本号</span> 的 initContainer
+            </div>
+          ) : (
+            <>
+              <CreateField label="模型初始化容器">
+                <Select value={containerName} onValueChange={selectContainer}>
+                  <SelectTrigger className="h-10 rounded-xl"><SelectValue placeholder="请选择初始化容器" /></SelectTrigger>
+                  <SelectContent>{modelContainers.map((container) => <SelectItem key={container.name} value={container.name}>{container.name} · {container.image}</SelectItem>)}</SelectContent>
+                </Select>
+              </CreateField>
+              <CreateField label="当前镜像">
+                <div className="break-all rounded-xl bg-[#f8fafc] px-4 py-3 font-mono text-sm text-[#334155]">{selectedContainer?.image || "-"}</div>
+              </CreateField>
+              <div className="grid grid-cols-2 gap-4">
+                <CreateField label="模型项目">
+                  <Select value={model} onValueChange={selectModel}>
+                    <SelectTrigger className="h-10 rounded-xl"><SelectValue placeholder="请选择模型" /></SelectTrigger>
+                    <SelectContent>{models.map((entry) => <SelectItem key={entry.repository} value={entry.name}>{entry.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </CreateField>
+                <CreateField label="模型版本">
+                  <Select value={tag} onValueChange={(value) => { setTag(value); setError(""); }} disabled={!model || loadingTags}>
+                    <SelectTrigger className="h-10 rounded-xl"><SelectValue placeholder={loadingTags ? "正在加载..." : "请选择版本"} /></SelectTrigger>
+                    <SelectContent>{tags.map((entry) => <SelectItem key={entry} value={entry}>{entry}</SelectItem>)}</SelectContent>
+                  </Select>
+                </CreateField>
+              </div>
+              <CreateField label="更新后镜像">
+                <div className="min-h-11 break-all rounded-xl border border-[#dbeafe] bg-[#eff6ff] px-4 py-3 font-mono text-sm font-semibold text-[#1d4ed8]">{nextImage || "选择模型和版本后自动生成"}</div>
+              </CreateField>
+              <div className="flex gap-2 rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />更新 Pod 模板会触发工作负载重新部署；Recreate 策略可能造成短暂停机。
+              </div>
+            </>
+          )}
+        </div>
+        <DialogFooter className="border-t border-[#eef2f7] px-6 py-4">
+          <button type="button" onClick={onClose} disabled={submitting} className="btn-secondary">取消</button>
+          <button type="button" onClick={() => void submit()} disabled={submitting || loadingModels || loadingTags || modelContainers.length === 0} className="btn-black">
+            {submitting ? "正在更新..." : "确认更新"}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

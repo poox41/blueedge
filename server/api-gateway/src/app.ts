@@ -13,6 +13,7 @@ import { registerEdgeUnitRoutes } from "./routes/edge-unit.routes.js";
 import { registerEdgeApplicationProxyRoutes } from "./routes/edgeapplication-proxy.routes.js";
 import { registerEventsRoutes } from "./routes/events.routes.js";
 import { registerMetricsRoutes } from "./routes/metrics.routes.js";
+import { registerModelRegistryRoutes } from "./routes/model-registry.routes.js";
 import { registerObservabilityRoutes } from "./routes/observability.routes.js";
 import { registerOverviewRoutes } from "./routes/overview.routes.js";
 import { registerProxyRoutes } from "./routes/proxy.routes.js";
@@ -54,6 +55,7 @@ export function createApp(): Express {
   registerResourceSummaryRoutes(app);
   registerRuleOperationsRoutes(app);
   registerMetricsRoutes(app);
+  registerModelRegistryRoutes(app);
   registerEventsRoutes(app);
   registerWorkloadRoutes(app);
   registerStorageRoutes(app);

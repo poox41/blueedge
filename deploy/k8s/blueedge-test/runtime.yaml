@@ -40,6 +40,9 @@ data:
   KUBEEDGE_TOKEN_SECRET_KEY: tokendata
   KUBEEDGE_TOKEN_SECRET_NAME: tokensecret
   KUBEEDGE_TOKEN_SECRET_NAMESPACE: kubeedge
+  MODEL_REGISTRY_URL: https://183.95.195.121:31438
+  MODEL_REGISTRY_PREFIX: app
+  MODEL_REGISTRY_SKIP_TLS_VERIFY: "true"
 ---
 apiVersion: apps/v1
 kind: Deployment

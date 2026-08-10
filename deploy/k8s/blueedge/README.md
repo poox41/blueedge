@@ -51,7 +51,9 @@ openssl rand -hex 32
 kubectl create secret generic blueedge-secret \
   -n blueedge \
   --from-literal=ADMIN_PASSWORD='<blueedge-admin-password>' \
-  --from-literal=JWT_SECRET='<openssl-rand-hex-32-output>'
+  --from-literal=JWT_SECRET='<openssl-rand-hex-32-output>' \
+  --from-literal=MODEL_REGISTRY_USERNAME='<registry-username>' \
+  --from-literal=MODEL_REGISTRY_PASSWORD='<registry-password>'
 ```
 
 The Secret must provide:
@@ -59,7 +61,14 @@ The Secret must provide:
 ```text
 ADMIN_PASSWORD
 JWT_SECRET
+MODEL_REGISTRY_USERNAME
+MODEL_REGISTRY_PASSWORD
 ```
+
+`MODEL_REGISTRY_URL`、`MODEL_REGISTRY_PREFIX` 和 `MODEL_REGISTRY_SKIP_TLS_VERIFY`
+在 `02-configmap.yaml` 中配置。模型更新功能通过 Docker Registry HTTP API V2
+自动查询 `${MODEL_REGISTRY_PREFIX}/` 下的模型仓库及其版本标签；生产环境建议为仓库配置可信 CA，
+并将 `MODEL_REGISTRY_SKIP_TLS_VERIFY` 设为 `false`。
 
 `03-secret.example.yaml` is only a template for teams that prefer declarative Secret files.
 

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+
 function parseDurationSeconds(value: string): number {
   const match = value.match(/^(\d+)([smhd])?$/);
   if (!match) return 24 * 60 * 60;
@@ -6,6 +8,15 @@ function parseDurationSeconds(value: string): number {
   const unit = match[2] || "s";
   const factors: Record<string, number> = { s: 1, m: 60, h: 60 * 60, d: 24 * 60 * 60 };
   return amount * factors[unit];
+}
+
+function readSecretFile(path: string): string {
+  if (!path) return "";
+  try {
+    return fs.readFileSync(path, "utf8").trim();
+  } catch {
+    return "";
+  }
 }
 
 export const config = {
@@ -26,6 +37,11 @@ export const config = {
   jwtSecret: process.env.JWT_SECRET || "blueedge-dev-secret",
   jwtExpiresInSeconds: parseDurationSeconds(process.env.JWT_EXPIRES_IN || "24h"),
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS || 30_000),
+  modelRegistryUrl: (process.env.MODEL_REGISTRY_URL || "").replace(/\/+$/, ""),
+  modelRegistryUsername: process.env.MODEL_REGISTRY_USERNAME || "",
+  modelRegistryPassword: process.env.MODEL_REGISTRY_PASSWORD || readSecretFile(process.env.MODEL_REGISTRY_PASSWORD_FILE || ""),
+  modelRegistryPrefix: (process.env.MODEL_REGISTRY_PREFIX || "app").replace(/^\/+|\/+$/g, ""),
+  modelRegistrySkipTlsVerify: process.env.MODEL_REGISTRY_SKIP_TLS_VERIFY === "true",
 };
 
 if (process.env.NODE_ENV === "production") {

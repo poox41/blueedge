@@ -60,6 +60,7 @@ function revisionOf(resource: any): number {
 function revisionView(replicaSet: any, currentRevision: number): DeploymentRevisionItem {
   const copy = structuredClone(replicaSet);
   if (copy?.metadata) delete copy.metadata.managedFields;
+  const initContainers = Array.isArray(replicaSet?.spec?.template?.spec?.initContainers) ? replicaSet.spec.template.spec.initContainers : [];
   const containers = Array.isArray(replicaSet?.spec?.template?.spec?.containers) ? replicaSet.spec.template.spec.containers : [];
   const revision = revisionOf(replicaSet);
   return {
@@ -67,7 +68,7 @@ function revisionView(replicaSet: any, currentRevision: number): DeploymentRevis
     current: revision === currentRevision,
     replicaSetName: String(replicaSet?.metadata?.name || ""),
     createdAt: String(replicaSet?.metadata?.creationTimestamp || ""),
-    images: containers.map((container: any) => String(container?.image || "")).filter(Boolean),
+    images: [...initContainers, ...containers].map((container: any) => String(container?.image || "")).filter(Boolean),
     replicas: Number(replicaSet?.status?.replicas || 0),
     availableReplicas: Number(replicaSet?.status?.availableReplicas || 0),
     yaml: copy,

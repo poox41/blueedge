@@ -308,6 +308,26 @@ export interface DeploymentExecResult {
   exitCode: number | null;
 }
 
+export interface ModelRegistryRepository {
+  name: string;
+  repository: string;
+}
+
+export interface ModelRegistryModelsResponse {
+  items: ModelRegistryRepository[];
+  registry: {
+    prefix: string;
+    imagePrefix: string;
+  };
+}
+
+export interface ModelImageUpdatePayload {
+  containerName: string;
+  model: string;
+  tag: string;
+  expectedCurrentImage: string;
+}
+
 export async function getProductOverview(): Promise<ProductOverview> {
   const res = await gatewayRequest<ProductOverview>("/overview");
   return res.data;
@@ -644,6 +664,25 @@ export async function executeDeploymentCommand(namespace: string, name: string, 
     body: payload,
   });
   return res.data.item;
+}
+
+export async function listModelRegistryModels(): Promise<ModelRegistryModelsResponse> {
+  const res = await gatewayRequest<ModelRegistryModelsResponse>("/blueedge/model-registry/models");
+  return res.data;
+}
+
+export async function listModelRegistryTags(model: string): Promise<string[]> {
+  const res = await gatewayRequest<{ model: string; repository: string; items: string[] }>("/blueedge/model-registry/tags", {
+    params: { model },
+  });
+  return res.data.items;
+}
+
+export async function updateDeploymentModelImage(namespace: string, name: string, payload: ModelImageUpdatePayload): Promise<void> {
+  await gatewayRequest(`/blueedge/deployments/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}/model-image`, {
+    method: "POST",
+    body: payload,
+  });
 }
 
 export async function listStorageClasses(): Promise<StorageClassListResponse> {
