@@ -1,21 +1,17 @@
 import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import { config } from "../config.js";
+import type { AuthSource, BlueEdgeJwtPayload, BlueEdgePrincipal, JsonValue } from "../types/auth.js";
 
-interface JwtPayload {
-  sub: string;
-  username: string;
-  iat: number;
-  exp: number;
-}
+const jwtHeader = { alg: "HS256", typ: "JWT" } as const;
+const reservedClaims = new Set(["sub", "username", "auth_source", "iss", "aud", "iat", "exp"]);
 
 function base64Url(input: Buffer | string): string {
   return Buffer.from(input).toString("base64url");
 }
 
-function signJwt(payload: JwtPayload): string {
-  const header = { alg: "HS256", typ: "JWT" };
-  const encodedHeader = base64Url(JSON.stringify(header));
+function signJwt(payload: BlueEdgeJwtPayload): string {
+  const encodedHeader = base64Url(JSON.stringify(jwtHeader));
   const encodedPayload = base64Url(JSON.stringify(payload));
   const signature = crypto
     .createHmac("sha256", config.jwtSecret)
@@ -24,7 +20,15 @@ function signJwt(payload: JwtPayload): string {
   return `${encodedHeader}.${encodedPayload}.${signature}`;
 }
 
-function verifyJwt(token: string): JwtPayload | null {
+function isAuthSource(value: unknown): value is AuthSource {
+  return value === "local" || value === "bams";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function verifyAuthToken(token: string): BlueEdgeJwtPayload | null {
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const [encodedHeader, encodedPayload, signature] = parts;
@@ -41,9 +45,40 @@ function verifyJwt(token: string): JwtPayload | null {
     return null;
   }
   try {
-    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8")) as JwtPayload;
-    if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000)) return null;
-    return payload;
+    const header = JSON.parse(Buffer.from(encodedHeader, "base64url").toString("utf8")) as unknown;
+    const payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8")) as unknown;
+    if (!isRecord(header) || header.alg !== jwtHeader.alg || header.typ !== jwtHeader.typ) return null;
+    if (!isRecord(payload)) return null;
+
+    const now = Math.floor(Date.now() / 1000);
+    if (
+      typeof payload.sub !== "string" || !payload.sub ||
+      typeof payload.username !== "string" || !payload.username ||
+      typeof payload.iat !== "number" || !Number.isFinite(payload.iat) || payload.iat > now + 60 ||
+      typeof payload.exp !== "number" || !Number.isFinite(payload.exp) || payload.exp <= now
+    ) {
+      return null;
+    }
+
+    const legacyLocalToken = payload.auth_source === undefined && payload.iss === undefined && payload.aud === undefined;
+    if (legacyLocalToken) {
+      // Tokens issued before the unified Principal rollout remain valid until
+      // their original expiry. All newly issued tokens use the strict format.
+      return {
+        ...payload,
+        auth_source: "local",
+        iss: config.jwtIssuer,
+        aud: config.jwtAudience,
+      } as BlueEdgeJwtPayload;
+    }
+    if (
+      !isAuthSource(payload.auth_source) ||
+      payload.iss !== config.jwtIssuer ||
+      payload.aud !== config.jwtAudience
+    ) {
+      return null;
+    }
+    return payload as BlueEdgeJwtPayload;
   } catch {
     return null;
   }
@@ -54,21 +89,51 @@ function extractBearerToken(authorization?: string): string | null {
   return match?.[1] || null;
 }
 
-export function createAuthToken(username: string): string {
+function safeAdditionalClaims(claims: Record<string, JsonValue> | undefined): Record<string, JsonValue> {
+  return Object.fromEntries(
+    Object.entries(claims || {}).filter(([key]) => !reservedClaims.has(key)),
+  );
+}
+
+export function createLocalPrincipal(username: string): BlueEdgePrincipal {
+  return {
+    subject: username,
+    username,
+    authSource: "local",
+  };
+}
+
+export function createAuthToken(principal: BlueEdgePrincipal, expiresInSeconds = config.jwtExpiresInSeconds): string {
   const now = Math.floor(Date.now() / 1000);
   return signJwt({
-    sub: username,
-    username,
+    ...safeAdditionalClaims(principal.additionalClaims),
+    sub: principal.subject,
+    username: principal.username,
+    auth_source: principal.authSource,
+    iss: config.jwtIssuer,
+    aud: config.jwtAudience,
     iat: now,
-    exp: now + config.jwtExpiresInSeconds,
+    exp: now + expiresInSeconds,
   });
 }
 
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const token = extractBearerToken(req.headers.authorization);
-  if (!token || !verifyJwt(token)) {
+  const payload = token ? verifyAuthToken(token) : null;
+  if (!payload) {
     res.status(401).json({ message: "unauthorized" });
     return;
   }
+  req.auth = {
+    principal: {
+      subject: payload.sub,
+      username: payload.username,
+      authSource: payload.auth_source,
+      additionalClaims: Object.fromEntries(
+        Object.entries(payload).filter(([key]) => !reservedClaims.has(key)),
+      ) as Record<string, JsonValue>,
+    },
+    token: payload,
+  };
   next();
 }

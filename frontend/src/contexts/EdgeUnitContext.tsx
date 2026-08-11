@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { listEdgeUnits } from "@/api/services/product";
 import type { EdgeUnitView } from "@/api/adapters/edge-unit.adapter";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/auth-context";
 
 const STORAGE_KEY = "blueedge.selectedEdgeUnit";
 

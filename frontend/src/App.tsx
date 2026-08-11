@@ -1,9 +1,11 @@
 import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider, useAuth } from "@/contexts/AuthContext";
+import { AuthProvider } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/auth-context";
 import { EdgeUnitProvider } from "@/contexts/EdgeUnitContext";
 import { NamespaceProvider } from "@/contexts/NamespaceProvider";
 import { MainLayout } from "@/components/layout/MainLayout";
 import { LoginPage } from "@/pages/LoginPage";
+import { SsoPage } from "@/pages/SsoPage";
 import Home from "@/pages/Home";
 import { Dashboard } from "@/pages/Dashboard";
 import { Nodes } from "@/pages/Nodes";
@@ -40,6 +42,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/sso" element={<SsoPage />} />
       <Route
         path="/"
         element={

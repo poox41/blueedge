@@ -1,13 +1,12 @@
-import { createContext, useContext, useState, useCallback, useEffect } from "react";
-import { clearBlueEdgeToken, getBlueEdgeToken, loginRequest, setBlueEdgeToken } from "@/api/request";
-
-interface AuthContextType {
-  isAuthenticated: boolean;
-  login: (username: string, password: string) => Promise<boolean>;
-  logout: () => void;
-}
-
-const AuthContext = createContext<AuthContextType | null>(null);
+import { useState, useCallback, useEffect } from "react";
+import {
+  clearBlueEdgeToken,
+  getBlueEdgeToken,
+  loginRequest,
+  setBlueEdgeToken,
+  ssoExchangeRequest,
+} from "@/api/request";
+import { AuthContext } from "@/contexts/auth-context";
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(() => {
@@ -27,6 +26,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const loginWithSsoCode = useCallback(async (code: string) => {
+    const token = await ssoExchangeRequest(code);
+    setBlueEdgeToken(token);
+    setIsAuthenticated(true);
+  }, []);
+
   const logout = useCallback(() => {
     clearBlueEdgeToken();
     setIsAuthenticated(false);
@@ -39,16 +44,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, login, logout }}>
+    <AuthContext.Provider value={{ isAuthenticated, login, loginWithSsoCode, logout }}>
       {children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
-  return context;
 }

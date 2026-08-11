@@ -6,6 +6,8 @@ export interface RequestOptions<TBody = unknown> {
   params?: Record<string, string | number | boolean | undefined | null>;
   headers?: HeadersInit;
   signal?: AbortSignal;
+  auth?: boolean;
+  redirectOnUnauthorized?: boolean;
 }
 
 export interface ApiEnvelope<T = unknown> {
@@ -86,7 +88,7 @@ async function parseResponse<T>(response: Response): Promise<ApiEnvelope<T>> {
 }
 
 async function http<T, TBody = unknown>(baseUrl: string, path: string, options: RequestOptions<TBody> = {}) {
-  const token = getBlueEdgeToken();
+  const token = options.auth === false ? null : getBlueEdgeToken();
   const headers: HeadersInit = {
     "Content-Type": "application/json",
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -100,7 +102,11 @@ async function http<T, TBody = unknown>(baseUrl: string, path: string, options: 
     signal: options.signal,
   });
 
-  if (response.status === 401 && window.location.hash !== "#/login") {
+  if (
+    response.status === 401 &&
+    options.redirectOnUnauthorized !== false &&
+    window.location.hash !== "#/login"
+  ) {
     clearBlueEdgeToken();
     window.dispatchEvent(new Event("blueedge:unauthorized"));
     window.location.hash = "/login";
@@ -121,6 +127,22 @@ export async function loginRequest(username: string, password: string): Promise<
   const res = await http<{ token: string }, { username: string; password: string }>(GATEWAY_BASE_URL, "/auth/login", {
     method: "POST",
     body: { username, password },
+    auth: false,
+    redirectOnUnauthorized: false,
   });
+  return res.data.token;
+}
+
+export async function ssoExchangeRequest(code: string): Promise<string> {
+  const res = await http<{ token: string }, { grant_type: "authorization_code"; code: string }>(
+    GATEWAY_BASE_URL,
+    "/auth/sso/exchange",
+    {
+      method: "POST",
+      body: { grant_type: "authorization_code", code },
+      auth: false,
+      redirectOnUnauthorized: false,
+    },
+  );
   return res.data.token;
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { listNamespaces } from "@/api/services/resources";
 import { NamespaceContext, type NamespaceOption } from "@/contexts/NamespaceContext";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/auth-context";
 
 const STORAGE_KEY = "blueedge:selected-namespace";
 const fallbackNamespaces: NamespaceOption[] = [

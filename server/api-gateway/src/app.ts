@@ -1,10 +1,11 @@
 import cors from "cors";
 import express, { type Express } from "express";
 import { config } from "./config.js";
-import { createAuthToken, requireAuth } from "./middleware/auth.middleware.js";
+import { requireAuth } from "./middleware/auth.middleware.js";
 import { errorMiddleware } from "./middleware/error.middleware.js";
 import { notFoundMiddleware } from "./middleware/not-found.middleware.js";
 import { registerAccessConfigRoutes } from "./routes/access-config.routes.js";
+import { registerPublicAuthRoutes } from "./routes/auth.routes.js";
 import { registerBatchTaskRoutes } from "./routes/batch-task.routes.js";
 import { registerClusterRoutes } from "./routes/cluster.routes.js";
 import { registerDeviceRoutes } from "./routes/device.routes.js";
@@ -26,22 +27,23 @@ import { registerWorkloadRoutes } from "./routes/workload.routes.js";
 export function createApp(): Express {
   const app = express();
 
-  app.use(cors());
+  if (config.trustProxyHops > 0) app.set("trust proxy", config.trustProxyHops);
+  app.use(cors({
+    origin(origin, callback) {
+      if (!origin || !config.corsAllowedOrigins.includes(origin)) {
+        callback(null, false);
+        return;
+      }
+      callback(null, origin);
+    },
+  }));
   app.use(express.json({ limit: "2mb" }));
 
   app.get("/healthz", (_req, res) => {
     res.json({ status: "ok", service: "blueedge-api-gateway" });
   });
 
-  app.post("/auth/login", (req, res) => {
-    const username = typeof req.body?.username === "string" ? req.body.username : "";
-    const password = typeof req.body?.password === "string" ? req.body.password : "";
-    if (username !== config.adminUsername || password !== config.adminPassword) {
-      res.status(401).json({ message: "账号或密码错误" });
-      return;
-    }
-    res.json({ token: createAuthToken(username) });
-  });
+  registerPublicAuthRoutes(app);
 
   app.use(requireAuth);
 

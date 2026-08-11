@@ -11,7 +11,7 @@ import {
   ShieldCheck,
   User,
 } from "lucide-react";
-import { useAuth } from "@/contexts/AuthContext";
+import { useAuth } from "@/contexts/auth-context";
 
 const capabilityTags = ["边缘单元管理", "工作负载部署", "配置项与密钥", "消息路由", "日志与监控"];
 const rememberedAccountKey = "blueedge_remembered_account";
