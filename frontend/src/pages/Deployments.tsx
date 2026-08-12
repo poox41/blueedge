@@ -2056,14 +2056,14 @@ function ModelImageUpdateDialog({ item, onClose, onUpdated }: { item: Workload; 
 
   return (
     <Dialog open onOpenChange={(open) => !open && !submitting && onClose()}>
-      <DialogContent className="max-h-[90vh] w-[calc(100%-2rem)] min-w-0 max-w-[720px] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 rounded-[24px] p-0" showCloseButton={false}>
+      <DialogContent className="max-h-[90vh] w-[calc(100%-2rem)] min-w-0 max-w-[720px] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-[24px] p-0" showCloseButton={false}>
         <DialogHeader className="h-16 border-b border-[#eef2f7] px-6 py-0">
           <div className="flex h-full items-center justify-between">
             <DialogTitle className="text-base font-semibold text-[#111827]">更新模型镜像</DialogTitle>
             <button type="button" onClick={onClose} disabled={submitting} className="action-button"><X className="h-4 w-4" /></button>
           </div>
         </DialogHeader>
-        <div className="min-w-0 space-y-4 overflow-y-auto px-6 py-5">
+        <div className="min-w-0 space-y-4 overflow-x-hidden overflow-y-auto px-6 py-5">
           {currentModel?.tag && (
             <div className="flex items-center gap-2 rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3 text-sm text-[#64748b]">
               <Box className="h-4 w-4 shrink-0 text-[#3b82f6]" />
@@ -2084,13 +2084,15 @@ function ModelImageUpdateDialog({ item, onClose, onUpdated }: { item: Workload; 
               <CreateField label="模型初始化容器">
                 <Select value={containerName} onValueChange={selectContainer}>
                   <SelectTrigger className="h-10 w-full min-w-0 max-w-full rounded-xl">
-                    <SelectValue className="min-w-0 flex-1 truncate text-left" placeholder="请选择初始化容器" />
+                    <SelectValue className="min-w-0 flex-1 text-left">
+                      <span className="block truncate" title={selectedContainer?.name}>{selectedContainer?.name || "请选择初始化容器"}</span>
+                    </SelectValue>
                   </SelectTrigger>
                   <SelectContent>{modelContainers.map((container) => <SelectItem key={container.name} value={container.name}>{container.name} · {container.image}</SelectItem>)}</SelectContent>
                 </Select>
               </CreateField>
               <CreateField label="当前模型镜像">
-                <div className="break-all rounded-xl bg-[#f8fafc] px-4 py-3 font-mono text-sm text-[#334155]">{selectedContainer?.image || "-"}</div>
+                <div className="w-full min-w-0 max-w-full whitespace-normal break-all rounded-xl bg-[#f8fafc] px-4 py-3 font-mono text-sm text-[#334155]">{selectedContainer?.image || "-"}</div>
               </CreateField>
               <div className="grid grid-cols-2 gap-4">
                 <CreateField label="模型名称">
@@ -2107,10 +2109,11 @@ function ModelImageUpdateDialog({ item, onClose, onUpdated }: { item: Workload; 
                 </CreateField>
               </div>
               <CreateField label="更新后模型版本">
-                <div className="min-h-11 break-all rounded-xl border border-[#dbeafe] bg-[#eff6ff] px-4 py-3 font-mono text-sm font-semibold text-[#1d4ed8]">{nextImage || "选择模型和版本后自动生成"}</div>
+                <div className="min-h-11 w-full min-w-0 max-w-full whitespace-normal break-all rounded-xl border border-[#dbeafe] bg-[#eff6ff] px-4 py-3 font-mono text-sm font-semibold text-[#1d4ed8]">{nextImage || "选择模型和版本后自动生成"}</div>
               </CreateField>
               <div className="flex gap-2 rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">
-                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />更新 Pod 模板会触发工作负载重新部署；Recreate 策略可能造成短暂停机。
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span className="min-w-0 whitespace-normal break-words">更新 Pod 模板会触发工作负载重新部署；Recreate 策略可能造成短暂停机。</span>
               </div>
             </>
           )}
