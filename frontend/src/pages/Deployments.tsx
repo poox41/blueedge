@@ -1966,6 +1966,7 @@ function ModelImageUpdateDialog({ item, onClose, onUpdated }: { item: Workload; 
     [imagePrefix, initContainers],
   );
   const selectedContainer = modelContainers.find((container) => container.name === containerName);
+  const currentModel = selectedContainer ? parseConfiguredModelImage(selectedContainer.image, imagePrefix) : null;
   const nextImage = imagePrefix && model && tag ? `${imagePrefix}${model}:${tag}` : "";
 
   useEffect(() => {
@@ -2055,14 +2056,21 @@ function ModelImageUpdateDialog({ item, onClose, onUpdated }: { item: Workload; 
 
   return (
     <Dialog open onOpenChange={(open) => !open && !submitting && onClose()}>
-      <DialogContent className="max-w-[720px] rounded-[24px] p-0" showCloseButton={false}>
+      <DialogContent className="w-[calc(100%-2rem)] min-w-0 max-w-[720px] overflow-hidden rounded-[24px] p-0" showCloseButton={false}>
         <DialogHeader className="h-16 border-b border-[#eef2f7] px-6 py-0">
           <div className="flex h-full items-center justify-between">
             <DialogTitle className="text-base font-semibold text-[#111827]">更新模型镜像</DialogTitle>
             <button type="button" onClick={onClose} disabled={submitting} className="action-button"><X className="h-4 w-4" /></button>
           </div>
         </DialogHeader>
-        <div className="space-y-5 p-6">
+        <div className="min-w-0 space-y-5 p-6">
+          {currentModel?.tag && (
+            <div className="flex items-center gap-2 rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3 text-sm text-[#64748b]">
+              <Box className="h-4 w-4 shrink-0 text-[#3b82f6]" />
+              <span>当前模型版本：</span>
+              <span className="font-semibold text-[#2563eb]">{currentModel.tag}</span>
+            </div>
+          )}
           <p className="text-sm text-[#64748b]">选择模型初始化容器及仓库版本，平台将更新 Deployment 并重新创建容器组。</p>
           {error && <div className="rounded-xl border border-[#fecaca] bg-[#fef2f2] px-4 py-3 text-sm text-[#dc2626]">{error}</div>}
           {loadingModels ? (
@@ -2075,28 +2083,30 @@ function ModelImageUpdateDialog({ item, onClose, onUpdated }: { item: Workload; 
             <>
               <CreateField label="模型初始化容器">
                 <Select value={containerName} onValueChange={selectContainer}>
-                  <SelectTrigger className="h-10 rounded-xl"><SelectValue placeholder="请选择初始化容器" /></SelectTrigger>
+                  <SelectTrigger className="h-10 w-full min-w-0 max-w-full overflow-hidden rounded-xl">
+                    <SelectValue className="min-w-0 flex-1 overflow-hidden text-left text-ellipsis" placeholder="请选择初始化容器" />
+                  </SelectTrigger>
                   <SelectContent>{modelContainers.map((container) => <SelectItem key={container.name} value={container.name}>{container.name} · {container.image}</SelectItem>)}</SelectContent>
                 </Select>
               </CreateField>
-              <CreateField label="当前镜像">
+              <CreateField label="当前模型镜像">
                 <div className="break-all rounded-xl bg-[#f8fafc] px-4 py-3 font-mono text-sm text-[#334155]">{selectedContainer?.image || "-"}</div>
               </CreateField>
               <div className="grid grid-cols-2 gap-4">
-                <CreateField label="模型项目">
+                <CreateField label="模型名称">
                   <Select value={model} onValueChange={selectModel}>
-                    <SelectTrigger className="h-10 rounded-xl"><SelectValue placeholder="请选择模型" /></SelectTrigger>
+                    <SelectTrigger className="h-10 w-full min-w-0 max-w-full overflow-hidden rounded-xl"><SelectValue className="min-w-0 flex-1 overflow-hidden text-left text-ellipsis" placeholder="请选择模型" /></SelectTrigger>
                     <SelectContent>{models.map((entry) => <SelectItem key={entry.repository} value={entry.name}>{entry.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </CreateField>
-                <CreateField label="模型版本">
+                <CreateField label="选择模型版本">
                   <Select value={tag} onValueChange={(value) => { setTag(value); setError(""); }} disabled={!model || loadingTags}>
-                    <SelectTrigger className="h-10 rounded-xl"><SelectValue placeholder={loadingTags ? "正在加载..." : "请选择版本"} /></SelectTrigger>
+                    <SelectTrigger className="h-10 w-full min-w-0 max-w-full overflow-hidden rounded-xl"><SelectValue className="min-w-0 flex-1 overflow-hidden text-left text-ellipsis" placeholder={loadingTags ? "正在加载..." : "请选择版本"} /></SelectTrigger>
                     <SelectContent>{tags.map((entry) => <SelectItem key={entry} value={entry}>{entry}</SelectItem>)}</SelectContent>
                   </Select>
                 </CreateField>
               </div>
-              <CreateField label="更新后镜像">
+              <CreateField label="更新后模型版本">
                 <div className="min-h-11 break-all rounded-xl border border-[#dbeafe] bg-[#eff6ff] px-4 py-3 font-mono text-sm font-semibold text-[#1d4ed8]">{nextImage || "选择模型和版本后自动生成"}</div>
               </CreateField>
               <div className="flex gap-2 rounded-xl border border-[#fed7aa] bg-[#fff7ed] px-4 py-3 text-sm text-[#c2410c]">
@@ -4082,7 +4092,7 @@ function UnitInput({ value, unit, min, max, onChange }: { value: string; unit: s
 
 function CreateField({ label, required, error, help, children, compact = false }: { label: string; required?: boolean; error?: string; help?: string; children: ReactNode; compact?: boolean }) {
   return (
-    <div>
+    <div className="min-w-0">
       <Label className={cn("block font-medium text-[#111827]", compact ? "mb-1 text-xs text-[var(--color-text-secondary)]" : "mb-1.5 text-sm")}>
         {label} {required && <span className="text-[var(--color-danger)]">*</span>}
       </Label>
