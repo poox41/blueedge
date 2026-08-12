@@ -2056,14 +2056,14 @@ function ModelImageUpdateDialog({ item, onClose, onUpdated }: { item: Workload; 
 
   return (
     <Dialog open onOpenChange={(open) => !open && !submitting && onClose()}>
-      <DialogContent className="w-[calc(100%-2rem)] min-w-0 max-w-[720px] overflow-hidden rounded-[24px] p-0" showCloseButton={false}>
+      <DialogContent className="max-h-[90vh] w-[calc(100%-2rem)] min-w-0 max-w-[720px] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 rounded-[24px] p-0" showCloseButton={false}>
         <DialogHeader className="h-16 border-b border-[#eef2f7] px-6 py-0">
           <div className="flex h-full items-center justify-between">
             <DialogTitle className="text-base font-semibold text-[#111827]">更新模型镜像</DialogTitle>
             <button type="button" onClick={onClose} disabled={submitting} className="action-button"><X className="h-4 w-4" /></button>
           </div>
         </DialogHeader>
-        <div className="min-w-0 space-y-5 p-6">
+        <div className="min-w-0 space-y-4 overflow-y-auto px-6 py-5">
           {currentModel?.tag && (
             <div className="flex items-center gap-2 rounded-xl border border-[#bfdbfe] bg-[#eff6ff] px-4 py-3 text-sm text-[#64748b]">
               <Box className="h-4 w-4 shrink-0 text-[#3b82f6]" />
@@ -2083,8 +2083,8 @@ function ModelImageUpdateDialog({ item, onClose, onUpdated }: { item: Workload; 
             <>
               <CreateField label="模型初始化容器">
                 <Select value={containerName} onValueChange={selectContainer}>
-                  <SelectTrigger className="h-10 w-full min-w-0 max-w-full overflow-hidden rounded-xl">
-                    <SelectValue className="min-w-0 flex-1 overflow-hidden text-left text-ellipsis" placeholder="请选择初始化容器" />
+                  <SelectTrigger className="h-10 w-full min-w-0 max-w-full rounded-xl">
+                    <SelectValue className="min-w-0 flex-1 truncate text-left" placeholder="请选择初始化容器" />
                   </SelectTrigger>
                   <SelectContent>{modelContainers.map((container) => <SelectItem key={container.name} value={container.name}>{container.name} · {container.image}</SelectItem>)}</SelectContent>
                 </Select>
@@ -2095,13 +2095,13 @@ function ModelImageUpdateDialog({ item, onClose, onUpdated }: { item: Workload; 
               <div className="grid grid-cols-2 gap-4">
                 <CreateField label="模型名称">
                   <Select value={model} onValueChange={selectModel}>
-                    <SelectTrigger className="h-10 w-full min-w-0 max-w-full overflow-hidden rounded-xl"><SelectValue className="min-w-0 flex-1 overflow-hidden text-left text-ellipsis" placeholder="请选择模型" /></SelectTrigger>
+                    <SelectTrigger className="h-10 w-full min-w-0 max-w-full rounded-xl"><SelectValue className="min-w-0 flex-1 truncate text-left" placeholder="请选择模型" /></SelectTrigger>
                     <SelectContent>{models.map((entry) => <SelectItem key={entry.repository} value={entry.name}>{entry.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </CreateField>
                 <CreateField label="选择模型版本">
                   <Select value={tag} onValueChange={(value) => { setTag(value); setError(""); }} disabled={!model || loadingTags}>
-                    <SelectTrigger className="h-10 w-full min-w-0 max-w-full overflow-hidden rounded-xl"><SelectValue className="min-w-0 flex-1 overflow-hidden text-left text-ellipsis" placeholder={loadingTags ? "正在加载..." : "请选择版本"} /></SelectTrigger>
+                    <SelectTrigger className="h-10 w-full min-w-0 max-w-full rounded-xl"><SelectValue className="min-w-0 flex-1 truncate text-left" placeholder={loadingTags ? "正在加载..." : "请选择版本"} /></SelectTrigger>
                     <SelectContent>{tags.map((entry) => <SelectItem key={entry} value={entry}>{entry}</SelectItem>)}</SelectContent>
                   </Select>
                 </CreateField>
