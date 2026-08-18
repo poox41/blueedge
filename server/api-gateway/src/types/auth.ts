@@ -1,4 +1,4 @@
-export type AuthSource = "local" | "bams";
+export type AuthSource = "local" | "bams" | "service";
 
 export type JsonValue =
   | string

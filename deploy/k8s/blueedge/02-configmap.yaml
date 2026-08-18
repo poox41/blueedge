@@ -14,6 +14,7 @@ data:
   K8S_CA_FILE: "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
   BAMS_SSO_ENABLED: "false"
   BAMS_SSO_BASE_URL: "https://bams.example.com"
+  ALLOW_INSECURE_TEST_HTTP: "false"
   BAMS_SSO_EXCHANGE_PATH: "/v1/sso/blueedge/exchange"
   BAMS_SSO_CLIENT_ID: "blueedge"
   BAMS_SSO_REQUEST_TIMEOUT_MS: "5000"

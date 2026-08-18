@@ -18,6 +18,10 @@ export type ModelImageUpdate = {
   expectedCurrentImage?: string;
 };
 
+export type ModelImageUpdateOptions = {
+  deploymentAnnotations?: Record<string, string>;
+};
+
 const modelUpdateAnnotation = "blueedge.io/model-image-updated-at";
 const modelContainerAnnotation = "blueedge.io/model-image-container";
 
@@ -119,7 +123,13 @@ export function modelImagePrefix() {
   return `${[url.host, registryPath, prefix].filter(Boolean).join("/")}/`;
 }
 
-export function updateDeploymentModelImage(deployment: any, payload: ModelImageUpdate, nextImage: string, expectedImagePrefix = modelImagePrefix()) {
+export function updateDeploymentModelImage(
+  deployment: any,
+  payload: ModelImageUpdate,
+  nextImage: string,
+  expectedImagePrefix = modelImagePrefix(),
+  options: ModelImageUpdateOptions = {},
+) {
   const copy = structuredClone(deployment);
   const initContainers = copy?.spec?.template?.spec?.initContainers;
   if (!Array.isArray(initContainers)) throw new Error("deployment has no initContainers");
@@ -135,6 +145,13 @@ export function updateDeploymentModelImage(deployment: any, payload: ModelImageU
   if (currentImage === nextImage) throw new Error("selected model image is already in use");
 
   target.image = nextImage;
+  if (options.deploymentAnnotations && Object.keys(options.deploymentAnnotations).length > 0) {
+    copy.metadata = copy.metadata || {};
+    copy.metadata.annotations = {
+      ...(copy.metadata.annotations || {}),
+      ...options.deploymentAnnotations,
+    };
+  }
   copy.spec.template.metadata = copy.spec.template.metadata || {};
   copy.spec.template.metadata.annotations = {
     ...(copy.spec.template.metadata.annotations || {}),
@@ -164,13 +181,18 @@ export async function listModelTags(model: string) {
   return { model, repository, items: tags };
 }
 
-export async function updateModelImage(namespace: string, name: string, payload: ModelImageUpdate) {
+export async function updateModelImage(
+  namespace: string,
+  name: string,
+  payload: ModelImageUpdate,
+  options: ModelImageUpdateOptions = {},
+) {
   if (!payload.containerName) throw new Error("containerName is required");
   const availableTags = await listModelTags(payload.model);
   if (!availableTags.items.includes(payload.tag)) throw new Error(`tag ${payload.tag} was not found for model ${payload.model}`);
   const nextImage = modelImageReference(payload.model, payload.tag);
   const deployment = await getK8sJson(deploymentPath(namespace, name));
-  const updated = updateDeploymentModelImage(deployment, payload, nextImage);
+  const updated = updateDeploymentModelImage(deployment, payload, nextImage, modelImagePrefix(), options);
   const item = await requestK8sJson(deploymentPath(namespace, name), { method: "PUT", body: updated.deployment });
   return {
     item,

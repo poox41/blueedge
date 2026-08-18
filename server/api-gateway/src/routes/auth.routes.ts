@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { Express, Response } from "express";
 import { BamsSsoClientError } from "../clients/bams-sso-client.js";
 import { config } from "../config.js";
@@ -6,6 +7,30 @@ import { createRateLimitMiddleware } from "../middleware/rate-limit.middleware.j
 import { bamsSsoService, SsoServiceError } from "../services/bams-sso.service.js";
 
 const authorizationCodePattern = /^[A-Za-z0-9_-]{32,128}$/;
+export const bamsPublisherScopes = [
+  "edge-units:read",
+  "edge-nodes:read",
+  "model-deployments:publish",
+  "model-images:update",
+  "deployments:read",
+] as const;
+
+function secretEquals(actual: string, expected: string): boolean {
+  const actualDigest = crypto.createHash("sha256").update(actual).digest();
+  const expectedDigest = crypto.createHash("sha256").update(expected).digest();
+  return crypto.timingSafeEqual(actualDigest, expectedDigest);
+}
+
+export function authenticateServiceClient(clientId: string, clientSecret: string) {
+  if (!config.bamsPublisherClientSecret) return null;
+  if (clientId !== config.bamsPublisherClientId || !secretEquals(clientSecret, config.bamsPublisherClientSecret)) return null;
+  return {
+    subject: clientId,
+    username: clientId,
+    authSource: "service" as const,
+    additionalClaims: { scope: [...bamsPublisherScopes] },
+  };
+}
 
 export function authenticateLocalAdmin(username: string, password: string) {
   if (username !== config.adminUsername || password !== config.adminPassword) return null;
@@ -125,5 +150,26 @@ export function registerPublicAuthRoutes(app: Express) {
       }
       sendSsoError(res, 500, "SSO_LOGIN_FAILED", "SSO 登录未完成，请返回 BAMS 重新进入");
     }
+  });
+
+  app.post("/auth/client-token", loginRateLimit, (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    if (req.body?.grant_type !== "client_credentials") {
+      res.status(400).json({ message: "grant_type must be client_credentials" });
+      return;
+    }
+    const clientId = typeof req.body?.client_id === "string" ? req.body.client_id : "";
+    const clientSecret = typeof req.body?.client_secret === "string" ? req.body.client_secret : "";
+    const principal = authenticateServiceClient(clientId, clientSecret);
+    if (!principal) {
+      res.status(401).json({ message: "invalid client credentials" });
+      return;
+    }
+    res.json({
+      access_token: createAuthToken(principal, config.bamsPublisherJwtExpiresInSeconds),
+      token_type: "Bearer",
+      expires_in: config.bamsPublisherJwtExpiresInSeconds,
+      scope: bamsPublisherScopes.join(" "),
+    });
   });
 }

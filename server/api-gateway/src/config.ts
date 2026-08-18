@@ -32,6 +32,27 @@ function parseCsv(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+export function isPinnedContainerImage(value: string): boolean {
+  const image = value.trim();
+  if (/^.+@sha256:[a-f0-9]{64}$/i.test(image)) return true;
+  const lastSegment = image.slice(image.lastIndexOf("/") + 1);
+  return lastSegment.includes(":") && !/:latest$/i.test(lastSegment);
+}
+
+export function isAllowedSsoBaseUrl(value: string, allowInsecureTestHttp = false): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" ||
+      (allowInsecureTestHttp &&
+        url.protocol === "http:" &&
+        url.host === "14.103.139.131:40002")
+    );
+  } catch {
+    return false;
+  }
+}
+
 const defaultServiceAccountCaFile = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
 
 export const config = {
@@ -60,6 +81,7 @@ export const config = {
   bamsSsoClientId: process.env.BAMS_SSO_CLIENT_ID || "blueedge",
   bamsSsoClientSecret:
     process.env.BAMS_SSO_CLIENT_SECRET || readSecretFile(process.env.BAMS_SSO_CLIENT_SECRET_FILE || ""),
+  allowInsecureTestHttp: process.env.ALLOW_INSECURE_TEST_HTTP === "true",
   bamsSsoRequestTimeoutMs: parsePositiveInteger(process.env.BAMS_SSO_REQUEST_TIMEOUT_MS, 5_000),
   bamsSsoJwtExpiresInSeconds: parseDurationSeconds(
     process.env.BAMS_SSO_JWT_EXPIRES_IN || "8h",
@@ -70,12 +92,26 @@ export const config = {
   authRateLimitWindowMs: parsePositiveInteger(process.env.AUTH_RATE_LIMIT_WINDOW_MS, 60_000),
   loginRateLimitMax: parsePositiveInteger(process.env.LOGIN_RATE_LIMIT_MAX, 20),
   ssoRateLimitMax: parsePositiveInteger(process.env.SSO_RATE_LIMIT_MAX, 20),
+  bamsPublisherClientId: process.env.BAMS_PUBLISHER_CLIENT_ID || "bams-model-publisher",
+  bamsPublisherClientSecret:
+    process.env.BAMS_PUBLISHER_CLIENT_SECRET || readSecretFile(process.env.BAMS_PUBLISHER_CLIENT_SECRET_FILE || ""),
+  bamsPublisherJwtExpiresInSeconds: parseDurationSeconds(
+    process.env.BAMS_PUBLISHER_JWT_EXPIRES_IN || "5m",
+    5 * 60,
+  ),
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS || 30_000),
   modelRegistryUrl: (process.env.MODEL_REGISTRY_URL || "").replace(/\/+$/, ""),
   modelRegistryUsername: process.env.MODEL_REGISTRY_USERNAME || "",
   modelRegistryPassword: process.env.MODEL_REGISTRY_PASSWORD || readSecretFile(process.env.MODEL_REGISTRY_PASSWORD_FILE || ""),
   modelRegistryPrefix: (process.env.MODEL_REGISTRY_PREFIX || "app").replace(/^\/+|\/+$/g, ""),
   modelRegistrySkipTlsVerify: process.env.MODEL_REGISTRY_SKIP_TLS_VERIFY === "true",
+  modelDeploymentNamespace: process.env.MODEL_DEPLOYMENT_NAMESPACE || "default",
+  modelDeploymentPullSecret: process.env.MODEL_DEPLOYMENT_PULL_SECRET || "my-registry-secret",
+  tritonAmd64RuntimeImage: (process.env.TRITON_AMD64_RUNTIME_IMAGE || "").trim(),
+  tritonAmd64CpuRequest: process.env.TRITON_AMD64_CPU_REQUEST || "2",
+  tritonAmd64CpuLimit: process.env.TRITON_AMD64_CPU_LIMIT || "6",
+  tritonAmd64MemoryRequest: process.env.TRITON_AMD64_MEMORY_REQUEST || "2Gi",
+  tritonAmd64MemoryLimit: process.env.TRITON_AMD64_MEMORY_LIMIT || "8Gi",
 };
 
 if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
@@ -91,12 +127,20 @@ if (process.env.NODE_ENV === "production") {
   if (!process.env.JWT_SECRET) {
     throw new Error("JWT_SECRET is required in production");
   }
+  if (!config.bamsPublisherClientSecret) {
+    throw new Error("BAMS_PUBLISHER_CLIENT_SECRET or BAMS_PUBLISHER_CLIENT_SECRET_FILE is required in production");
+  }
+  if (!isPinnedContainerImage(config.tritonAmd64RuntimeImage)) {
+    throw new Error("TRITON_AMD64_RUNTIME_IMAGE must use an explicit non-latest tag or sha256 digest in production");
+  }
   if (config.bamsSsoEnabled) {
     if (!config.bamsSsoBaseUrl || !config.bamsSsoClientId || !config.bamsSsoClientSecret) {
       throw new Error("BAMS SSO base URL, client id, and client secret are required when BAMS_SSO_ENABLED=true");
     }
-    if (new URL(config.bamsSsoBaseUrl).protocol !== "https:") {
-      throw new Error("BAMS_SSO_BASE_URL must use https in production");
+    if (!isAllowedSsoBaseUrl(config.bamsSsoBaseUrl, config.allowInsecureTestHttp)) {
+      throw new Error(
+        "BAMS_SSO_BASE_URL must use https in production unless the fixed TEST HTTP endpoint is explicitly enabled",
+      );
     }
   }
 }

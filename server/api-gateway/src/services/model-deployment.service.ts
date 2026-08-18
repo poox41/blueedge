@@ -1,0 +1,481 @@
+import crypto from "node:crypto";
+import { config } from "../config.js";
+import { getK8sJson, requestK8sJson } from "../clients/k8s-client.js";
+import { getEdgeUnitConfigMaps } from "./edge-unit-source.service.js";
+import { edgeUnitConfigMapMatches } from "./edge-unit-source.service.js";
+import { isExternalEdgeNode, nodeTargetsEdgeUnit } from "./edge-unit.service.js";
+import { modelImagePrefix, updateModelImage } from "./model-registry.service.js";
+import { buildTritonAmd64Deployment, resolveModelRuntimeTemplate } from "./model-runtime-template.service.js";
+import { isNodeReady, itemsOf, labelsOf, metadataOf, nodeNameOf } from "../utils/kubernetes.js";
+
+const identityKeys = {
+  managedBy: "blueedge.io/managed-by",
+  source: "blueedge.io/source",
+  spaceId: "blueedge.io/bams-space-id",
+  modelRepoId: "blueedge.io/bams-model-repo-id",
+  edgeUnit: "blueedge.io/edge-unit",
+} as const;
+
+const annotationKeys = {
+  modelImageId: "blueedge.io/bams-model-image-id",
+  modelVersionId: "blueedge.io/bams-model-version-id",
+  runtimeTemplate: "blueedge.io/runtime-template",
+  runtimeTemplateVersion: "blueedge.io/runtime-template-version",
+  modelInitContainer: "blueedge.io/model-init-container",
+  publishOperation: "blueedge.io/model-publish-operation",
+} as const;
+
+export type ModelPublishRequest = {
+  source: "bams";
+  spaceId: string;
+  modelRepoId: string;
+  modelVersionId: string;
+  modelImageId: string;
+  image: string;
+  predictFramework?: string;
+  edgeUnit: string;
+  targetType?: "node";
+  targetId?: string;
+};
+
+export class ModelDeploymentError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+  }
+}
+
+type PublishDependencies = {
+  edgeUnitExists(edgeUnit: string): Promise<boolean>;
+  getNode(name: string): Promise<any>;
+  listNodes(): Promise<any[]>;
+  listPods(deployment: any): Promise<any[]>;
+  secretExists(namespace: string, name: string): Promise<boolean>;
+  listManagedDeployments(labels: Record<string, string>): Promise<any[]>;
+  listEdgeUnitDeployments(edgeUnit: string): Promise<any[]>;
+  createDeployment(namespace: string, deployment: any): Promise<any>;
+  updateImage(namespace: string, name: string, payload: {
+    containerName: string;
+    model: string;
+    tag: string;
+    expectedCurrentImage: string;
+  }, annotations: Record<string, string>): Promise<any>;
+};
+
+function labelValue(value: string, field: string): string {
+  const normalized = value.trim();
+  if (!/^[A-Za-z0-9](?:[-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$/.test(normalized)) {
+    throw new ModelDeploymentError(400, `${field} must be a Kubernetes label value`);
+  }
+  return normalized;
+}
+
+export function modelDeploymentIdentity(input: ModelPublishRequest): Record<string, string> {
+  return {
+    [identityKeys.managedBy]: "bams",
+    [identityKeys.source]: input.source,
+    [identityKeys.spaceId]: labelValue(input.spaceId, "spaceId"),
+    [identityKeys.modelRepoId]: labelValue(input.modelRepoId, "modelRepoId"),
+    [identityKeys.edgeUnit]: labelValue(input.edgeUnit, "edgeUnit"),
+  };
+}
+
+export function deterministicModelDeploymentName(input: ModelPublishRequest): string {
+  const identity = `${input.source}:${input.spaceId}:${input.modelRepoId}:${input.edgeUnit}`;
+  return `bams-model-${crypto.createHash("sha256").update(identity).digest("hex").slice(0, 16)}`;
+}
+
+function modelAnnotations(input: ModelPublishRequest, operation: "creating" | "updating", initContainerName: string, template?: ReturnType<typeof resolveModelRuntimeTemplate>) {
+  return {
+    [annotationKeys.modelImageId]: input.modelImageId,
+    [annotationKeys.modelVersionId]: input.modelVersionId,
+    ...(template ? {
+      [annotationKeys.runtimeTemplate]: template.id,
+      [annotationKeys.runtimeTemplateVersion]: template.version,
+    } : {}),
+    [annotationKeys.modelInitContainer]: initContainerName,
+    [annotationKeys.publishOperation]: operation,
+  };
+}
+
+export function parseConfiguredModelImage(image: string): { model: string; tag: string; reference: string } {
+  const trimmed = image.trim();
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    throw new ModelDeploymentError(400, "model image must not include a URL scheme");
+  }
+  const firstSlash = trimmed.indexOf("/");
+  if (firstSlash <= 0) throw new ModelDeploymentError(400, "model image must include a registry host and repository");
+  const normalizedImage = `${trimmed.slice(0, firstSlash).toLowerCase()}${trimmed.slice(firstSlash)}`;
+  const prefix = modelImagePrefix();
+  if (!normalizedImage.startsWith(prefix)) {
+    throw new ModelDeploymentError(400, "当前模型镜像不在边缘共享镜像仓库");
+  }
+  const relative = normalizedImage.slice(prefix.length);
+  const separator = relative.lastIndexOf(":");
+  if (separator <= 0 || separator === relative.length - 1 || relative.includes("@")) {
+    throw new ModelDeploymentError(400, "model image must include a valid tag");
+  }
+  return { model: relative.slice(0, separator), tag: relative.slice(separator + 1), reference: normalizedImage };
+}
+
+function nodeArchitecture(node: any): string {
+  return String(node?.status?.nodeInfo?.architecture || labelsOf(node)["kubernetes.io/arch"] || "").toLowerCase();
+}
+
+export function validatePublishTarget(node: any, input: ModelPublishRequest, architecture: string) {
+  if (!node || nodeNameOf(node) !== input.targetId) throw new ModelDeploymentError(404, `Node ${input.targetId} not found`);
+  if (!isExternalEdgeNode(node) || !nodeTargetsEdgeUnit(node, input.edgeUnit)) {
+    throw new ModelDeploymentError(400, `Node ${input.targetId} does not belong to EdgeUnit ${input.edgeUnit}`);
+  }
+  if (!isNodeReady(node)) throw new ModelDeploymentError(400, `Node ${input.targetId} is not Ready`);
+  if (nodeArchitecture(node) !== architecture) throw new ModelDeploymentError(400, `Node ${input.targetId} is not compatible with runtime architecture ${architecture}`);
+}
+
+function currentModelImage(deployment: any, containerName: string): string {
+  const initContainers = deployment?.spec?.template?.spec?.initContainers;
+  const container = Array.isArray(initContainers)
+    ? initContainers.find((item: any) => item?.name === containerName)
+    : undefined;
+  if (!container?.image) throw new ModelDeploymentError(409, `managed Deployment has no ${containerName} initContainer`);
+  return String(container.image);
+}
+
+function deploymentRef(item: any) {
+  return {
+    namespace: String(metadataOf(item).namespace || config.modelDeploymentNamespace),
+    name: String(metadataOf(item).name || ""),
+  };
+}
+
+function validateInput(input: ModelPublishRequest) {
+  if (!input || input.source !== "bams") throw new ModelDeploymentError(400, "source must be bams");
+  for (const field of ["spaceId", "modelRepoId", "modelVersionId", "modelImageId", "image", "edgeUnit"] as const) {
+    if (typeof input[field] !== "string" || !input[field].trim()) throw new ModelDeploymentError(400, `${field} is required`);
+  }
+}
+
+function runtimeModelName(repository: string) {
+  const name = repository.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+  if (!name) throw new ModelDeploymentError(400, "model repository cannot be converted to a runtime model name");
+  return name;
+}
+
+function matchingInitContainers(deployment: any, repository: string) {
+  const containers = deployment?.spec?.template?.spec?.initContainers;
+  if (!Array.isArray(containers)) return [];
+  return containers.filter((container: any) => {
+    if (!container?.name || !container?.image) return false;
+    try {
+      return parseConfiguredModelImage(String(container.image)).model === repository;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function resolvedInitContainer(deployment: any, repository: string) {
+  const annotatedName = String(metadataOf(deployment).annotations?.[annotationKeys.modelInitContainer] || "");
+  const containers = deployment?.spec?.template?.spec?.initContainers;
+  if (annotatedName && Array.isArray(containers)) {
+    const annotated = containers.find((item: any) => item?.name === annotatedName);
+    if (annotated?.image) {
+      try {
+        if (parseConfiguredModelImage(String(annotated.image)).model === repository) return annotated;
+      } catch {
+        // Fall through to strict repository resolution.
+      }
+    }
+  }
+  const matches = matchingInitContainers(deployment, repository);
+  if (matches.length !== 1) {
+    throw new ModelDeploymentError(409, matches.length > 1
+      ? `Deployment ${metadataOf(deployment).name} has multiple initContainers for repository ${repository}`
+      : `Deployment ${metadataOf(deployment).name} has no initContainer for repository ${repository}`);
+  }
+  return matches[0];
+}
+
+function activeNode(deployment: any, pods: any[]) {
+  const pinned = String(deployment?.spec?.template?.spec?.nodeName || "");
+  if (pinned) return pinned;
+  const activePod = pods.find((pod) => !metadataOf(pod).deletionTimestamp && pod?.status?.phase !== "Succeeded" && pod?.spec?.nodeName);
+  return String(activePod?.spec?.nodeName || "");
+}
+
+function workloadSummary(deployment: any, repository: string, pods: any[]) {
+  const ref = deploymentRef(deployment);
+  const initContainer = resolvedInitContainer(deployment, repository);
+  const parsed = parseConfiguredModelImage(String(initContainer.image));
+  const runtimeContainers = Array.isArray(deployment?.spec?.template?.spec?.containers)
+    ? deployment.spec.template.spec.containers.map((container: any) => ({
+      name: String(container?.name || ""),
+      image: String(container?.image || ""),
+      command: container?.command || [],
+      args: container?.args || [],
+    }))
+    : [];
+  return {
+    ...ref,
+    initContainerName: String(initContainer.name),
+    currentImage: parsed.reference,
+    currentVersion: parsed.tag,
+    targetNode: activeNode(deployment, pods),
+    runtime: runtimeContainers,
+  };
+}
+
+function compatibleNodes(nodes: any[], edgeUnit: string, architecture: string) {
+  return nodes
+    .filter((node) => isExternalEdgeNode(node) && nodeTargetsEdgeUnit(node, edgeUnit) && isNodeReady(node) && nodeArchitecture(node) === architecture)
+    .map((node) => ({ name: nodeNameOf(node), status: "Ready", architecture: nodeArchitecture(node) }));
+}
+
+export async function resolveModelDeploymentWithDependencies(input: ModelPublishRequest, dependencies: PublishDependencies) {
+  validateInput(input);
+  const image = parseConfiguredModelImage(input.image);
+  if (!await dependencies.edgeUnitExists(input.edgeUnit)) throw new ModelDeploymentError(404, `EdgeUnit ${input.edgeUnit} not found`);
+  const labels = modelDeploymentIdentity(input);
+  const managed = await dependencies.listManagedDeployments(labels);
+  if (managed.length > 1) throw new ModelDeploymentError(409, "multiple managed model Deployments match this BAMS model and EdgeUnit");
+  let existing = managed[0];
+  let matchedBy: "identity" | "repository" = "identity";
+  if (!existing) {
+    matchedBy = "repository";
+    const candidates = (await dependencies.listEdgeUnitDeployments(input.edgeUnit))
+      .filter((deployment) => labelsOf(deployment)[identityKeys.managedBy] !== "bams")
+      .flatMap((deployment) => matchingInitContainers(deployment, image.model).map(() => deployment));
+    if (candidates.length > 1) throw new ModelDeploymentError(409, `multiple legacy Deployments contain initContainer repository ${image.model}`);
+    existing = candidates[0];
+  }
+  if (existing) {
+    const pods = await dependencies.listPods(existing);
+    return {
+      action: "UPDATE" as const,
+      matchedBy,
+      repository: image.model,
+      workload: workloadSummary(existing, image.model, pods),
+      status: modelDeploymentStatus(existing, pods),
+    };
+  }
+  const template = resolveModelRuntimeTemplate();
+  return {
+    action: "CREATE" as const,
+    repository: image.model,
+    runtimeTemplate: {
+      id: template.id,
+      version: template.version,
+      architecture: template.architecture,
+      artifactSourcePath: template.artifactSourcePath,
+      runtimeContainerName: template.runtimeContainerName,
+    },
+    nodes: compatibleNodes(await dependencies.listNodes(), input.edgeUnit, template.architecture),
+  };
+}
+
+export async function publishModelDeploymentWithDependencies(input: ModelPublishRequest, dependencies: PublishDependencies) {
+  const image = parseConfiguredModelImage(input.image);
+  const resolution = await resolveModelDeploymentWithDependencies(input, dependencies);
+  if (resolution.action === "UPDATE") {
+    const existing = (await dependencies.listManagedDeployments(modelDeploymentIdentity(input)))[0]
+      || (await dependencies.listEdgeUnitDeployments(input.edgeUnit)).find((deployment) =>
+        metadataOf(deployment).namespace === resolution.workload.namespace && metadataOf(deployment).name === resolution.workload.name);
+    if (!existing) throw new ModelDeploymentError(409, "resolved model Deployment changed before update");
+    if (resolution.workload.currentImage === image.reference) {
+      return { action: "UPDATE" as const, idempotent: true, item: existing, status: resolution.status };
+    }
+    const updated = await dependencies.updateImage(resolution.workload.namespace, resolution.workload.name, {
+      containerName: resolution.workload.initContainerName,
+      model: image.model,
+      tag: image.tag,
+      expectedCurrentImage: resolution.workload.currentImage,
+    }, modelAnnotations(input, "updating", resolution.workload.initContainerName));
+    return { action: "UPDATE" as const, item: updated.item, change: updated.change, status: modelDeploymentStatus(updated.item, []) };
+  }
+
+  if (input.targetType !== "node" || !input.targetId) throw new ModelDeploymentError(400, "targetType and targetId are required for CREATE");
+  const template = resolveModelRuntimeTemplate(resolution.runtimeTemplate.id);
+  const node = await dependencies.getNode(input.targetId);
+  validatePublishTarget(node, input, template.architecture);
+  const namespace = config.modelDeploymentNamespace;
+  const pullSecret = config.modelDeploymentPullSecret;
+  if (!pullSecret || !await dependencies.secretExists(namespace, pullSecret)) {
+    throw new ModelDeploymentError(400, `imagePullSecret ${pullSecret || "<empty>"} not found in namespace ${namespace}`);
+  }
+  const labels = modelDeploymentIdentity(input);
+  const modelName = runtimeModelName(image.model);
+  const initContainerName = `${modelName}-model-copy`;
+
+  {
+    const name = deterministicModelDeploymentName(input);
+    const deployment = buildTritonAmd64Deployment({
+      name,
+      namespace,
+      image: image.reference,
+      modelName,
+      initContainerName,
+      targetNode: input.targetId,
+      edgeUnit: input.edgeUnit,
+      labels,
+      annotations: modelAnnotations(input, "creating", initContainerName, template),
+      pullSecret,
+      template,
+    });
+    try {
+      const item = await dependencies.createDeployment(namespace, deployment);
+      return { action: "CREATE" as const, item, status: modelDeploymentStatus(item, []) };
+    } catch (error) {
+      if (!/409|AlreadyExists/i.test(error instanceof Error ? error.message : "")) throw error;
+      const matches = await dependencies.listManagedDeployments(labels);
+      if (matches.length !== 1) throw new ModelDeploymentError(409, "concurrent model Deployment creation conflict");
+      const racedImage = currentModelImage(matches[0], initContainerName);
+      if (racedImage === image.reference) {
+        return { action: "CREATE" as const, idempotent: true, item: matches[0], status: modelDeploymentStatus(matches[0], []) };
+      }
+      throw new ModelDeploymentError(409, "another model version was published concurrently; refresh status before retrying");
+    }
+  }
+}
+
+function selectorQuery(labels: Record<string, string>): string {
+  return encodeURIComponent(Object.entries(labels).map(([key, value]) => `${key}=${value}`).join(","));
+}
+
+const productionDependencies: PublishDependencies = {
+  async edgeUnitExists(edgeUnit) {
+    const configMaps = await getEdgeUnitConfigMaps([]);
+    return configMaps.some((item) => edgeUnitConfigMapMatches(item, edgeUnit));
+  },
+  getNode(name) {
+    return getK8sJson(`/api/v1/nodes/${encodeURIComponent(name)}`);
+  },
+  async listNodes() {
+    return itemsOf(await getK8sJson("/api/v1/nodes"));
+  },
+  async listPods(deployment) {
+    const ref = deploymentRef(deployment);
+    const selector = deployment?.spec?.selector?.matchLabels || {};
+    return itemsOf(await getK8sJson(`/api/v1/namespaces/${encodeURIComponent(ref.namespace)}/pods?labelSelector=${selectorQuery(selector)}`));
+  },
+  async secretExists(namespace, name) {
+    try {
+      await getK8sJson(`/api/v1/namespaces/${encodeURIComponent(namespace)}/secrets/${encodeURIComponent(name)}`);
+      return true;
+    } catch (error) {
+      if (/404|not found/i.test(error instanceof Error ? error.message : "")) return false;
+      throw error;
+    }
+  },
+  async listManagedDeployments(labels) {
+    const result = await getK8sJson(`/apis/apps/v1/deployments?labelSelector=${selectorQuery(labels)}`);
+    return itemsOf(result);
+  },
+  async listEdgeUnitDeployments(edgeUnit) {
+    const result = await getK8sJson(`/apis/apps/v1/deployments?labelSelector=${selectorQuery({ [identityKeys.edgeUnit]: labelValue(edgeUnit, "edgeUnit") })}`);
+    return itemsOf(result);
+  },
+  createDeployment(namespace, deployment) {
+    return requestK8sJson(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments`, { method: "POST", body: deployment });
+  },
+  updateImage(namespace, name, payload, annotations) {
+    return updateModelImage(namespace, name, payload, { deploymentAnnotations: annotations });
+  },
+};
+
+export function publishModelDeployment(input: ModelPublishRequest) {
+  return publishModelDeploymentWithDependencies(input, productionDependencies);
+}
+
+export function resolveModelDeployment(input: ModelPublishRequest) {
+  return resolveModelDeploymentWithDependencies(input, productionDependencies);
+}
+
+export async function listModelPublishEdgeUnits() {
+  const configMaps = await getEdgeUnitConfigMaps([]);
+  return { items: configMaps.map((item) => ({ name: String(item?.data?.name || labelsOf(item)[identityKeys.edgeUnit] || metadataOf(item).name || "") })).filter((item) => item.name) };
+}
+
+export async function listModelPublishNodes(edgeUnit: string) {
+  const template = resolveModelRuntimeTemplate();
+  const configMaps = await getEdgeUnitConfigMaps([]);
+  if (!configMaps.some((item) => edgeUnitConfigMapMatches(item, edgeUnit))) throw new ModelDeploymentError(404, `EdgeUnit ${edgeUnit} not found`);
+  const nodes = itemsOf(await getK8sJson("/api/v1/nodes"));
+  return {
+    runtimeTemplate: template,
+    items: compatibleNodes(nodes, edgeUnit, template.architecture),
+  };
+}
+
+function waitingFailure(status: any): string | null {
+  const statuses = [
+    ...(Array.isArray(status?.initContainerStatuses) ? status.initContainerStatuses : []),
+    ...(Array.isArray(status?.containerStatuses) ? status.containerStatuses : []),
+  ];
+  for (const item of statuses) {
+    const waiting = item?.state?.waiting;
+    if (["ImagePullBackOff", "ErrImagePull", "CrashLoopBackOff"].includes(String(waiting?.reason || ""))) {
+      return `${waiting.reason}${waiting.message ? `: ${waiting.message}` : ""}`;
+    }
+    const terminated = item?.state?.terminated;
+    if (terminated && Number(terminated.exitCode) !== 0) return `${item.name} exited with code ${terminated.exitCode}`;
+  }
+  return null;
+}
+
+export function modelDeploymentStatus(deployment: any, pods: any[]) {
+  const generation = Number(metadataOf(deployment).generation || 0);
+  const observedGeneration = Number(deployment?.status?.observedGeneration || 0);
+  const desired = Number(deployment?.spec?.replicas ?? 1);
+  const status = deployment?.status || {};
+  const deploymentFailure = Array.isArray(status.conditions)
+    ? status.conditions.find((condition: any) =>
+      (condition?.type === "Progressing" && condition?.status === "False" && condition?.reason === "ProgressDeadlineExceeded")
+      || (condition?.type === "ReplicaFailure" && condition?.status === "True"))
+    : undefined;
+  if (deploymentFailure && observedGeneration >= generation) {
+    return {
+      state: "FAILED",
+      message: `${deploymentFailure.reason || deploymentFailure.type}${deploymentFailure.message ? `: ${deploymentFailure.message}` : ""}`,
+    };
+  }
+  const activePods = pods.filter((pod) => !metadataOf(pod).deletionTimestamp && pod?.status?.phase !== "Succeeded");
+  for (const pod of activePods) {
+    const failure = waitingFailure(pod?.status);
+    if (failure) return { state: "FAILED", message: failure };
+    const scheduled = Array.isArray(pod?.status?.conditions)
+      ? pod.status.conditions.find((condition: any) => condition?.type === "PodScheduled" && condition?.status === "False")
+      : undefined;
+    if (scheduled?.reason === "Unschedulable") return { state: "FAILED", message: `FailedScheduling: ${scheduled.message || "unschedulable"}` };
+    if (pod?.status?.phase === "Failed") return { state: "FAILED", message: pod?.status?.message || "Pod failed" };
+  }
+  const readyPods = activePods.filter((pod) => pod?.status?.phase === "Running" && Array.isArray(pod?.status?.conditions)
+    && pod.status.conditions.some((condition: any) => condition?.type === "Ready" && condition?.status === "True")).length;
+  const ready = observedGeneration >= generation
+    && Number(status.replicas || 0) >= desired
+    && Number(status.updatedReplicas || 0) >= desired
+    && Number(status.availableReplicas || 0) >= desired
+    && Number(status.unavailableReplicas || 0) === 0
+    && readyPods >= desired;
+  if (ready) return { state: "READY", message: "Deployment and Pods are Ready" };
+  const operation = String(metadataOf(deployment).annotations?.[annotationKeys.publishOperation] || "creating");
+  return { state: operation === "updating" ? "UPDATING" : "CREATING", message: "Deployment rollout is in progress" };
+}
+
+export async function getModelDeploymentStatus(namespace: string, name: string) {
+  const deployment = await getK8sJson(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(name)}`);
+  const selector = selectorQuery(deployment?.spec?.selector?.matchLabels || {});
+  const pods = itemsOf(await getK8sJson(`/api/v1/namespaces/${encodeURIComponent(namespace)}/pods?labelSelector=${selector}`));
+  return { item: { namespace, name, ...modelDeploymentStatus(deployment, pods), deployment } };
+}
+
+export async function findModelDeploymentStatus(spaceId: string, modelRepoId: string, edgeUnit: string, image: string) {
+  const resolution = await resolveModelDeployment({
+    source: "bams",
+    spaceId,
+    modelRepoId,
+    modelVersionId: "status",
+    modelImageId: "status",
+    image,
+    edgeUnit,
+  });
+  if (resolution.action === "CREATE") return { item: { state: "NOT_PUBLISHED" } };
+  return { item: { ...resolution.workload, ...resolution.status } };
+}

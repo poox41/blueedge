@@ -21,7 +21,7 @@ function signJwt(payload: BlueEdgeJwtPayload): string {
 }
 
 function isAuthSource(value: unknown): value is AuthSource {
-  return value === "local" || value === "bams";
+  return value === "local" || value === "bams" || value === "service";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -135,5 +135,36 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     },
     token: payload,
   };
+  next();
+}
+
+export function requireServiceScopes(...requiredScopes: string[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (req.auth?.principal.authSource !== "service") {
+      res.status(403).json({ message: "service identity required" });
+      return;
+    }
+    const rawScopes = req.auth.principal.additionalClaims?.scope;
+    const scopes = new Set(
+      Array.isArray(rawScopes)
+        ? rawScopes.filter((item): item is string => typeof item === "string")
+        : typeof rawScopes === "string"
+          ? rawScopes.split(/\s+/).filter(Boolean)
+          : [],
+    );
+    const missing = requiredScopes.filter((scope) => !scopes.has(scope));
+    if (missing.length > 0) {
+      res.status(403).json({ message: `missing required scope: ${missing.join(", ")}` });
+      return;
+    }
+    next();
+  };
+}
+
+export function rejectServiceIdentity(req: Request, res: Response, next: NextFunction) {
+  if (req.auth?.principal.authSource === "service") {
+    res.status(403).json({ message: "service identity is not allowed for this API" });
+    return;
+  }
   next();
 }

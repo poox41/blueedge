@@ -1,7 +1,7 @@
 import cors from "cors";
 import express, { type Express } from "express";
 import { config } from "./config.js";
-import { requireAuth } from "./middleware/auth.middleware.js";
+import { rejectServiceIdentity, requireAuth } from "./middleware/auth.middleware.js";
 import { errorMiddleware } from "./middleware/error.middleware.js";
 import { notFoundMiddleware } from "./middleware/not-found.middleware.js";
 import { registerAccessConfigRoutes } from "./routes/access-config.routes.js";
@@ -15,6 +15,7 @@ import { registerEdgeApplicationProxyRoutes } from "./routes/edgeapplication-pro
 import { registerEventsRoutes } from "./routes/events.routes.js";
 import { registerMetricsRoutes } from "./routes/metrics.routes.js";
 import { registerModelRegistryRoutes } from "./routes/model-registry.routes.js";
+import { registerModelDeploymentRoutes } from "./routes/model-deployment.routes.js";
 import { registerObservabilityRoutes } from "./routes/observability.routes.js";
 import { registerOverviewRoutes } from "./routes/overview.routes.js";
 import { registerProxyRoutes } from "./routes/proxy.routes.js";
@@ -46,6 +47,11 @@ export function createApp(): Express {
   registerPublicAuthRoutes(app);
 
   app.use(requireAuth);
+
+  // Machine identities are allow-listed by route and scope. Register their
+  // dedicated API before rejecting them from all interactive/admin APIs.
+  registerModelDeploymentRoutes(app);
+  app.use(rejectServiceIdentity);
 
   registerEdgeUnitRoutes(app);
   registerAccessConfigRoutes(app);

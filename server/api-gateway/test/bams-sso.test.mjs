@@ -4,7 +4,7 @@ import {
   BamsSsoClientError,
   exchangeBamsAuthorizationCode,
 } from "../dist/clients/bams-sso-client.js";
-import { config } from "../dist/config.js";
+import { config, isAllowedSsoBaseUrl } from "../dist/config.js";
 import { createAuthToken, verifyAuthToken } from "../dist/middleware/auth.middleware.js";
 import { mapBamsSsoClientError } from "../dist/routes/auth.routes.js";
 import {
@@ -51,6 +51,40 @@ const platformAdminWithSpace = {
     },
   },
 };
+
+test("HTTP SSO is allowed only for the fixed TEST BAMS endpoint", () => {
+  assert.equal(isAllowedSsoBaseUrl("https://bams.example.test"), true);
+  assert.equal(isAllowedSsoBaseUrl("http://14.103.139.131:40002", false), false);
+  assert.equal(isAllowedSsoBaseUrl("http://14.103.139.131:40002", true), true);
+  assert.equal(isAllowedSsoBaseUrl("http://bams.example.test", true), false);
+});
+
+test("BAMS client exchanges through the explicitly enabled fixed TEST HTTP endpoint", async () => {
+  const previous = {
+    baseUrl: config.bamsSsoBaseUrl,
+    allowInsecureTestHttp: config.allowInsecureTestHttp,
+    clientId: config.bamsSsoClientId,
+    clientSecret: config.bamsSsoClientSecret,
+  };
+  config.bamsSsoBaseUrl = "http://14.103.139.131:40002";
+  config.allowInsecureTestHttp = true;
+  config.bamsSsoClientId = "blueedge";
+  config.bamsSsoClientSecret = "test-client-secret";
+  try {
+    let capturedUrl;
+    const payload = await exchangeBamsAuthorizationCode("A".repeat(43), async (url) => {
+      capturedUrl = url;
+      return Response.json(platformAdminWithoutSpace);
+    });
+    assert.deepEqual(payload, platformAdminWithoutSpace);
+    assert.equal(capturedUrl.toString(), "http://14.103.139.131:40002/v1/sso/blueedge/exchange");
+  } finally {
+    config.bamsSsoBaseUrl = previous.baseUrl;
+    config.allowInsecureTestHttp = previous.allowInsecureTestHttp;
+    config.bamsSsoClientId = previous.clientId;
+    config.bamsSsoClientSecret = previous.clientSecret;
+  }
+});
 
 async function withBamsClientConfig(callback) {
   const previous = {

@@ -1,4 +1,4 @@
-import { config } from "../config.js";
+import { config, isAllowedSsoBaseUrl } from "../config.js";
 import type { BamsExchangeErrorDto, BamsExchangePayload } from "../types/auth.js";
 
 type BamsFetch = (input: URL, init: RequestInit) => Promise<Response>;
@@ -19,7 +19,10 @@ function exchangeUrl(): URL {
     throw new BamsSsoClientError("BAMS_SSO_NOT_CONFIGURED");
   }
   const target = new URL(config.bamsSsoExchangePath, `${config.bamsSsoBaseUrl}/`);
-  if (target.protocol !== "https:" && process.env.NODE_ENV === "production") {
+  if (
+    process.env.NODE_ENV === "production" &&
+    !isAllowedSsoBaseUrl(config.bamsSsoBaseUrl, config.allowInsecureTestHttp)
+  ) {
     throw new BamsSsoClientError("BAMS_SSO_NOT_CONFIGURED");
   }
   return target;
