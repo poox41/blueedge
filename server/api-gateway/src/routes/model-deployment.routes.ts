@@ -3,6 +3,7 @@ import { requireServiceScopes } from "../middleware/auth.middleware.js";
 import {
   getModelDeploymentStatus,
   findModelDeploymentStatus,
+  getModelRegistryTarget,
   listModelPublishEdgeUnits,
   listModelPublishNodes,
   ModelDeploymentError,
@@ -16,7 +17,7 @@ function statusOf(error: unknown): number {
   const message = error instanceof Error ? error.message : "";
   if (/not found|404/i.test(message)) return 404;
   if (/conflict|409|AlreadyExists/i.test(message)) return 409;
-  if (/required|invalid|unsupported|not Ready|does not belong|not compatible|imagePullSecret/i.test(message)) return 400;
+  if (/required|invalid|unsupported|not Ready|does not belong|not compatible|imagePullSecret|not configured|disabled|Registry CA Secret|Registry read credential Secret/i.test(message)) return 400;
   return 502;
 }
 
@@ -36,6 +37,18 @@ function publishPayload(body: any): ModelPublishRequest {
 }
 
 export function registerModelDeploymentRoutes(app: Express) {
+  app.get(
+    "/blueedge/model-deployments/edge-units/:edgeUnit/registry-target",
+    requireServiceScopes("edge-registry:read"),
+    async (req, res) => {
+      try {
+        res.json(await getModelRegistryTarget(req.params.edgeUnit));
+      } catch (error) {
+        res.status(statusOf(error)).json({ message: error instanceof Error ? error.message : "failed to read EdgeUnit Registry target" });
+      }
+    },
+  );
+
   app.get(
     "/blueedge/model-deployments/edge-units",
     requireServiceScopes("edge-units:read"),

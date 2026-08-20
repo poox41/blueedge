@@ -4,7 +4,19 @@ import { getK8sJson, requestK8sJson } from "../clients/k8s-client.js";
 import { getEdgeUnitConfigMaps } from "./edge-unit-source.service.js";
 import { edgeUnitConfigMapMatches } from "./edge-unit-source.service.js";
 import { isExternalEdgeNode, nodeTargetsEdgeUnit } from "./edge-unit.service.js";
-import { modelImagePrefix, updateModelImage } from "./model-registry.service.js";
+import {
+  edgeUnitRegistryConnection,
+  modelImagePrefix,
+  modelImageReference,
+  updateModelImage,
+  type ModelRegistryConnection,
+} from "./model-registry.service.js";
+import {
+  readEdgeUnitRegistryCa,
+  readEdgeUnitRegistryCredential,
+  resolveEdgeUnitModelRegistry,
+  type EdgeUnitModelRegistry,
+} from "./edge-unit-model-registry.service.js";
 import { buildTritonAmd64Deployment, resolveModelRuntimeTemplate } from "./model-runtime-template.service.js";
 import { isNodeReady, itemsOf, labelsOf, metadataOf, nodeNameOf } from "../utils/kubernetes.js";
 
@@ -46,6 +58,7 @@ export class ModelDeploymentError extends Error {
 
 type PublishDependencies = {
   edgeUnitExists(edgeUnit: string): Promise<boolean>;
+  getModelRegistry(edgeUnit: string): Promise<EdgeUnitModelRegistry>;
   getNode(name: string): Promise<any>;
   listNodes(): Promise<any[]>;
   listPods(deployment: any): Promise<any[]>;
@@ -58,7 +71,7 @@ type PublishDependencies = {
     model: string;
     tag: string;
     expectedCurrentImage: string;
-  }, annotations: Record<string, string>): Promise<any>;
+  }, annotations: Record<string, string>, registry: EdgeUnitModelRegistry): Promise<any>;
 };
 
 function labelValue(value: string, field: string): string {
@@ -97,7 +110,7 @@ function modelAnnotations(input: ModelPublishRequest, operation: "creating" | "u
   };
 }
 
-export function parseConfiguredModelImage(image: string): { model: string; tag: string; reference: string } {
+export function parseConfiguredModelImage(image: string, registry?: ModelRegistryConnection): { model: string; tag: string; reference: string } {
   const trimmed = image.trim();
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
     throw new ModelDeploymentError(400, "model image must not include a URL scheme");
@@ -105,7 +118,7 @@ export function parseConfiguredModelImage(image: string): { model: string; tag: 
   const firstSlash = trimmed.indexOf("/");
   if (firstSlash <= 0) throw new ModelDeploymentError(400, "model image must include a registry host and repository");
   const normalizedImage = `${trimmed.slice(0, firstSlash).toLowerCase()}${trimmed.slice(firstSlash)}`;
-  const prefix = modelImagePrefix();
+  const prefix = modelImagePrefix(registry);
   if (!normalizedImage.startsWith(prefix)) {
     throw new ModelDeploymentError(400, "当前模型镜像不在边缘共享镜像仓库");
   }
@@ -159,33 +172,33 @@ function runtimeModelName(repository: string) {
   return name;
 }
 
-function matchingInitContainers(deployment: any, repository: string) {
+function matchingInitContainers(deployment: any, repository: string, registry: ModelRegistryConnection) {
   const containers = deployment?.spec?.template?.spec?.initContainers;
   if (!Array.isArray(containers)) return [];
   return containers.filter((container: any) => {
     if (!container?.name || !container?.image) return false;
     try {
-      return parseConfiguredModelImage(String(container.image)).model === repository;
+      return parseConfiguredModelImage(String(container.image), registry).model === repository;
     } catch {
       return false;
     }
   });
 }
 
-function resolvedInitContainer(deployment: any, repository: string) {
+function resolvedInitContainer(deployment: any, repository: string, registry: ModelRegistryConnection) {
   const annotatedName = String(metadataOf(deployment).annotations?.[annotationKeys.modelInitContainer] || "");
   const containers = deployment?.spec?.template?.spec?.initContainers;
   if (annotatedName && Array.isArray(containers)) {
     const annotated = containers.find((item: any) => item?.name === annotatedName);
     if (annotated?.image) {
       try {
-        if (parseConfiguredModelImage(String(annotated.image)).model === repository) return annotated;
+        if (parseConfiguredModelImage(String(annotated.image), registry).model === repository) return annotated;
       } catch {
         // Fall through to strict repository resolution.
       }
     }
   }
-  const matches = matchingInitContainers(deployment, repository);
+  const matches = matchingInitContainers(deployment, repository, registry);
   if (matches.length !== 1) {
     throw new ModelDeploymentError(409, matches.length > 1
       ? `Deployment ${metadataOf(deployment).name} has multiple initContainers for repository ${repository}`
@@ -201,10 +214,10 @@ function activeNode(deployment: any, pods: any[]) {
   return String(activePod?.spec?.nodeName || "");
 }
 
-function workloadSummary(deployment: any, repository: string, pods: any[]) {
+function workloadSummary(deployment: any, repository: string, pods: any[], registry: ModelRegistryConnection) {
   const ref = deploymentRef(deployment);
-  const initContainer = resolvedInitContainer(deployment, repository);
-  const parsed = parseConfiguredModelImage(String(initContainer.image));
+  const initContainer = resolvedInitContainer(deployment, repository, registry);
+  const parsed = parseConfiguredModelImage(String(initContainer.image), registry);
   const runtimeContainers = Array.isArray(deployment?.spec?.template?.spec?.containers)
     ? deployment.spec.template.spec.containers.map((container: any) => ({
       name: String(container?.name || ""),
@@ -231,8 +244,11 @@ function compatibleNodes(nodes: any[], edgeUnit: string, architecture: string) {
 
 export async function resolveModelDeploymentWithDependencies(input: ModelPublishRequest, dependencies: PublishDependencies) {
   validateInput(input);
-  const image = parseConfiguredModelImage(input.image);
   if (!await dependencies.edgeUnitExists(input.edgeUnit)) throw new ModelDeploymentError(404, `EdgeUnit ${input.edgeUnit} not found`);
+  const registryConfig = await dependencies.getModelRegistry(input.edgeUnit);
+  if (!registryConfig.enabled) throw new ModelDeploymentError(400, `EdgeUnit ${input.edgeUnit} model Registry is disabled`);
+  const registry = edgeUnitRegistryConnection(registryConfig);
+  const image = parseConfiguredModelImage(input.image, registry);
   const labels = modelDeploymentIdentity(input);
   const managed = await dependencies.listManagedDeployments(labels);
   if (managed.length > 1) throw new ModelDeploymentError(409, "multiple managed model Deployments match this BAMS model and EdgeUnit");
@@ -242,7 +258,7 @@ export async function resolveModelDeploymentWithDependencies(input: ModelPublish
     matchedBy = "repository";
     const candidates = (await dependencies.listEdgeUnitDeployments(input.edgeUnit))
       .filter((deployment) => labelsOf(deployment)[identityKeys.managedBy] !== "bams")
-      .flatMap((deployment) => matchingInitContainers(deployment, image.model).map(() => deployment));
+      .flatMap((deployment) => matchingInitContainers(deployment, image.model, registry).map(() => deployment));
     if (candidates.length > 1) throw new ModelDeploymentError(409, `multiple legacy Deployments contain initContainer repository ${image.model}`);
     existing = candidates[0];
   }
@@ -252,7 +268,7 @@ export async function resolveModelDeploymentWithDependencies(input: ModelPublish
       action: "UPDATE" as const,
       matchedBy,
       repository: image.model,
-      workload: workloadSummary(existing, image.model, pods),
+      workload: workloadSummary(existing, image.model, pods, registry),
       status: modelDeploymentStatus(existing, pods),
     };
   }
@@ -272,7 +288,11 @@ export async function resolveModelDeploymentWithDependencies(input: ModelPublish
 }
 
 export async function publishModelDeploymentWithDependencies(input: ModelPublishRequest, dependencies: PublishDependencies) {
-  const image = parseConfiguredModelImage(input.image);
+  validateInput(input);
+  const registryConfig = await dependencies.getModelRegistry(input.edgeUnit);
+  if (!registryConfig.enabled) throw new ModelDeploymentError(400, `EdgeUnit ${input.edgeUnit} model Registry is disabled`);
+  const registry = edgeUnitRegistryConnection(registryConfig);
+  const image = parseConfiguredModelImage(input.image, registry);
   const resolution = await resolveModelDeploymentWithDependencies(input, dependencies);
   if (resolution.action === "UPDATE") {
     const existing = (await dependencies.listManagedDeployments(modelDeploymentIdentity(input)))[0]
@@ -287,7 +307,7 @@ export async function publishModelDeploymentWithDependencies(input: ModelPublish
       model: image.model,
       tag: image.tag,
       expectedCurrentImage: resolution.workload.currentImage,
-    }, modelAnnotations(input, "updating", resolution.workload.initContainerName));
+    }, modelAnnotations(input, "updating", resolution.workload.initContainerName), registryConfig);
     return { action: "UPDATE" as const, item: updated.item, change: updated.change, status: modelDeploymentStatus(updated.item, []) };
   }
 
@@ -296,9 +316,9 @@ export async function publishModelDeploymentWithDependencies(input: ModelPublish
   const node = await dependencies.getNode(input.targetId);
   validatePublishTarget(node, input, template.architecture);
   const namespace = config.modelDeploymentNamespace;
-  const pullSecret = config.modelDeploymentPullSecret;
+  const pullSecret = registryConfig.pullSecretName;
   if (!pullSecret || !await dependencies.secretExists(namespace, pullSecret)) {
-    throw new ModelDeploymentError(400, `imagePullSecret ${pullSecret || "<empty>"} not found in namespace ${namespace}`);
+    throw new ModelDeploymentError(400, `imagePullSecret ${pullSecret || "<empty>"} is missing or invalid in namespace ${namespace}`);
   }
   const labels = modelDeploymentIdentity(input);
   const modelName = runtimeModelName(image.model);
@@ -309,7 +329,7 @@ export async function publishModelDeploymentWithDependencies(input: ModelPublish
     const deployment = buildTritonAmd64Deployment({
       name,
       namespace,
-      image: image.reference,
+      image: modelImageReference(image.model, image.tag, registry),
       modelName,
       initContainerName,
       targetNode: input.targetId,
@@ -344,6 +364,14 @@ const productionDependencies: PublishDependencies = {
     const configMaps = await getEdgeUnitConfigMaps([]);
     return configMaps.some((item) => edgeUnitConfigMapMatches(item, edgeUnit));
   },
+  async getModelRegistry(edgeUnit) {
+    try {
+      return await resolveEdgeUnitModelRegistry(edgeUnit);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "model Registry is not configured";
+      throw new ModelDeploymentError(/not found/i.test(message) ? 404 : 400, message);
+    }
+  },
   getNode(name) {
     return getK8sJson(`/api/v1/nodes/${encodeURIComponent(name)}`);
   },
@@ -357,8 +385,10 @@ const productionDependencies: PublishDependencies = {
   },
   async secretExists(namespace, name) {
     try {
-      await getK8sJson(`/api/v1/namespaces/${encodeURIComponent(namespace)}/secrets/${encodeURIComponent(name)}`);
-      return true;
+      const secret = await getK8sJson(`/api/v1/namespaces/${encodeURIComponent(namespace)}/secrets/${encodeURIComponent(name)}`);
+      return secret?.type === "kubernetes.io/dockerconfigjson"
+        && typeof secret?.data?.[".dockerconfigjson"] === "string"
+        && secret.data[".dockerconfigjson"].length > 0;
     } catch (error) {
       if (/404|not found/i.test(error instanceof Error ? error.message : "")) return false;
       throw error;
@@ -375,8 +405,15 @@ const productionDependencies: PublishDependencies = {
   createDeployment(namespace, deployment) {
     return requestK8sJson(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments`, { method: "POST", body: deployment });
   },
-  updateImage(namespace, name, payload, annotations) {
-    return updateModelImage(namespace, name, payload, { deploymentAnnotations: annotations });
+  async updateImage(namespace, name, payload, annotations, registryConfig) {
+    const [credential, ca] = await Promise.all([
+      readEdgeUnitRegistryCredential(registryConfig),
+      readEdgeUnitRegistryCa(registryConfig),
+    ]);
+    return updateModelImage(namespace, name, payload, {
+      deploymentAnnotations: annotations,
+      registry: edgeUnitRegistryConnection(registryConfig, credential, ca?.pem),
+    });
   },
 };
 
@@ -386,6 +423,18 @@ export function publishModelDeployment(input: ModelPublishRequest) {
 
 export function resolveModelDeployment(input: ModelPublishRequest) {
   return resolveModelDeploymentWithDependencies(input, productionDependencies);
+}
+
+export async function getModelRegistryTarget(edgeUnit: string) {
+  const registry = await resolveEdgeUnitModelRegistry(edgeUnit);
+  const connection = edgeUnitRegistryConnection(registry);
+  return {
+    enabled: registry.enabled,
+    registryHost: registry.registryHost,
+    repositoryPrefix: registry.repositoryPrefix,
+    imagePrefix: modelImagePrefix(connection),
+    tls: registry.tls,
+  };
 }
 
 export async function listModelPublishEdgeUnits() {

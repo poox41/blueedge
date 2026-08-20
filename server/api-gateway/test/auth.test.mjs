@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import http from "node:http";
 import test from "node:test";
 import { createApp } from "../dist/app.js";
 import { config } from "../dist/config.js";
@@ -70,6 +71,7 @@ test("BAMS publisher client uses an independent short-lived service identity", (
     const principal = authenticateServiceClient(config.bamsPublisherClientId, "test-client-secret");
     assert.ok(principal);
     assert.equal(principal.authSource, "service");
+    assert.equal(bamsPublisherScopes.includes("edge-registry:read"), true);
     assert.deepEqual(principal.additionalClaims.scope, [...bamsPublisherScopes]);
     const payload = verifyAuthToken(createAuthToken(principal, 60));
     assert.equal(payload.auth_source, "service");
@@ -157,4 +159,80 @@ test("service scope middleware rejects non-service and insufficient-scope princi
   middleware({ auth: { principal: { authSource: "service", additionalClaims: { scope: ["edge-units:read"] } } } }, missingScopeResponse, () => assert.fail("must not continue"));
   assert.equal(missingScopeResponse.statusCode, 403);
   assert.match(missingScopeResponse.body.message, /missing required scope/);
+});
+
+test("registry-target is service-only, scope protected, and returns a non-secret DTO", async () => {
+  const originalK8sApiServer = config.k8sApiServer;
+  const k8sServer = http.createServer((_req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.end(JSON.stringify({
+      items: [{
+        metadata: {
+          name: "edgeunit-edge-131",
+          namespace: "blueedge-system",
+          labels: { "blueedge.io/resource": "edgeunit", "blueedge.io/edge-unit": "edge-131" },
+        },
+        data: {
+          name: "edge-131",
+          modelRegistryEnabled: "true",
+          modelRegistryHost: "183.95.195.121:31438",
+          modelRegistryRepositoryPrefix: "app",
+          modelRegistryTls: "true",
+          modelRegistryPullSecretName: "must-not-leak",
+          modelRegistryReadCredentialRef: "must-not-leak-reader",
+          modelRegistryCaSecretRef: "must-not-leak-ca",
+        },
+      }],
+    }));
+  });
+  const appServer = createApp().listen(0, "127.0.0.1");
+  try {
+    await Promise.all([
+      new Promise((resolve) => k8sServer.listen(0, "127.0.0.1", resolve)),
+      new Promise((resolve) => appServer.once("listening", resolve)),
+    ]);
+    const k8sAddress = k8sServer.address();
+    const appAddress = appServer.address();
+    assert.ok(k8sAddress && typeof k8sAddress === "object");
+    assert.ok(appAddress && typeof appAddress === "object");
+    config.k8sApiServer = `http://127.0.0.1:${k8sAddress.port}`;
+    const url = `http://127.0.0.1:${appAddress.port}/blueedge/model-deployments/edge-units/edge-131/registry-target`;
+
+    const allowedToken = createAuthToken({
+      subject: "bams-publisher",
+      username: "bams-publisher",
+      authSource: "service",
+      additionalClaims: { scope: ["edge-registry:read"] },
+    });
+    const allowed = await fetch(url, { headers: { Authorization: `Bearer ${allowedToken}` } });
+    assert.equal(allowed.status, 200);
+    assert.deepEqual(await allowed.json(), {
+      enabled: true,
+      registryHost: "183.95.195.121:31438",
+      repositoryPrefix: "app",
+      imagePrefix: "183.95.195.121:31438/app/",
+      tls: true,
+    });
+
+    const missingScopeToken = createAuthToken({
+      subject: "bams-publisher",
+      username: "bams-publisher",
+      authSource: "service",
+      additionalClaims: { scope: ["edge-units:read"] },
+    });
+    const missingScope = await fetch(url, { headers: { Authorization: `Bearer ${missingScopeToken}` } });
+    assert.equal(missingScope.status, 403);
+    assert.match((await missingScope.json()).message, /missing required scope/);
+
+    const localToken = createAuthToken(createLocalPrincipal("admin"));
+    const ordinaryUser = await fetch(url, { headers: { Authorization: `Bearer ${localToken}` } });
+    assert.equal(ordinaryUser.status, 403);
+    assert.deepEqual(await ordinaryUser.json(), { message: "service identity required" });
+  } finally {
+    config.k8sApiServer = originalK8sApiServer;
+    await Promise.all([
+      new Promise((resolve) => k8sServer.close(resolve)),
+      new Promise((resolve) => appServer.close(resolve)),
+    ]);
+  }
 });

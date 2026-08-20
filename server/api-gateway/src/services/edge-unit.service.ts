@@ -146,6 +146,10 @@ export function buildEdgeUnitConfigMapData(body: any, existingData?: Record<stri
   if (!insightStatus) throw new Error("insightStatus must be one of installed, notInstalled, unknown");
   if (!monitorStatus) throw new Error("monitorStatus must be one of installed, notInstalled, unknown");
 
+  const modelRegistryData = Object.fromEntries(
+    Object.entries(existingData || {}).filter(([key]) => key.startsWith("modelRegistry")),
+  );
+
   return {
     name,
     // EdgeUnit ownership is expressed with blueedge.io/edge-unit labels.
@@ -166,6 +170,9 @@ export function buildEdgeUnitConfigMapData(body: any, existingData?: Record<stri
     // This is server-owned lifecycle state. Never allow clients to claim an
     // externally installed CloudCore and later uninstall it through BlueEdge.
     managedCloudCore: existingData?.managedCloudCore || "",
+    // Model Registry settings have a dedicated API and must survive ordinary
+    // EdgeUnit edits without being copied through the general EdgeUnit DTO.
+    ...modelRegistryData,
   };
 }
 

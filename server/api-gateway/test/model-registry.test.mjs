@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import https from "node:https";
 import test from "node:test";
 import {
+  edgeUnitRegistryConnection,
+  listModelTags,
   modelRepositoriesFromCatalog,
+  registryTlsOptions,
   updateDeploymentModelImage,
 } from "../dist/services/model-registry.service.js";
+
+const registryCert = fs.readFileSync(new URL("./fixtures/registry-ca-cert.pem", import.meta.url), "utf8");
+const registryKey = fs.readFileSync(new URL("./fixtures/registry-ca-key.pem", import.meta.url), "utf8");
 
 function deployment() {
   return {
@@ -69,4 +77,48 @@ test("rejects stale updates and non-model initContainers", () => {
     model: "face",
     tag: "1.4-amd64",
   }, "registry.example.com/app/face:1.4-amd64", "registry.example.com/app/"), /not a configured model container/);
+});
+
+test("HTTPS Registry uses system trust when caSecretRef is absent", () => {
+  const connection = edgeUnitRegistryConnection({
+    enabled: true,
+    registryHost: "registry.example.com",
+    repositoryPrefix: "app",
+    tls: true,
+    pullSecretName: "registry-pull",
+    readCredentialRef: "",
+    caSecretRef: "",
+  });
+  assert.deepEqual(registryTlsOptions(connection), { rejectUnauthorized: true });
+});
+
+test("self-signed HTTPS Registry succeeds only when the configured CA is supplied", async () => {
+  const server = https.createServer({ key: registryKey, cert: registryCert }, (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    if (req.url === "/v2/app/face/tags/list") {
+      res.end(JSON.stringify({ name: "app/face", tags: ["1.3-amd64-test"] }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end(JSON.stringify({ errors: [{ code: "NAME_UNKNOWN" }] }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === "object");
+    const registry = {
+      enabled: true,
+      registryHost: `127.0.0.1:${address.port}`,
+      repositoryPrefix: "app",
+      tls: true,
+      pullSecretName: "registry-pull",
+      readCredentialRef: "",
+      caSecretRef: "registry-ca",
+    };
+    await assert.rejects(() => listModelTags("face", edgeUnitRegistryConnection(registry)), /self-signed certificate/);
+    const result = await listModelTags("face", edgeUnitRegistryConnection(registry, null, registryCert));
+    assert.deepEqual(result, { model: "face", repository: "app/face", items: ["1.3-amd64-test"] });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

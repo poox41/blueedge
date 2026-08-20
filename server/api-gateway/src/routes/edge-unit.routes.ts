@@ -10,6 +10,10 @@ import {
 } from "../services/edge-unit.service.js";
 import { getIncrementalSyncStatus } from "../services/cloudcore-sync.service.js";
 import { getEdgeUnitOperation, startCreateEdgeUnit, startDeleteEdgeUnit } from "../services/edge-unit-operation.service.js";
+import {
+  getEdgeUnitModelRegistry,
+  putEdgeUnitModelRegistry,
+} from "../services/edge-unit-model-registry.service.js";
 
 function sendServiceResult(res: express.Response, result: { status: number; body: any }) {
   res.status(result.status).json(result.body);
@@ -37,6 +41,22 @@ export function registerEdgeUnitRoutes(app: express.Express) {
       res.json(await listEdgeUnits());
     } catch (error) {
       res.status(500).json({ message: error instanceof Error ? error.message : "edge units API is unavailable" });
+    }
+  });
+
+  app.get("/blueedge/edge-units/:name/model-registry", async (req, res) => {
+    try {
+      sendServiceResult(res, await getEdgeUnitModelRegistry(req.params.name));
+    } catch (error) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "model Registry configuration read failed" });
+    }
+  });
+
+  app.put("/blueedge/edge-units/:name/model-registry", async (req, res) => {
+    try {
+      sendServiceResult(res, await putEdgeUnitModelRegistry(req.params.name, req.body));
+    } catch (error) {
+      res.status(500).json({ message: error instanceof Error ? error.message : "model Registry configuration update failed" });
     }
   });
 

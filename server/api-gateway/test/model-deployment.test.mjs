@@ -22,6 +22,16 @@ const base = {
   targetId: "aibox-1",
 };
 
+const modelRegistry = {
+  enabled: true,
+  registryHost: "registry.example.com",
+  repositoryPrefix: "app",
+  tls: true,
+  pullSecretName: "my-registry-secret",
+  readCredentialRef: "",
+  caSecretRef: "",
+};
+
 function node(overrides = {}) {
   return {
     metadata: {
@@ -76,6 +86,10 @@ function harness(options = {}) {
     calls,
     dependencies: {
       async edgeUnitExists() { return options.edgeUnitExists !== false; },
+      async getModelRegistry() {
+        if (options.registryError) throw options.registryError;
+        return options.modelRegistry || modelRegistry;
+      },
       async getNode() { return options.node || node(); },
       async listNodes() { return options.nodes || [node()]; },
       async listPods() { return options.pods || [{ spec: { nodeName: "aibox-1" }, status: { phase: "Running" } }]; },
@@ -169,6 +183,49 @@ test("does not use predictFramework as architecture truth and still rejects unsh
   assert.equal(accepted.action, "CREATE");
   await assert.rejects(() => publishModelDeploymentWithDependencies({ ...base, image: "10.244.1.2:5000/app/face:1.0" }, harness().dependencies), /不在边缘共享镜像仓库/);
   await assert.rejects(() => publishModelDeploymentWithDependencies(base, harness({ secretExists: false }).dependencies), /imagePullSecret/);
+});
+
+test("CREATE uses the selected EdgeUnit Registry host, prefix, and pull Secret", async () => {
+  const h = harness({
+    modelRegistry: {
+      ...modelRegistry,
+      registryHost: "customer-a.example.com:5443",
+      repositoryPrefix: "models",
+      pullSecretName: "customer-a-pull",
+    },
+  });
+  const result = await publishModelDeploymentWithDependencies({
+    ...base,
+    image: "customer-a.example.com:5443/models/face:1.0-amd64",
+  }, h.dependencies);
+  assert.equal(result.action, "CREATE");
+  assert.equal(h.calls.creates[0].spec.template.spec.initContainers[0].image, "customer-a.example.com:5443/models/face:1.0-amd64");
+  assert.deepEqual(h.calls.creates[0].spec.template.spec.imagePullSecrets, [{ name: "customer-a-pull" }]);
+});
+
+test("different EdgeUnits can generate different Registry targets without a global 183 host", async () => {
+  const registryA = { ...modelRegistry, registryHost: "registry-a.example.com", repositoryPrefix: "models-a", pullSecretName: "pull-a" };
+  const registryB = { ...modelRegistry, registryHost: "10.20.30.50:5000", repositoryPrefix: "ai", tls: false, pullSecretName: "pull-b" };
+  const a = harness({ modelRegistry: registryA });
+  const b = harness({
+    modelRegistry: registryB,
+    node: node({ labels: { "blueedge.io/edge-unit": "edge-b" } }),
+  });
+  await publishModelDeploymentWithDependencies({ ...base, image: "registry-a.example.com/models-a/face:1.0-amd64" }, a.dependencies);
+  await publishModelDeploymentWithDependencies({ ...base, edgeUnit: "edge-b", image: "10.20.30.50:5000/ai/face:1.0-amd64" }, b.dependencies);
+  assert.equal(a.calls.creates[0].spec.template.spec.initContainers[0].image, "registry-a.example.com/models-a/face:1.0-amd64");
+  assert.equal(b.calls.creates[0].spec.template.spec.initContainers[0].image, "10.20.30.50:5000/ai/face:1.0-amd64");
+});
+
+test("CREATE fails clearly when the EdgeUnit Registry is missing or disabled", async () => {
+  await assert.rejects(
+    () => publishModelDeploymentWithDependencies(base, harness({ registryError: new Error("EdgeUnit edge-131 model Registry is not configured") }).dependencies),
+    /not configured/,
+  );
+  await assert.rejects(
+    () => publishModelDeploymentWithDependencies(base, harness({ modelRegistry: { ...modelRegistry, enabled: false } }).dependencies),
+    /disabled/,
+  );
 });
 
 test("registry comparison canonicalizes the host but rejects schemes and sibling prefixes", () => {

@@ -1,18 +1,38 @@
 import type { Express } from "express";
-import { listModelRepositories, listModelTags, updateModelImage } from "../services/model-registry.service.js";
+import {
+  edgeUnitRegistryConnection,
+  listModelRepositories,
+  listModelTags,
+  updateModelImage,
+} from "../services/model-registry.service.js";
+import {
+  readEdgeUnitRegistryCa,
+  readEdgeUnitRegistryCredential,
+  resolveEdgeUnitModelRegistry,
+} from "../services/edge-unit-model-registry.service.js";
 
 function errorStatus(error: unknown) {
   const message = error instanceof Error ? error.message : "model registry operation failed";
   if (/not found|404/i.test(message)) return 404;
-  if (/required|invalid|already in use|changed since|not a configured/i.test(message)) return 400;
+  if (/required|invalid|already in use|changed since|not a configured|Registry CA Secret|Registry read credential Secret/i.test(message)) return 400;
   if (/not configured|未配置/i.test(message)) return 503;
   return 502;
 }
 
 export function registerModelRegistryRoutes(app: Express) {
-  app.get("/blueedge/model-registry/models", async (_req, res) => {
+  app.get("/blueedge/model-registry/models", async (req, res) => {
     try {
-      res.json(await listModelRepositories());
+      const edgeUnit = typeof req.query.edgeUnit === "string" ? req.query.edgeUnit.trim() : "";
+      if (!edgeUnit) {
+        res.json(await listModelRepositories());
+        return;
+      }
+      const registry = await resolveEdgeUnitModelRegistry(edgeUnit);
+      const [credential, ca] = await Promise.all([
+        readEdgeUnitRegistryCredential(registry),
+        readEdgeUnitRegistryCa(registry),
+      ]);
+      res.json(await listModelRepositories(edgeUnitRegistryConnection(registry, credential, ca?.pem)));
     } catch (error) {
       res.status(errorStatus(error)).json({ message: error instanceof Error ? error.message : "failed to list models" });
     }
@@ -25,7 +45,17 @@ export function registerModelRegistryRoutes(app: Express) {
       return;
     }
     try {
-      res.json(await listModelTags(model));
+      const edgeUnit = typeof req.query.edgeUnit === "string" ? req.query.edgeUnit.trim() : "";
+      if (!edgeUnit) {
+        res.json(await listModelTags(model));
+        return;
+      }
+      const registry = await resolveEdgeUnitModelRegistry(edgeUnit);
+      const [credential, ca] = await Promise.all([
+        readEdgeUnitRegistryCredential(registry),
+        readEdgeUnitRegistryCa(registry),
+      ]);
+      res.json(await listModelTags(model, edgeUnitRegistryConnection(registry, credential, ca?.pem)));
     } catch (error) {
       res.status(errorStatus(error)).json({ message: error instanceof Error ? error.message : "failed to list model tags" });
     }

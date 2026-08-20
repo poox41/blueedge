@@ -2,6 +2,10 @@ import http from "node:http";
 import https from "node:https";
 import { config } from "../config.js";
 import { getK8sJson, requestK8sJson } from "../clients/k8s-client.js";
+import type {
+  EdgeUnitModelRegistry,
+  RegistryCredential,
+} from "./edge-unit-model-registry.service.js";
 
 type RegistryCatalog = { repositories?: unknown };
 type RegistryTags = { name?: unknown; tags?: unknown };
@@ -20,6 +24,15 @@ export type ModelImageUpdate = {
 
 export type ModelImageUpdateOptions = {
   deploymentAnnotations?: Record<string, string>;
+  registry?: ModelRegistryConnection;
+};
+
+export type ModelRegistryConnection = {
+  url: URL;
+  prefix: string;
+  skipTlsVerify: boolean;
+  credential?: RegistryCredential;
+  ca?: string;
 };
 
 const modelUpdateAnnotation = "blueedge.io/model-image-updated-at";
@@ -29,7 +42,7 @@ function deploymentPath(namespace: string, name: string) {
   return `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(name)}`;
 }
 
-function registryConfiguration() {
+function globalRegistryConfiguration(): ModelRegistryConnection {
   if (!config.modelRegistryUrl) throw new Error("模型仓库地址未配置，请配置 MODEL_REGISTRY_URL");
   if (!config.modelRegistryPrefix) throw new Error("模型仓库路径未配置，请配置 MODEL_REGISTRY_PREFIX");
   let url: URL;
@@ -41,22 +54,49 @@ function registryConfiguration() {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error("MODEL_REGISTRY_URL must use http or https");
   }
-  return { url, prefix: config.modelRegistryPrefix };
-}
-
-function registryAuthorization() {
-  if (!config.modelRegistryUsername && !config.modelRegistryPassword) return undefined;
-  if (!config.modelRegistryUsername || !config.modelRegistryPassword) {
+  const credential = config.modelRegistryUsername && config.modelRegistryPassword
+    ? { type: "basic" as const, username: config.modelRegistryUsername, password: config.modelRegistryPassword }
+    : undefined;
+  if ((config.modelRegistryUsername || config.modelRegistryPassword) && !credential) {
     throw new Error("模型仓库账号和密码必须同时配置");
   }
-  return `Basic ${Buffer.from(`${config.modelRegistryUsername}:${config.modelRegistryPassword}`).toString("base64")}`;
+  return { url, prefix: config.modelRegistryPrefix, skipTlsVerify: config.modelRegistrySkipTlsVerify, credential };
 }
 
-async function registryJson<T>(path: string): Promise<T> {
-  const { url: baseUrl } = registryConfiguration();
+export function edgeUnitRegistryConnection(
+  registry: EdgeUnitModelRegistry,
+  credential?: RegistryCredential | null,
+  ca?: string | null,
+): ModelRegistryConnection {
+  return {
+    url: new URL(`${registry.tls ? "https" : "http"}://${registry.registryHost}`),
+    prefix: registry.repositoryPrefix,
+    skipTlsVerify: false,
+    ...(credential ? { credential } : {}),
+    ...(ca ? { ca } : {}),
+  };
+}
+
+export function registryTlsOptions(registry: ModelRegistryConnection): https.RequestOptions {
+  if (registry.url.protocol !== "https:") return {};
+  return {
+    rejectUnauthorized: !registry.skipTlsVerify,
+    ...(registry.ca ? { ca: registry.ca } : {}),
+  };
+}
+
+function registryAuthorization(credential?: RegistryCredential) {
+  if (!credential) return undefined;
+  return credential.type === "bearer"
+    ? `Bearer ${credential.token}`
+    : `Basic ${Buffer.from(`${credential.username}:${credential.password}`).toString("base64")}`;
+}
+
+async function registryJson<T>(path: string, registry = globalRegistryConfiguration()): Promise<T> {
+  const { url: baseUrl } = registry;
   const target = new URL(path, `${baseUrl.toString().replace(/\/+$/, "")}/`);
   const client = target.protocol === "https:" ? https : http;
-  const authorization = registryAuthorization();
+  const authorization = registryAuthorization(registry.credential);
 
   return new Promise<T>((resolve, reject) => {
     const request = client.request(target, {
@@ -65,7 +105,7 @@ async function registryJson<T>(path: string): Promise<T> {
         Accept: "application/json",
         ...(authorization ? { Authorization: authorization } : {}),
       },
-      ...(target.protocol === "https:" ? { rejectUnauthorized: !config.modelRegistrySkipTlsVerify } : {}),
+      ...registryTlsOptions(registry),
       timeout: config.requestTimeoutMs,
     }, (response) => {
       const chunks: Buffer[] = [];
@@ -108,8 +148,8 @@ export function modelRepositoriesFromCatalog(repositories: unknown, prefix: stri
     .sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true }));
 }
 
-export function modelImageReference(model: string, tag: string) {
-  const { url, prefix } = registryConfiguration();
+export function modelImageReference(model: string, tag: string, registry = globalRegistryConfiguration()) {
+  const { url, prefix } = registry;
   if (!validModelName(model)) throw new Error("model is invalid");
   if (!validTag(tag)) throw new Error("tag is invalid");
   const registryPath = url.pathname.replace(/^\/+|\/+$/g, "");
@@ -117,8 +157,8 @@ export function modelImageReference(model: string, tag: string) {
   return `${base}/${model}:${tag}`;
 }
 
-export function modelImagePrefix() {
-  const { url, prefix } = registryConfiguration();
+export function modelImagePrefix(registry = globalRegistryConfiguration()) {
+  const { url, prefix } = registry;
   const registryPath = url.pathname.replace(/^\/+|\/+$/g, "");
   return `${[url.host, registryPath, prefix].filter(Boolean).join("/")}/`;
 }
@@ -161,20 +201,20 @@ export function updateDeploymentModelImage(
   return { deployment: copy, previousImage: currentImage };
 }
 
-export async function listModelRepositories() {
-  const { prefix } = registryConfiguration();
-  const catalog = await registryJson<RegistryCatalog>("v2/_catalog?n=1000");
+export async function listModelRepositories(registry = globalRegistryConfiguration()) {
+  const { prefix } = registry;
+  const catalog = await registryJson<RegistryCatalog>("v2/_catalog?n=1000", registry);
   return {
     items: modelRepositoriesFromCatalog(catalog.repositories, prefix),
-    registry: { prefix, imagePrefix: modelImagePrefix() },
+    registry: { prefix, imagePrefix: modelImagePrefix(registry) },
   };
 }
 
-export async function listModelTags(model: string) {
+export async function listModelTags(model: string, registry = globalRegistryConfiguration()) {
   if (!validModelName(model)) throw new Error("model is invalid");
-  const { prefix } = registryConfiguration();
+  const { prefix } = registry;
   const repository = `${prefix}/${model}`;
-  const result = await registryJson<RegistryTags>(`v2/${repository.split("/").map(encodeURIComponent).join("/")}/tags/list`);
+  const result = await registryJson<RegistryTags>(`v2/${repository.split("/").map(encodeURIComponent).join("/")}/tags/list`, registry);
   const tags = Array.isArray(result.tags)
     ? result.tags.filter((tag): tag is string => typeof tag === "string" && validTag(tag)).sort((left, right) => right.localeCompare(left, undefined, { numeric: true }))
     : [];
@@ -188,11 +228,12 @@ export async function updateModelImage(
   options: ModelImageUpdateOptions = {},
 ) {
   if (!payload.containerName) throw new Error("containerName is required");
-  const availableTags = await listModelTags(payload.model);
+  const registry = options.registry || globalRegistryConfiguration();
+  const availableTags = await listModelTags(payload.model, registry);
   if (!availableTags.items.includes(payload.tag)) throw new Error(`tag ${payload.tag} was not found for model ${payload.model}`);
-  const nextImage = modelImageReference(payload.model, payload.tag);
+  const nextImage = modelImageReference(payload.model, payload.tag, registry);
   const deployment = await getK8sJson(deploymentPath(namespace, name));
-  const updated = updateDeploymentModelImage(deployment, payload, nextImage, modelImagePrefix(), options);
+  const updated = updateDeploymentModelImage(deployment, payload, nextImage, modelImagePrefix(registry), options);
   const item = await requestK8sJson(deploymentPath(namespace, name), { method: "PUT", body: updated.deployment });
   return {
     item,

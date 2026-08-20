@@ -92,6 +92,26 @@ test("EdgeUnit create and update clear legacy nodeGroupRef bindings", () => {
   assert.equal(buildEdgeUnitConfigMapData({ nodeGroupRef: "" }, existing).nodeGroupRef, "");
 });
 
+test("ordinary EdgeUnit updates preserve dedicated model Registry metadata", () => {
+  const existing = {
+    name: "unit-a",
+    accessType: "external",
+    insightStatus: "unknown",
+    monitorStatus: "unknown",
+    modelRegistryEnabled: "true",
+    modelRegistryHost: "registry.example.com",
+    modelRegistryRepositoryPrefix: "app",
+    modelRegistryTls: "true",
+    modelRegistryPullSecretName: "registry-pull",
+    modelRegistryReadCredentialRef: "registry-api-credential",
+    modelRegistryCaSecretRef: "registry-ca",
+  };
+  const updated = buildEdgeUnitConfigMapData({ description: "updated" }, existing);
+  assert.equal(updated.modelRegistryHost, "registry.example.com");
+  assert.equal(updated.modelRegistryReadCredentialRef, "registry-api-credential");
+  assert.equal(updated.modelRegistryCaSecretRef, "registry-ca");
+});
+
 test("one connected cluster can only be bound to one EdgeUnit", () => {
   const configMaps = [
     { metadata: { name: "edgeunit-unit-a" }, data: { name: "unit-a", clusterName: "kubernetes" } },

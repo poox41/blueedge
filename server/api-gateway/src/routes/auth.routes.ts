@@ -10,6 +10,7 @@ const authorizationCodePattern = /^[A-Za-z0-9_-]{32,128}$/;
 export const bamsPublisherScopes = [
   "edge-units:read",
   "edge-nodes:read",
+  "edge-registry:read",
   "model-deployments:publish",
   "model-images:update",
   "deployments:read",
