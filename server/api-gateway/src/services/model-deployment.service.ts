@@ -185,17 +185,26 @@ function matchingInitContainers(deployment: any, repository: string, registry: M
   });
 }
 
-function resolvedInitContainer(deployment: any, repository: string, registry: ModelRegistryConnection) {
+function resolvedInitContainer(deployment: any, repository: string, registry: ModelRegistryConnection, trustManagedAnnotation = false) {
   const annotatedName = String(metadataOf(deployment).annotations?.[annotationKeys.modelInitContainer] || "");
   const containers = deployment?.spec?.template?.spec?.initContainers;
   if (annotatedName && Array.isArray(containers)) {
     const annotated = containers.find((item: any) => item?.name === annotatedName);
     if (annotated?.image) {
+      // Identity labels plus this annotation are the contract created by BAMS.
+      // The previous image may legitimately use an older Registry alias or a
+      // different repository name, so it must not be parsed against the new
+      // EdgeUnit Registry before we replace it.
+      if (trustManagedAnnotation) return annotated;
       try {
-        if (parseConfiguredModelImage(String(annotated.image), registry).model === repository) return annotated;
+        const parsed = parseConfiguredModelImage(String(annotated.image), registry);
+        if (parsed.model === repository) return annotated;
       } catch {
-        // Fall through to strict repository resolution.
+        // Fall through to strict repository resolution for legacy Deployments.
       }
+    }
+    if (trustManagedAnnotation) {
+      throw new ModelDeploymentError(409, `managed Deployment ${metadataOf(deployment).name} has no annotated model initContainer ${annotatedName}`);
     }
   }
   const matches = matchingInitContainers(deployment, repository, registry);
@@ -214,10 +223,18 @@ function activeNode(deployment: any, pods: any[]) {
   return String(activePod?.spec?.nodeName || "");
 }
 
-function workloadSummary(deployment: any, repository: string, pods: any[], registry: ModelRegistryConnection) {
+function workloadSummary(deployment: any, repository: string, pods: any[], registry: ModelRegistryConnection, trustManagedAnnotation = false) {
   const ref = deploymentRef(deployment);
-  const initContainer = resolvedInitContainer(deployment, repository, registry);
-  const parsed = parseConfiguredModelImage(String(initContainer.image), registry);
+  const initContainer = resolvedInitContainer(deployment, repository, registry, trustManagedAnnotation);
+  const currentImage = String(initContainer.image);
+  let currentVersion = "";
+  if (trustManagedAnnotation) {
+    const lastSlash = currentImage.lastIndexOf("/");
+    const separator = currentImage.lastIndexOf(":");
+    if (separator > lastSlash && separator < currentImage.length - 1) currentVersion = currentImage.slice(separator + 1);
+  } else {
+    currentVersion = parseConfiguredModelImage(currentImage, registry).tag;
+  }
   const runtimeContainers = Array.isArray(deployment?.spec?.template?.spec?.containers)
     ? deployment.spec.template.spec.containers.map((container: any) => ({
       name: String(container?.name || ""),
@@ -229,8 +246,8 @@ function workloadSummary(deployment: any, repository: string, pods: any[], regis
   return {
     ...ref,
     initContainerName: String(initContainer.name),
-    currentImage: parsed.reference,
-    currentVersion: parsed.tag,
+    currentImage,
+    currentVersion,
     targetNode: activeNode(deployment, pods),
     runtime: runtimeContainers,
   };
@@ -268,7 +285,7 @@ export async function resolveModelDeploymentWithDependencies(input: ModelPublish
       action: "UPDATE" as const,
       matchedBy,
       repository: image.model,
-      workload: workloadSummary(existing, image.model, pods, registry),
+      workload: workloadSummary(existing, image.model, pods, registry, matchedBy === "identity"),
       status: modelDeploymentStatus(existing, pods),
     };
   }

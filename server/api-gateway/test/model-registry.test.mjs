@@ -79,6 +79,42 @@ test("rejects stale updates and non-model initContainers", () => {
   }, "registry.example.com/app/face:1.4-amd64", "registry.example.com/app/"), /not a configured model container/);
 });
 
+test("BAMS-managed annotated initContainer may move from a legacy Registry to the configured Registry", () => {
+  const original = deployment();
+  original.metadata.labels = {
+    "blueedge.io/managed-by": "bams",
+    "blueedge.io/source": "bams",
+  };
+  original.metadata.annotations = {
+    "blueedge.io/model-init-container": "face-model-copy",
+  };
+  original.spec.template.spec.initContainers[1].image = "183.95.195.121:31438/app/cat-dog-classifier:1.0-arm64-demo";
+  const result = updateDeploymentModelImage(original, {
+    containerName: "face-model-copy",
+    model: "test",
+    tag: "023",
+    expectedCurrentImage: "183.95.195.121:31438/app/cat-dog-classifier:1.0-arm64-demo",
+  }, "14.103.139.131:40038/app/test:023", "14.103.139.131:40038/app/", {
+    deploymentAnnotations: { "blueedge.io/model-init-container": "face-model-copy" },
+  });
+
+  assert.equal(result.previousImage, "183.95.195.121:31438/app/cat-dog-classifier:1.0-arm64-demo");
+  assert.equal(result.deployment.spec.template.spec.initContainers[1].image, "14.103.139.131:40038/app/test:023");
+});
+
+test("an unmanaged initContainer cannot bypass the configured Registry prefix through annotations", () => {
+  const original = deployment();
+  original.metadata.annotations = { "blueedge.io/model-init-container": "face-model-copy" };
+  original.spec.template.spec.initContainers[1].image = "legacy.example.com/app/face:1.0";
+  assert.throws(() => updateDeploymentModelImage(original, {
+    containerName: "face-model-copy",
+    model: "face",
+    tag: "1.4-amd64",
+  }, "registry.example.com/app/face:1.4-amd64", "registry.example.com/app/", {
+    deploymentAnnotations: { "blueedge.io/model-init-container": "face-model-copy" },
+  }), /not a configured model container/);
+});
+
 test("HTTPS Registry uses system trust when caSecretRef is absent", () => {
   const connection = edgeUnitRegistryConnection({
     enabled: true,

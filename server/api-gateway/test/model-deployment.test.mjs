@@ -172,6 +172,28 @@ test("UPDATE reuses the resolved existing initContainer and does not require pre
   assert.equal(result.item.spec.strategy.type, "Recreate");
 });
 
+test("managed identity UPDATE may replace the model image repository through its annotated initContainer", async () => {
+  const previous = managedDeployment("183.95.195.121:31438/app/cat-dog-classifier:1.0-arm64-demo", "aibox-1", "cat-dog-classifier-model-copy");
+  previous.metadata.annotations["blueedge.io/model-init-container"] = "cat-dog-classifier-model-copy";
+  const h = harness({ managedMatches: [previous] });
+  const result = await publishModelDeploymentWithDependencies(base, h.dependencies);
+  assert.equal(result.action, "UPDATE");
+  assert.equal(h.calls.updates.length, 1);
+  assert.equal(h.calls.updates[0].payload.containerName, "cat-dog-classifier-model-copy");
+  assert.equal(h.calls.updates[0].payload.model, "face");
+  assert.equal(h.calls.updates[0].payload.expectedCurrentImage, "183.95.195.121:31438/app/cat-dog-classifier:1.0-arm64-demo");
+});
+
+test("managed identity resolve trusts an existing annotated initContainer across Registry aliases", async () => {
+  const previous = managedDeployment("183.95.195.121:31438/app/cat-dog-classifier:1.0-arm64-demo", "aibox-1", "cat-dog-classifier-model-copy");
+  previous.metadata.annotations["blueedge.io/model-init-container"] = "cat-dog-classifier-model-copy";
+  const result = await resolveModelDeploymentWithDependencies(base, harness({ managedMatches: [previous] }).dependencies);
+  assert.equal(result.action, "UPDATE");
+  assert.equal(result.workload.initContainerName, "cat-dog-classifier-model-copy");
+  assert.equal(result.workload.currentImage, "183.95.195.121:31438/app/cat-dog-classifier:1.0-arm64-demo");
+  assert.equal(result.workload.currentVersion, "1.0-arm64-demo");
+});
+
 test("rejects Node outside EdgeUnit, NotReady Node, and incompatible architecture", async () => {
   await assert.rejects(() => publishModelDeploymentWithDependencies(base, harness({ node: node({ labels: { "blueedge.io/edge-unit": "other" } }) }).dependencies), /does not belong/);
   await assert.rejects(() => publishModelDeploymentWithDependencies(base, harness({ node: node({ ready: false }) }).dependencies), /not Ready/);

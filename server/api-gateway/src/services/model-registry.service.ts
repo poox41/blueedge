@@ -37,6 +37,9 @@ export type ModelRegistryConnection = {
 
 const modelUpdateAnnotation = "blueedge.io/model-image-updated-at";
 const modelContainerAnnotation = "blueedge.io/model-image-container";
+const managedByLabel = "blueedge.io/managed-by";
+const sourceLabel = "blueedge.io/source";
+const modelInitContainerAnnotation = "blueedge.io/model-init-container";
 
 function deploymentPath(namespace: string, name: string) {
   return `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(name)}`;
@@ -176,7 +179,13 @@ export function updateDeploymentModelImage(
   const target = initContainers.find((container: any) => container?.name === payload.containerName);
   if (!target) throw new Error(`initContainer ${payload.containerName} not found`);
   const currentImage = String(target.image || "");
-  if (!currentImage.startsWith(expectedImagePrefix)) {
+  const labels = copy?.metadata?.labels || {};
+  const annotations = copy?.metadata?.annotations || {};
+  const trustedManagedContainer = labels[managedByLabel] === "bams"
+    && labels[sourceLabel] === "bams"
+    && annotations[modelInitContainerAnnotation] === payload.containerName
+    && options.deploymentAnnotations?.[modelInitContainerAnnotation] === payload.containerName;
+  if (!currentImage.startsWith(expectedImagePrefix) && !trustedManagedContainer) {
     throw new Error(`initContainer ${payload.containerName} is not a configured model container`);
   }
   if (payload.expectedCurrentImage !== undefined && currentImage !== payload.expectedCurrentImage) {
