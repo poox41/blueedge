@@ -1,0 +1,151 @@
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: blueedge-test-selfsigned
+  namespace: blueedge
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: blueedge-test-root-ca
+  namespace: blueedge
+spec:
+  isCA: true
+  commonName: BlueEdge Test Root CA
+  secretName: blueedge-test-root-ca
+  duration: 87600h
+  renewBefore: 8760h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Never
+  issuerRef:
+    name: blueedge-test-selfsigned
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: blueedge-test-ca
+  namespace: blueedge
+spec:
+  ca:
+    secretName: blueedge-test-root-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: blueedge-test-platform
+  namespace: blueedge
+spec:
+  secretName: blueedge-test-platform-tls
+  commonName: 14.103.139.131
+  ipAddresses:
+    - 14.103.139.131
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+  issuerRef:
+    name: blueedge-test-ca
+    kind: Issuer
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blueedge-https-proxy
+  namespace: blueedge
+data:
+  nginx.conf: |
+    worker_processes auto;
+    events { worker_connections 1024; }
+    http {
+      server {
+        listen 8443 ssl;
+        server_name _;
+        ssl_certificate /etc/nginx/tls/tls.crt;
+        ssl_certificate_key /etc/nginx/tls/tls.key;
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_session_cache shared:TLS:10m;
+        client_max_body_size 0;
+
+        location / {
+          proxy_pass http://blueedge-frontend.blueedge.svc.cluster.local:80;
+          proxy_http_version 1.1;
+          proxy_set_header Host $http_host;
+          proxy_set_header X-Real-IP $remote_addr;
+          proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+          proxy_set_header X-Forwarded-Proto https;
+          proxy_connect_timeout 30s;
+          proxy_send_timeout 1900s;
+          proxy_read_timeout 1900s;
+        }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blueedge-https-proxy
+  namespace: blueedge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: blueedge-https-proxy
+  template:
+    metadata:
+      labels:
+        app: blueedge-https-proxy
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: k8s-master
+      containers:
+        - name: nginx
+          image: nginx:1.27.5-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: https
+              containerPort: 8443
+          readinessProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 10
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            - name: tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: blueedge-https-proxy
+        - name: tls
+          secret:
+            secretName: blueedge-test-platform-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blueedge-https
+  namespace: blueedge
+spec:
+  type: NodePort
+  selector:
+    app: blueedge-https-proxy
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      nodePort: 30443

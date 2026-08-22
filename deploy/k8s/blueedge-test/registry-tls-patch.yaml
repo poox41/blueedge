@@ -1,0 +1,11 @@
+# Enable strict certificate validation only after the trusted CA bundle has
+# been mounted into blueedge-api-gateway with trusted-ca-patch.yaml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blueedge-config
+  namespace: blueedge
+data:
+  BAMS_SSO_BASE_URL: https://14.103.139.131:40037
+  ALLOW_INSECURE_TEST_HTTP: "false"
+  MODEL_REGISTRY_SKIP_TLS_VERIFY: "false"

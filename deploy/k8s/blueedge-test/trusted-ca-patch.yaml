@@ -1,0 +1,27 @@
+# Build ca-bundle.crt from the BAMS root CA and target registry CA, then create:
+# kubectl -n blueedge create secret generic blueedge-trusted-ca-bundle \
+#   --from-file=ca.crt=/path/to/ca-bundle.crt
+# kubectl -n blueedge patch deployment blueedge-api-gateway --type strategic \
+#   --patch-file deploy/k8s/blueedge-test/trusted-ca-patch.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blueedge-api-gateway
+  namespace: blueedge
+spec:
+  template:
+    spec:
+      containers:
+        - name: blueedge-api-gateway
+          env:
+            - name: NODE_EXTRA_CA_CERTS
+              value: /run/secrets/blueedge-trusted-ca-bundle/ca.crt
+          volumeMounts:
+            - name: blueedge-trusted-ca-bundle
+              mountPath: /run/secrets/blueedge-trusted-ca-bundle
+              readOnly: true
+      volumes:
+        - name: blueedge-trusted-ca-bundle
+          secret:
+            secretName: blueedge-trusted-ca-bundle
+            defaultMode: 0444
