@@ -123,6 +123,7 @@ test.before(() => {
   config.modelDeploymentNamespace = "default";
   config.modelDeploymentPullSecret = "my-registry-secret";
   config.tritonAmd64RuntimeImage = "registry.example.com/runtime/triton:26.03";
+  config.tritonArm64RuntimeImage = "registry.example.com/runtime/triton-arm64:26.03";
 });
 
 test("first publish creates the verified /work Triton runtime contract with parameterized names", async () => {
@@ -143,6 +144,37 @@ test("first publish creates the verified /work Triton runtime contract with para
   assert.deepEqual(deployment.spec.template.spec.tolerations, [{ key: "node-role.kubernetes.io/edge", operator: "Exists", effect: "NoSchedule" }]);
   assert.equal(deployment.metadata.labels["blueedge.io/bams-model-repo-id"], base.modelRepoId);
   assert.equal(deployment.metadata.annotations["blueedge.io/bams-model-image-id"], base.modelImageId);
+});
+
+test("ARM64 BAMS framework selects the ARM64 runtime template and only exposes ARM64 Nodes", async () => {
+  const armNode = node({ architecture: "arm64", labels: { "kubernetes.io/arch": "arm64" } });
+  const input = { ...base, predictFramework: "triton-bams-arm64", targetId: "aibox-1" };
+  const resolved = await resolveModelDeploymentWithDependencies(input, harness({ nodes: [node(), armNode] }).dependencies);
+  assert.equal(resolved.action, "CREATE");
+  assert.equal(resolved.runtimeTemplate.id, "triton-work-arm64");
+  assert.equal(resolved.runtimeTemplate.architecture, "arm64");
+  assert.deepEqual(resolved.nodes.map((item) => item.name), ["aibox-1"]);
+
+  const h = harness({ node: armNode, nodes: [armNode] });
+  const result = await publishModelDeploymentWithDependencies(input, h.dependencies);
+  assert.equal(result.action, "CREATE");
+  assert.equal(h.calls.creates[0].spec.template.spec.containers[0].image, config.tritonArm64RuntimeImage);
+  assert.equal(h.calls.creates[0].metadata.annotations["blueedge.io/runtime-template"], "triton-work-arm64");
+});
+
+test("ARM64 CREATE fails closed when its real Triton runtime image is not configured", async () => {
+  const originalImage = config.tritonArm64RuntimeImage;
+  const armNode = node({ architecture: "arm64", labels: { "kubernetes.io/arch": "arm64" } });
+  const input = { ...base, predictFramework: "triton-bams-arm64" };
+  config.tritonArm64RuntimeImage = "";
+  try {
+    await assert.rejects(
+      () => publishModelDeploymentWithDependencies(input, harness({ node: armNode }).dependencies),
+      /TRITON_ARM64_RUNTIME_IMAGE must use an explicit non-latest tag/,
+    );
+  } finally {
+    config.tritonArm64RuntimeImage = originalImage;
+  }
 });
 
 test("create fails closed when the pinned Triton runtime image is not configured", async () => {
@@ -200,8 +232,12 @@ test("rejects Node outside EdgeUnit, NotReady Node, and incompatible architectur
   await assert.rejects(() => publishModelDeploymentWithDependencies(base, harness({ node: node({ architecture: "arm64", labels: { "kubernetes.io/arch": "arm64" } }) }).dependencies), /not compatible/);
 });
 
-test("does not use predictFramework as architecture truth and still rejects unshared registry and missing pull Secret", async () => {
-  const accepted = await publishModelDeploymentWithDependencies({ ...base, predictFramework: "triton-dce-arm64" }, harness().dependencies);
+test("known framework selects its runtime profile while Kubernetes Node architecture remains the final truth", async () => {
+  await assert.rejects(
+    () => publishModelDeploymentWithDependencies({ ...base, predictFramework: "triton-dce-arm64" }, harness().dependencies),
+    /not compatible with runtime architecture arm64/,
+  );
+  const accepted = await publishModelDeploymentWithDependencies({ ...base, predictFramework: "legacy-framework" }, harness().dependencies);
   assert.equal(accepted.action, "CREATE");
   await assert.rejects(() => publishModelDeploymentWithDependencies({ ...base, image: "10.244.1.2:5000/app/face:1.0" }, harness().dependencies), /不在边缘共享镜像仓库/);
   await assert.rejects(() => publishModelDeploymentWithDependencies(base, harness({ secretExists: false }).dependencies), /imagePullSecret/);

@@ -17,7 +17,7 @@ function statusOf(error: unknown): number {
   const message = error instanceof Error ? error.message : "";
   if (/not found|404/i.test(message)) return 404;
   if (/conflict|409|AlreadyExists/i.test(message)) return 409;
-  if (/required|invalid|unsupported|not Ready|does not belong|not compatible|imagePullSecret|not configured|disabled|Registry CA Secret|Registry read credential Secret/i.test(message)) return 400;
+  if (/required|invalid|unsupported|explicit non-latest|not Ready|does not belong|not compatible|imagePullSecret|not configured|disabled|Registry CA Secret|Registry read credential Secret/i.test(message)) return 400;
   return 502;
 }
 
@@ -30,6 +30,7 @@ function publishPayload(body: any): ModelPublishRequest {
     modelImageId: body?.modelImageId,
     image: body?.image,
     predictFramework: body?.predictFramework,
+    runtimeTemplateId: body?.runtimeTemplateId,
     edgeUnit: body?.edgeUnit,
     targetType: body?.targetType,
     targetId: body?.targetId,
@@ -66,7 +67,8 @@ export function registerModelDeploymentRoutes(app: Express) {
     requireServiceScopes("edge-units:read", "edge-nodes:read"),
     async (req, res) => {
       try {
-        res.json(await listModelPublishNodes(req.params.edgeUnit));
+        const runtimeTemplateId = typeof req.query.runtimeTemplateId === "string" ? req.query.runtimeTemplateId.trim() : undefined;
+        res.json(await listModelPublishNodes(req.params.edgeUnit, runtimeTemplateId));
       } catch (error) {
         res.status(statusOf(error)).json({ message: error instanceof Error ? error.message : "failed to list EdgeUnit nodes" });
       }

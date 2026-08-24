@@ -32,3 +32,7 @@ data:
   MODEL_REGISTRY_URL: "https://183.95.195.121:31438"
   MODEL_REGISTRY_PREFIX: "app"
   MODEL_REGISTRY_SKIP_TLS_VERIFY: "true"
+  # Production startup requires an immutable, explicitly versioned Triton runtime image.
+  TRITON_AMD64_RUNTIME_IMAGE: "m.daocloud.io/nvcr.io/nvidia/tritonserver:26.03-pyt-python-py3"
+  # ARM64/Jetson Triton runtime. Verified as linux/arm64; keep the tag pinned.
+  TRITON_ARM64_RUNTIME_IMAGE: "m.daocloud.io/nvcr.io/nvidia/tritonserver:26.02-py3-igpu"

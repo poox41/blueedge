@@ -112,6 +112,11 @@ export const config = {
   tritonAmd64CpuLimit: process.env.TRITON_AMD64_CPU_LIMIT || "6",
   tritonAmd64MemoryRequest: process.env.TRITON_AMD64_MEMORY_REQUEST || "2Gi",
   tritonAmd64MemoryLimit: process.env.TRITON_AMD64_MEMORY_LIMIT || "8Gi",
+  tritonArm64RuntimeImage: (process.env.TRITON_ARM64_RUNTIME_IMAGE || "").trim(),
+  tritonArm64CpuRequest: process.env.TRITON_ARM64_CPU_REQUEST || "2",
+  tritonArm64CpuLimit: process.env.TRITON_ARM64_CPU_LIMIT || "6",
+  tritonArm64MemoryRequest: process.env.TRITON_ARM64_MEMORY_REQUEST || "2Gi",
+  tritonArm64MemoryLimit: process.env.TRITON_ARM64_MEMORY_LIMIT || "8Gi",
 };
 
 if (process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
@@ -132,6 +137,9 @@ if (process.env.NODE_ENV === "production") {
   }
   if (!isPinnedContainerImage(config.tritonAmd64RuntimeImage)) {
     throw new Error("TRITON_AMD64_RUNTIME_IMAGE must use an explicit non-latest tag or sha256 digest in production");
+  }
+  if (config.tritonArm64RuntimeImage && !isPinnedContainerImage(config.tritonArm64RuntimeImage)) {
+    throw new Error("TRITON_ARM64_RUNTIME_IMAGE must use an explicit non-latest tag or sha256 digest in production");
   }
   if (config.bamsSsoEnabled) {
     if (!config.bamsSsoBaseUrl || !config.bamsSsoClientId || !config.bamsSsoClientSecret) {

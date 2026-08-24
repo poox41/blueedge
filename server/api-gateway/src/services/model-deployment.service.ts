@@ -17,7 +17,11 @@ import {
   resolveEdgeUnitModelRegistry,
   type EdgeUnitModelRegistry,
 } from "./edge-unit-model-registry.service.js";
-import { buildTritonAmd64Deployment, resolveModelRuntimeTemplate } from "./model-runtime-template.service.js";
+import {
+  buildTritonDeployment,
+  resolveModelRuntimeTemplate,
+  runtimeTemplateIdForPredictFramework,
+} from "./model-runtime-template.service.js";
 import { isNodeReady, itemsOf, labelsOf, metadataOf, nodeNameOf } from "../utils/kubernetes.js";
 
 const identityKeys = {
@@ -45,6 +49,7 @@ export type ModelPublishRequest = {
   modelImageId: string;
   image: string;
   predictFramework?: string;
+  runtimeTemplateId?: string;
   edgeUnit: string;
   targetType?: "node";
   targetId?: string;
@@ -259,6 +264,12 @@ function compatibleNodes(nodes: any[], edgeUnit: string, architecture: string) {
     .map((node) => ({ name: nodeNameOf(node), status: "Ready", architecture: nodeArchitecture(node) }));
 }
 
+function requestedRuntimeTemplate(input: Pick<ModelPublishRequest, "predictFramework" | "runtimeTemplateId">) {
+  return resolveModelRuntimeTemplate(
+    input.runtimeTemplateId?.trim() || runtimeTemplateIdForPredictFramework(input.predictFramework),
+  );
+}
+
 export async function resolveModelDeploymentWithDependencies(input: ModelPublishRequest, dependencies: PublishDependencies) {
   validateInput(input);
   if (!await dependencies.edgeUnitExists(input.edgeUnit)) throw new ModelDeploymentError(404, `EdgeUnit ${input.edgeUnit} not found`);
@@ -289,7 +300,7 @@ export async function resolveModelDeploymentWithDependencies(input: ModelPublish
       status: modelDeploymentStatus(existing, pods),
     };
   }
-  const template = resolveModelRuntimeTemplate();
+  const template = requestedRuntimeTemplate(input);
   return {
     action: "CREATE" as const,
     repository: image.model,
@@ -343,7 +354,7 @@ export async function publishModelDeploymentWithDependencies(input: ModelPublish
 
   {
     const name = deterministicModelDeploymentName(input);
-    const deployment = buildTritonAmd64Deployment({
+    const deployment = buildTritonDeployment({
       name,
       namespace,
       image: modelImageReference(image.model, image.tag, registry),
@@ -459,8 +470,8 @@ export async function listModelPublishEdgeUnits() {
   return { items: configMaps.map((item) => ({ name: String(item?.data?.name || labelsOf(item)[identityKeys.edgeUnit] || metadataOf(item).name || "") })).filter((item) => item.name) };
 }
 
-export async function listModelPublishNodes(edgeUnit: string) {
-  const template = resolveModelRuntimeTemplate();
+export async function listModelPublishNodes(edgeUnit: string, runtimeTemplateId?: string) {
+  const template = resolveModelRuntimeTemplate(runtimeTemplateId || "triton-work-amd64");
   const configMaps = await getEdgeUnitConfigMaps([]);
   if (!configMaps.some((item) => edgeUnitConfigMapMatches(item, edgeUnit))) throw new ModelDeploymentError(404, `EdgeUnit ${edgeUnit} not found`);
   const nodes = itemsOf(await getK8sJson("/api/v1/nodes"));

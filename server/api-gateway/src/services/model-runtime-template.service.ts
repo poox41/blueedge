@@ -1,9 +1,11 @@
 import { config, isPinnedContainerImage } from "../config.js";
 
+export type ModelRuntimeTemplateId = "triton-work-amd64" | "triton-work-arm64";
+
 export type ModelRuntimeTemplate = {
-  id: "triton-work-amd64";
+  id: ModelRuntimeTemplateId;
   version: "2";
-  architecture: "amd64";
+  architecture: "amd64" | "arm64";
   artifactSourcePath: "/work";
   runtimeContainerName: "triton";
 };
@@ -16,6 +18,13 @@ const templates: Record<string, ModelRuntimeTemplate> = {
     artifactSourcePath: "/work",
     runtimeContainerName: "triton",
   },
+  "triton-work-arm64": {
+    id: "triton-work-arm64",
+    version: "2",
+    architecture: "arm64",
+    artifactSourcePath: "/work",
+    runtimeContainerName: "triton",
+  },
 };
 
 export function resolveModelRuntimeTemplate(templateId = "triton-work-amd64"): ModelRuntimeTemplate {
@@ -24,7 +33,15 @@ export function resolveModelRuntimeTemplate(templateId = "triton-work-amd64"): M
   return template;
 }
 
-export function buildTritonAmd64Deployment(input: {
+export function runtimeTemplateIdForPredictFramework(predictFramework?: string): ModelRuntimeTemplateId {
+  const framework = String(predictFramework || "").trim().toLowerCase();
+  if (["triton-arm64", "triton-bams-arm64", "triton-dce-arm64"].includes(framework)) {
+    return "triton-work-arm64";
+  }
+  return "triton-work-amd64";
+}
+
+export function buildTritonDeployment(input: {
   name: string;
   namespace: string;
   image: string;
@@ -37,9 +54,16 @@ export function buildTritonAmd64Deployment(input: {
   pullSecret: string;
   template: ModelRuntimeTemplate;
 }) {
-  if (!isPinnedContainerImage(config.tritonAmd64RuntimeImage)) {
-    throw new Error("TRITON_AMD64_RUNTIME_IMAGE must use an explicit non-latest tag or sha256 digest");
+  const isArm64 = input.template.architecture === "arm64";
+  const runtimeImage = isArm64 ? config.tritonArm64RuntimeImage : config.tritonAmd64RuntimeImage;
+  const runtimeImageVariable = isArm64 ? "TRITON_ARM64_RUNTIME_IMAGE" : "TRITON_AMD64_RUNTIME_IMAGE";
+  if (!isPinnedContainerImage(runtimeImage)) {
+    throw new Error(`${runtimeImageVariable} must use an explicit non-latest tag or sha256 digest`);
   }
+  const cpuRequest = isArm64 ? config.tritonArm64CpuRequest : config.tritonAmd64CpuRequest;
+  const cpuLimit = isArm64 ? config.tritonArm64CpuLimit : config.tritonAmd64CpuLimit;
+  const memoryRequest = isArm64 ? config.tritonArm64MemoryRequest : config.tritonAmd64MemoryRequest;
+  const memoryLimit = isArm64 ? config.tritonArm64MemoryLimit : config.tritonAmd64MemoryLimit;
   const podLabels = { ...input.labels, app: input.name };
   const modelDirectory = `/model-repo/${input.modelName}`;
   return {
@@ -76,7 +100,7 @@ export function buildTritonAmd64Deployment(input: {
           }],
           containers: [{
             name: input.template.runtimeContainerName,
-            image: config.tritonAmd64RuntimeImage,
+            image: runtimeImage,
             imagePullPolicy: "IfNotPresent",
             command: ["tritonserver"],
             args: [
@@ -106,8 +130,8 @@ export function buildTritonAmd64Deployment(input: {
               failureThreshold: 3,
             },
             resources: {
-              requests: { cpu: config.tritonAmd64CpuRequest, memory: config.tritonAmd64MemoryRequest },
-              limits: { cpu: config.tritonAmd64CpuLimit, memory: config.tritonAmd64MemoryLimit },
+              requests: { cpu: cpuRequest, memory: memoryRequest },
+              limits: { cpu: cpuLimit, memory: memoryLimit },
             },
             volumeMounts: [{ name: "model-repo", mountPath: "/model-repo" }],
           }],

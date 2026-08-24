@@ -16,7 +16,7 @@
     "namespace": "blueedge"
   },
   "deployment": {
-    "sshHost": "14.103.163.121",
+    "sshHost": "14.103.139.131",
     "sshUser": "root",
     "kubernetesNamespace": "blueedge",
     "rolloutTimeout": "240s"
@@ -67,14 +67,14 @@
   "publicChecks": [
     {
       "name": "frontend",
-      "url": "http://14.103.163.121:30080/",
+      "url": "http://14.103.139.131:30080/",
       "expectedStatus": 200,
       "attempts": 5,
       "intervalSeconds": 3
     },
     {
       "name": "api-gateway-health",
-      "url": "http://14.103.163.121:30080/product-api/healthz",
+      "url": "http://14.103.139.131:30080/product-api/healthz",
       "expectedStatus": 200,
       "attempts": 5,
       "intervalSeconds": 3
