@@ -7,7 +7,15 @@ import {
   parseConfiguredModelImage,
   publishModelDeploymentWithDependencies,
   resolveModelDeploymentWithDependencies,
+  modelIncrementalCapabilities,
 } from "../dist/services/model-deployment.service.js";
+import {
+  applyModelArtifactMount,
+  buildModelSyncJob,
+  persistentModelMetadata,
+  reconcileModelSyncTask,
+  restoreLegacyModelDeployment,
+} from "../dist/services/model-sync-controller.service.js";
 
 const base = {
   source: "bams",
@@ -113,6 +121,17 @@ function harness(options = {}) {
         item.metadata.annotations = { ...item.metadata.annotations, ...annotations };
         return { item, change: { previousImage: payload.expectedCurrentImage, image: base.image } };
       },
+      async createModelSyncTask(_namespace, resource) {
+        calls.syncTasks = calls.syncTasks || [];
+        calls.syncTasks.push(resource);
+        return { item: resource, idempotent: options.syncTaskIdempotent === true };
+      },
+      async restoreLegacyImage(namespace, name, image, annotations) {
+        calls.restores = calls.restores || [];
+        calls.restores.push({ namespace, name, image, annotations });
+        const existing = managedMatches[0];
+        return restoreLegacyModelDeployment(existing, image, annotations);
+      },
     },
   };
 }
@@ -124,6 +143,265 @@ test.before(() => {
   config.modelDeploymentPullSecret = "my-registry-secret";
   config.tritonAmd64RuntimeImage = "registry.example.com/runtime/triton:26.03";
   config.tritonArm64RuntimeImage = "registry.example.com/runtime/triton-arm64:26.03";
+  config.modelSyncExecutorImage = "registry.example.com/blueedge/model-sync:v1";
+  config.modelSyncControllerEnabled = true;
+});
+
+test("incremental model publishing is capability-gated and creates a durable sync task", async () => {
+  const incremental = {
+    ...base,
+    predictFramework: "triton-bams-amd64",
+    updatePolicy: "INCREMENTAL_RESTART",
+    artifact: {
+      schemaVersion: 1,
+      contentVersion: `sha256:${"a".repeat(64)}`,
+      manifestDigest: `sha256:${"b".repeat(64)}`,
+      artifactRef: `registry.example.com/app/face-artifacts@sha256:${"c".repeat(64)}`,
+      fileCount: 3,
+      totalBytes: 1024,
+    },
+  };
+
+  config.modelIncrementalSyncEnabled = false;
+  assert.deepEqual(modelIncrementalCapabilities().updatePolicies, ["LEGACY_IMAGE"]);
+  await assert.rejects(
+    () => resolveModelDeploymentWithDependencies(incremental, harness().dependencies),
+    /incremental model sync is not enabled/,
+  );
+
+  config.modelIncrementalSyncEnabled = true;
+  try {
+    const existing = managedDeployment("registry.example.com/app/face:0.9-amd64");
+    existing.metadata.annotations["blueedge.io/model-init-container"] = "face-model-copy";
+    existing.metadata.annotations["blueedge.io/runtime-template"] = "triton-work-amd64";
+    const h = harness({ managedMatches: [existing] });
+    const resolved = await resolveModelDeploymentWithDependencies(incremental, h.dependencies);
+    assert.equal(resolved.capabilities.incrementalSync, true);
+    assert.deepEqual(resolved.capabilities.artifactSchemaVersions, [1]);
+    const published = await publishModelDeploymentWithDependencies(incremental, h.dependencies);
+    assert.equal(published.mode, "INCREMENTAL_RESTART");
+    assert.equal(published.state, "PENDING");
+    assert.match(published.taskId, /^model-sync-[a-f0-9]{20}$/);
+    assert.equal(h.calls.syncTasks[0].spec.registry.url, "https://registry.example.com");
+    assert.equal(h.calls.syncTasks[0].spec.deployment.initContainerName, "face-model-copy");
+    await assert.rejects(
+      () => resolveModelDeploymentWithDependencies({
+        ...incremental,
+        artifact: {
+          ...incremental.artifact,
+          artifactRef: `other.example.com/app/face@sha256:${"c".repeat(64)}`,
+        },
+      }, harness().dependencies),
+      /not in the configured EdgeUnit Registry/,
+    );
+  } finally {
+    config.modelIncrementalSyncEnabled = false;
+  }
+});
+
+test("model sync Job is edge-pinned and Deployment switches only the selected model to persistent content", () => {
+  const previousSkip = config.modelSyncRegistrySkipTlsVerify;
+  config.modelSyncRegistrySkipTlsVerify = true;
+  try {
+    const deployment = managedDeployment("registry.example.com/app/face:0.9-amd64");
+    deployment.spec.template.spec.initContainers.push({
+      name: "embedding-model-copy", image: "registry.example.com/app/embedding:1.0",
+    });
+    deployment.spec.template.spec.containers[0].volumeMounts = [{ name: "model-repo", mountPath: "/model-repo" }];
+    deployment.spec.template.spec.volumes = [{ name: "model-repo", emptyDir: {} }];
+    const task = {
+      metadata: { name: "model-sync-1234567890abcdef1234", namespace: "default", uid: "uid-1" },
+      spec: {
+        targetNode: "aibox-1",
+        artifact: {
+          contentVersion: `sha256:${"a".repeat(64)}`,
+          artifactRef: `registry.example.com/app/face-artifacts@sha256:${"b".repeat(64)}`,
+        },
+        registry: { url: "https://registry.example.com", pullSecretName: "my-registry-secret" },
+        deployment: {
+          namespace: "default", name: deployment.metadata.name, modelName: "face",
+          initContainerName: "face-model-copy", runtimeContainerName: "triton",
+        },
+      },
+    };
+    const job = buildModelSyncJob(task);
+    assert.equal(job.spec.template.spec.nodeName, "aibox-1");
+    assert.equal(job.spec.template.spec.containers[0].args.includes("--skip-tls-verify"), true);
+    assert.equal(job.spec.template.spec.volumes[0].hostPath.type, "DirectoryOrCreate");
+    const caTask = structuredClone(task);
+    caTask.spec.registry.caSecretName = "model-registry-ca-test";
+    const caJob = buildModelSyncJob(caTask);
+    assert.equal(caJob.spec.template.spec.containers[0].args.includes("--ca-file"), true);
+    assert.equal(caJob.spec.template.spec.containers[0].args.includes("--skip-tls-verify"), false);
+    assert.equal(caJob.spec.template.spec.volumes.some((item) => item.secret?.secretName === "model-registry-ca-test"), true);
+
+    const switched = applyModelArtifactMount(deployment, task);
+    assert.deepEqual(switched.spec.template.spec.initContainers.map((item) => item.name), ["embedding-model-copy"]);
+    assert.equal(switched.spec.template.spec.volumes[0].name, "model-repo");
+    const artifactMount = switched.spec.template.spec.containers[0].volumeMounts.find((item) => item.mountPath === "/model-repo/face");
+    assert.equal(artifactMount.readOnly, true);
+    assert.equal(persistentModelMetadata(switched, "face").legacyImage, "registry.example.com/app/face:0.9-amd64");
+
+    const nextTask = structuredClone(task);
+    nextTask.spec.artifact.contentVersion = `sha256:${"c".repeat(64)}`;
+    nextTask.spec.artifact.artifactRef = `registry.example.com/app/face-artifacts@sha256:${"d".repeat(64)}`;
+    const switchedAgain = applyModelArtifactMount(switched, nextTask);
+    assert.equal(switchedAgain.metadata.annotations["blueedge.io/model-content-version"], nextTask.spec.artifact.contentVersion);
+    const restored = restoreLegacyModelDeployment(switchedAgain, "registry.example.com/app/face:2.0", {
+      "blueedge.io/bams-model-image-id": "next-image",
+    });
+    assert.equal(restored.spec.template.spec.initContainers[0].image, "registry.example.com/app/face:2.0");
+    assert.equal(restored.spec.template.spec.volumes.some((item) => item.name.startsWith("model-artifact-")), false);
+    assert.equal(restored.metadata.annotations["blueedge.io/model-store-name"], undefined);
+  } finally {
+    config.modelSyncRegistrySkipTlsVerify = previousSkip;
+  }
+});
+
+test("a persistent model remains resolvable for later incremental updates and can return to legacy image mode", async () => {
+  config.modelIncrementalSyncEnabled = true;
+  try {
+    const deployment = managedDeployment("registry.example.com/app/face:0.9-amd64");
+    deployment.metadata.annotations["blueedge.io/model-init-container"] = "face-model-copy";
+    deployment.spec.template.spec.containers[0].volumeMounts = [{ name: "model-repo", mountPath: "/model-repo" }];
+    deployment.spec.template.spec.volumes = [{ name: "model-repo", emptyDir: {} }];
+    const task = {
+      spec: {
+        artifact: {
+          contentVersion: `sha256:${"a".repeat(64)}`,
+          artifactRef: `registry.example.com/app/face-artifacts@sha256:${"b".repeat(64)}`,
+        },
+        deployment: {
+          namespace: "default", name: deployment.metadata.name,
+          modelName: "face", initContainerName: "face-model-copy", runtimeContainerName: "triton",
+        },
+      },
+    };
+    const persistent = applyModelArtifactMount(deployment, task);
+    delete persistent.metadata.annotations["blueedge.io/model-init-container"];
+    assert.equal(persistentModelMetadata(persistent, "face").initContainerName, "face-model-copy");
+    const incremental = {
+      ...base,
+      updatePolicy: "INCREMENTAL_RESTART",
+      artifact: {
+        schemaVersion: 1,
+        contentVersion: `sha256:${"c".repeat(64)}`,
+        manifestDigest: `sha256:${"d".repeat(64)}`,
+        artifactRef: `registry.example.com/app/face-artifacts@sha256:${"e".repeat(64)}`,
+        fileCount: 3,
+        totalBytes: 1024,
+      },
+    };
+    const incrementalHarness = harness({ managedMatches: [persistent] });
+    const published = await publishModelDeploymentWithDependencies(incremental, incrementalHarness.dependencies);
+    assert.equal(published.mode, "INCREMENTAL_RESTART");
+    assert.equal(incrementalHarness.calls.syncTasks.length, 1);
+
+    const legacyHarness = harness({ managedMatches: [persistent] });
+    const legacy = await publishModelDeploymentWithDependencies({ ...base, image: "registry.example.com/app/face:2.0" }, legacyHarness.dependencies);
+    assert.equal(legacy.action, "UPDATE");
+    assert.equal(legacyHarness.calls.restores[0].image, "registry.example.com/app/face:2.0");
+  } finally {
+    config.modelIncrementalSyncEnabled = false;
+  }
+});
+
+test("model sync reconcile persists every phase and completes after the rollout is Ready", async () => {
+  const deployment = managedDeployment("registry.example.com/app/face:0.9-amd64");
+  deployment.metadata.generation = 3;
+  deployment.spec.selector = { matchLabels: { app: "face" } };
+  deployment.spec.template.spec.containers[0].volumeMounts = [{ name: "model-repo", mountPath: "/model-repo" }];
+  deployment.spec.template.spec.volumes = [{ name: "model-repo", emptyDir: {} }];
+  deployment.status = { observedGeneration: 3, updatedReplicas: 1, availableReplicas: 1 };
+  let currentDeployment = deployment;
+  let job = { spec: { backoffLimit: 2 }, status: {} };
+  const statusWrites = [];
+  const task = {
+    metadata: { name: "model-sync-1234567890abcdef1234", namespace: "default", uid: "uid-1", generation: 1 },
+    spec: {
+      targetNode: "aibox-1",
+      artifact: {
+        contentVersion: `sha256:${"a".repeat(64)}`,
+        artifactRef: `registry.example.com/app/face-artifacts@sha256:${"b".repeat(64)}`,
+      },
+      registry: { url: "https://registry.example.com", pullSecretName: "my-registry-secret" },
+      deployment: {
+        namespace: "default", name: deployment.metadata.name, modelName: "face",
+        initContainerName: "face-model-copy", runtimeContainerName: "triton",
+      },
+    },
+  };
+  const dependencies = {
+    async listTasks() { return []; },
+    async updateTaskStatus(item, nextStatus) {
+      item.status = structuredClone(nextStatus);
+      statusWrites.push(nextStatus.phase);
+      return item;
+    },
+    async createJob() { return job; },
+    async getJob() { return job; },
+    async getDeployment() { return structuredClone(currentDeployment); },
+    async updateDeployment(_namespace, _name, next) {
+      currentDeployment = structuredClone(next);
+      return next;
+    },
+    async listDeploymentPods() {
+      return [{ metadata: { name: "face-ready" }, status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }] } }];
+    },
+    async ensureRegistryCa() {},
+    now() { return new Date("2026-08-25T00:00:00.000Z"); },
+  };
+
+  await reconcileModelSyncTask(task, dependencies);
+  assert.equal(task.status.phase, "SYNCING");
+  job = { spec: { backoffLimit: 2 }, status: { succeeded: 1 } };
+  await reconcileModelSyncTask(task, dependencies);
+  assert.equal(task.status.phase, "SWITCHING");
+  assert.ok(task.status.rollback.deployment.spec);
+  await reconcileModelSyncTask(task, dependencies);
+  assert.equal(task.status.phase, "SUCCEEDED");
+  assert.deepEqual(statusWrites, ["SYNCING", "SWITCHING", "SUCCEEDED"]);
+});
+
+test("model sync reconcile restores the saved Deployment when rollout fails", async () => {
+  const original = managedDeployment("registry.example.com/app/face:0.9-amd64");
+  original.spec.selector = { matchLabels: { app: "face" } };
+  const broken = structuredClone(original);
+  broken.metadata.generation = 4;
+  broken.status = {
+    observedGeneration: 4,
+    conditions: [{ type: "Progressing", status: "False", reason: "ProgressDeadlineExceeded", message: "not ready" }],
+  };
+  const task = {
+    metadata: { name: "model-sync-rollback000000", namespace: "default", generation: 1 },
+    spec: { deployment: { namespace: "default", name: original.metadata.name } },
+    status: {
+      phase: "SWITCHING", switchedAt: "2026-08-25T00:00:00.000Z",
+      rollback: { deployment: { annotations: original.metadata.annotations, spec: original.spec } },
+    },
+  };
+  let current = broken;
+  const dependencies = {
+    async listTasks() { return []; },
+    async updateTaskStatus(item, nextStatus) { item.status = structuredClone(nextStatus); return item; },
+    async createJob() {}, async getJob() {},
+    async getDeployment() { return structuredClone(current); },
+    async updateDeployment(_namespace, _name, next) { current = structuredClone(next); return next; },
+    async listDeploymentPods() { return []; },
+    async ensureRegistryCa() {},
+    now() { return new Date("2026-08-25T00:01:00.000Z"); },
+  };
+  await reconcileModelSyncTask(task, dependencies);
+  assert.equal(task.status.phase, "ROLLING_BACK");
+  assert.deepEqual(current.spec, original.spec);
+  current.metadata.generation = 5;
+  current.status = { observedGeneration: 5, updatedReplicas: 1, availableReplicas: 1 };
+  dependencies.listDeploymentPods = async () => [{
+    metadata: { name: "restored" }, status: { phase: "Running", conditions: [{ type: "Ready", status: "True" }] },
+  }];
+  await reconcileModelSyncTask(task, dependencies);
+  assert.equal(task.status.phase, "FAILED");
+  assert.equal(task.status.rollbackState, "SUCCEEDED");
 });
 
 test("first publish creates the verified /work Triton runtime contract with parameterized names", async () => {

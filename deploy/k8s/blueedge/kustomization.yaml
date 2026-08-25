@@ -4,6 +4,7 @@ resources:
   - 00-namespace.yaml
   - 01-rbac.yaml
   - 02-configmap.yaml
+  - 03-model-sync-crd.yaml
   - 10-bff.yaml
   - 11-api-gateway.yaml
   - 12-frontend.yaml

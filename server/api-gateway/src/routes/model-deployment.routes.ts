@@ -9,6 +9,7 @@ import {
   ModelDeploymentError,
   publishModelDeployment,
   resolveModelDeployment,
+  readModelSyncTask,
   type ModelPublishRequest,
 } from "../services/model-deployment.service.js";
 
@@ -34,6 +35,8 @@ function publishPayload(body: any): ModelPublishRequest {
     edgeUnit: body?.edgeUnit,
     targetType: body?.targetType,
     targetId: body?.targetId,
+    artifact: body?.artifact,
+    updatePolicy: body?.updatePolicy,
   } as ModelPublishRequest;
 }
 
@@ -96,6 +99,18 @@ export function registerModelDeploymentRoutes(app: Express) {
         res.status(result.action === "CREATE" && !result.idempotent ? 201 : 200).json(result);
       } catch (error) {
         res.status(statusOf(error)).json({ message: error instanceof Error ? error.message : "model publish failed" });
+      }
+    },
+  );
+
+  app.get(
+    "/blueedge/model-sync-tasks/:namespace/:name",
+    requireServiceScopes("deployments:read"),
+    async (req, res) => {
+      try {
+        res.json(await readModelSyncTask(req.params.namespace, req.params.name));
+      } catch (error) {
+        res.status(statusOf(error)).json({ message: error instanceof Error ? error.message : "failed to read model sync task" });
       }
     },
   );

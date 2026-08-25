@@ -70,6 +70,24 @@ MODEL_REGISTRY_PASSWORD
 自动查询 `${MODEL_REGISTRY_PREFIX}/` 下的模型仓库及其版本标签；生产环境建议为仓库配置可信 CA，
 并将 `MODEL_REGISTRY_SKIP_TLS_VERIFY` 设为 `false`。
 
+模型增量发布使用 `ModelSyncTask` CRD。`MODEL_INCREMENTAL_SYNC_ENABLED` 默认必须保持
+`false`；只有模型制品发布器、同步 Controller、边缘 Executor 和持久存储全部安装并完成
+联调后才能按环境开启。开启前，BAMS 的 `LEGACY_IMAGE` 发布流程保持不变。
+
+增量同步相关配置：
+
+- `MODEL_SYNC_EXECUTOR_IMAGE`：边缘同步器不可变镜像标签或 digest。
+- `MODEL_SYNC_STORE_HOST_PATH`：边缘节点模型缓存根目录，默认
+  `/var/lib/blueedge/model-store`。
+- `MODEL_SYNC_CONTROLLER_ENABLED`：启动 `ModelSyncTask` Reconcile，默认关闭。
+- `MODEL_INCREMENTAL_SYNC_ENABLED`：向 BAMS 暴露增量发布能力，默认关闭。
+
+开启顺序必须是：安装 CRD、推送 Executor、配置 Executor 镜像、启动 Controller，确认
+Controller 正常后再开启增量能力。Controller 会将 EdgeUnit Registry 的公开 CA 复制到
+任务命名空间；Registry 账号密码始终沿用该命名空间现有的 dockerconfigjson Secret。
+首次模型发布仍使用 `LEGACY_IMAGE`，后续更新可以使用 `INCREMENTAL_RESTART`。同步成功后
+仅目标模型切换到节点持久目录；其他模型保持原 initContainer。切换失败会恢复原 Deployment。
+
 `03-secret.example.yaml` is only a template for teams that prefer declarative Secret files.
 
 ## Configure Kubernetes API Access

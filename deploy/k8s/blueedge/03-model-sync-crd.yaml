@@ -1,0 +1,72 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: modelsynctasks.blueedge.io
+spec:
+  group: blueedge.io
+  scope: Namespaced
+  names:
+    plural: modelsynctasks
+    singular: modelsynctask
+    kind: ModelSyncTask
+    shortNames:
+      - mst
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: EdgeUnit
+          type: string
+          jsonPath: .spec.edgeUnit
+        - name: Node
+          type: string
+          jsonPath: .spec.targetNode
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              required:
+                - source
+                - spaceId
+                - modelRepoId
+                - modelVersionId
+                - modelImageId
+                - edgeUnit
+                - targetNode
+                - updatePolicy
+                - artifact
+                - registry
+                - deployment
+              properties:
+                source: { type: string, enum: [bams] }
+                spaceId: { type: string, minLength: 1 }
+                modelRepoId: { type: string, minLength: 1 }
+                modelVersionId: { type: string, minLength: 1 }
+                modelImageId: { type: string, minLength: 1 }
+                edgeUnit: { type: string, minLength: 1 }
+                targetNode: { type: string, minLength: 1 }
+                updatePolicy: { type: string, enum: [INCREMENTAL_RESTART] }
+                artifact:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                registry:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                deployment:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true

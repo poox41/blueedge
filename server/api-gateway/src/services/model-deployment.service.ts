@@ -23,6 +23,11 @@ import {
   runtimeTemplateIdForPredictFramework,
 } from "./model-runtime-template.service.js";
 import { isNodeReady, itemsOf, labelsOf, metadataOf, nodeNameOf } from "../utils/kubernetes.js";
+import { createModelSyncTask, getModelSyncTask } from "../repositories/model-sync-task.repository.js";
+import {
+  persistentModelMetadata,
+  restoreLegacyModelDeployment,
+} from "./model-sync-controller.service.js";
 
 const identityKeys = {
   managedBy: "blueedge.io/managed-by",
@@ -53,12 +58,36 @@ export type ModelPublishRequest = {
   edgeUnit: string;
   targetType?: "node";
   targetId?: string;
+  artifact?: {
+    schemaVersion: number;
+    contentVersion: string;
+    manifestDigest: string;
+    artifactRef: string;
+    fileCount: number;
+    totalBytes: number;
+  };
+  updatePolicy?: "LEGACY_IMAGE" | "INCREMENTAL_RESTART";
 };
 
 export class ModelDeploymentError extends Error {
   constructor(public readonly status: number, message: string) {
     super(message);
   }
+}
+
+export function modelIncrementalCapabilities() {
+  const enabled = config.modelIncrementalSyncEnabled
+    && config.modelSyncControllerEnabled
+    && Boolean(config.modelSyncExecutorImage);
+  return {
+    incrementalSync: enabled,
+    persistentStorage: enabled,
+    artifactSchemaVersions: [...config.modelArtifactSchemaVersions],
+    updatePolicies: enabled
+      ? ["LEGACY_IMAGE", "INCREMENTAL_RESTART"]
+      : ["LEGACY_IMAGE"],
+    hotReload: false,
+  };
 }
 
 type PublishDependencies = {
@@ -77,7 +106,73 @@ type PublishDependencies = {
     tag: string;
     expectedCurrentImage: string;
   }, annotations: Record<string, string>, registry: EdgeUnitModelRegistry): Promise<any>;
+  createModelSyncTask(namespace: string, resource: any): Promise<{ item: any; idempotent: boolean }>;
+  restoreLegacyImage(namespace: string, name: string, image: string, annotations: Record<string, string>): Promise<any>;
 };
+
+export function deterministicModelSyncTaskName(input: ModelPublishRequest): string {
+  const identity = [
+    input.source,
+    input.spaceId,
+    input.modelRepoId,
+    input.edgeUnit,
+    input.targetId || "existing",
+    input.artifact?.contentVersion || "",
+    input.updatePolicy || "LEGACY_IMAGE",
+  ].join(":");
+  return `model-sync-${crypto.createHash("sha256").update(identity).digest("hex").slice(0, 20)}`;
+}
+
+function buildModelSyncTask(input: ModelPublishRequest, resolution: any, image: { model: string; reference: string }, targetNode: string) {
+  const namespace = config.modelDeploymentNamespace;
+  const deploymentName = resolution.action === "UPDATE"
+    ? String(resolution.workload.name)
+    : deterministicModelDeploymentName(input);
+  return {
+    apiVersion: "blueedge.io/v1alpha1",
+    kind: "ModelSyncTask",
+    metadata: {
+      name: deterministicModelSyncTaskName({ ...input, targetId: targetNode }),
+      namespace,
+      labels: {
+        ...modelDeploymentIdentity(input),
+        "blueedge.io/model-sync-phase": "pending",
+      },
+    },
+    spec: {
+      source: input.source,
+      spaceId: input.spaceId,
+      modelRepoId: input.modelRepoId,
+      modelVersionId: input.modelVersionId,
+      modelImageId: input.modelImageId,
+      edgeUnit: input.edgeUnit,
+      targetNode,
+      updatePolicy: "INCREMENTAL_RESTART",
+      artifact: input.artifact,
+      registry: {
+        url: `${resolution.registry.tls ? "https" : "http"}://${resolution.registry.registryHost}`,
+        pullSecretName: resolution.registry.pullSecretName,
+        ...(resolution.registry.caSecretRef ? {
+          caSourceNamespace: config.blueedgeSystemNamespace,
+          caSourceName: resolution.registry.caSecretRef,
+          caSecretName: `model-registry-ca-${crypto.createHash("sha256").update(input.edgeUnit).digest("hex").slice(0, 10)}`,
+        } : {}),
+      },
+      deployment: {
+        action: resolution.action,
+        namespace,
+        name: deploymentName,
+        modelName: runtimeModelName(image.model),
+        initContainerName: String(resolution.workload.initContainerName || ""),
+        runtimeContainerName: "triton",
+        legacyImage: image.reference,
+        runtimeTemplateId: resolution.action === "CREATE"
+          ? String(resolution.runtimeTemplate.id)
+          : String(resolution.workload.runtimeTemplateId || ""),
+      },
+    },
+  };
+}
 
 function labelValue(value: string, field: string): string {
   const normalized = value.trim();
@@ -169,6 +264,49 @@ function validateInput(input: ModelPublishRequest) {
   for (const field of ["spaceId", "modelRepoId", "modelVersionId", "modelImageId", "image", "edgeUnit"] as const) {
     if (typeof input[field] !== "string" || !input[field].trim()) throw new ModelDeploymentError(400, `${field} is required`);
   }
+  const updatePolicy = input.updatePolicy || "LEGACY_IMAGE";
+  if (updatePolicy !== "LEGACY_IMAGE" && updatePolicy !== "INCREMENTAL_RESTART") {
+    throw new ModelDeploymentError(400, "unsupported model update policy");
+  }
+  if (updatePolicy === "INCREMENTAL_RESTART") validateIncrementalArtifact(input);
+}
+
+const sha256DigestPattern = /^sha256:[a-f0-9]{64}$/;
+
+function validateIncrementalArtifact(input: ModelPublishRequest) {
+  if (!config.modelIncrementalSyncEnabled) {
+    throw new ModelDeploymentError(400, "incremental model sync is not enabled for this BlueEdge installation");
+  }
+  const artifact = input.artifact;
+  if (!artifact || typeof artifact !== "object") {
+    throw new ModelDeploymentError(400, "artifact is required for incremental model sync");
+  }
+  if (!config.modelArtifactSchemaVersions.includes(artifact.schemaVersion)) {
+    throw new ModelDeploymentError(400, `artifact schemaVersion ${artifact.schemaVersion} is not supported`);
+  }
+  for (const field of ["contentVersion", "manifestDigest"] as const) {
+    if (typeof artifact[field] !== "string" || !sha256DigestPattern.test(artifact[field])) {
+      throw new ModelDeploymentError(400, `artifact.${field} must be a sha256 digest`);
+    }
+  }
+  if (typeof artifact.artifactRef !== "string" || !/@sha256:[a-f0-9]{64}$/.test(artifact.artifactRef)) {
+    throw new ModelDeploymentError(400, "artifact.artifactRef must be an immutable sha256 reference");
+  }
+  if (!Number.isSafeInteger(artifact.fileCount) || artifact.fileCount <= 0) {
+    throw new ModelDeploymentError(400, "artifact.fileCount must be a positive integer");
+  }
+  if (!Number.isSafeInteger(artifact.totalBytes) || artifact.totalBytes <= 0) {
+    throw new ModelDeploymentError(400, "artifact.totalBytes must be a positive integer");
+  }
+}
+
+function validateArtifactRegistry(input: ModelPublishRequest, registry: ModelRegistryConnection) {
+  if ((input.updatePolicy || "LEGACY_IMAGE") !== "INCREMENTAL_RESTART") return;
+  const artifactRef = String(input.artifact?.artifactRef || "");
+  const prefix = modelImagePrefix(registry);
+  if (!artifactRef.toLowerCase().startsWith(prefix.toLowerCase())) {
+    throw new ModelDeploymentError(400, "artifact.artifactRef is not in the configured EdgeUnit Registry");
+  }
 }
 
 function runtimeModelName(repository: string) {
@@ -230,6 +368,27 @@ function activeNode(deployment: any, pods: any[]) {
 
 function workloadSummary(deployment: any, repository: string, pods: any[], registry: ModelRegistryConnection, trustManagedAnnotation = false) {
   const ref = deploymentRef(deployment);
+  const persistent = persistentModelMetadata(deployment, runtimeModelName(repository));
+  if (persistent) {
+    if (!persistent.initContainerName || !persistent.legacyImage) {
+      throw new ModelDeploymentError(409, `managed Deployment ${metadataOf(deployment).name} has incomplete persistent model metadata`);
+    }
+    const separator = persistent.legacyImage.lastIndexOf(":");
+    return {
+      ...ref,
+      initContainerName: persistent.initContainerName,
+      currentImage: persistent.legacyImage,
+      currentVersion: separator >= 0 ? persistent.legacyImage.slice(separator + 1) : "",
+      targetNode: activeNode(deployment, pods),
+      runtimeTemplateId: String(metadataOf(deployment).annotations?.[annotationKeys.runtimeTemplate] || ""),
+      runtime: Array.isArray(deployment?.spec?.template?.spec?.containers)
+        ? deployment.spec.template.spec.containers.map((container: any) => ({
+          name: String(container?.name || ""), image: String(container?.image || ""),
+          command: container?.command || [], args: container?.args || [],
+        })) : [],
+      persistentModel: persistent,
+    };
+  }
   const initContainer = resolvedInitContainer(deployment, repository, registry, trustManagedAnnotation);
   const currentImage = String(initContainer.image);
   let currentVersion = "";
@@ -254,6 +413,7 @@ function workloadSummary(deployment: any, repository: string, pods: any[], regis
     currentImage,
     currentVersion,
     targetNode: activeNode(deployment, pods),
+    runtimeTemplateId: String(metadataOf(deployment).annotations?.[annotationKeys.runtimeTemplate] || ""),
     runtime: runtimeContainers,
   };
 }
@@ -276,6 +436,7 @@ export async function resolveModelDeploymentWithDependencies(input: ModelPublish
   const registryConfig = await dependencies.getModelRegistry(input.edgeUnit);
   if (!registryConfig.enabled) throw new ModelDeploymentError(400, `EdgeUnit ${input.edgeUnit} model Registry is disabled`);
   const registry = edgeUnitRegistryConnection(registryConfig);
+  validateArtifactRegistry(input, registry);
   const image = parseConfiguredModelImage(input.image, registry);
   const labels = modelDeploymentIdentity(input);
   const managed = await dependencies.listManagedDeployments(labels);
@@ -298,6 +459,8 @@ export async function resolveModelDeploymentWithDependencies(input: ModelPublish
       repository: image.model,
       workload: workloadSummary(existing, image.model, pods, registry, matchedBy === "identity"),
       status: modelDeploymentStatus(existing, pods),
+      capabilities: modelIncrementalCapabilities(),
+      registry: registryConfig,
     };
   }
   const template = requestedRuntimeTemplate(input);
@@ -312,6 +475,8 @@ export async function resolveModelDeploymentWithDependencies(input: ModelPublish
       runtimeContainerName: template.runtimeContainerName,
     },
     nodes: compatibleNodes(await dependencies.listNodes(), input.edgeUnit, template.architecture),
+    capabilities: modelIncrementalCapabilities(),
+    registry: registryConfig,
   };
 }
 
@@ -320,13 +485,52 @@ export async function publishModelDeploymentWithDependencies(input: ModelPublish
   const registryConfig = await dependencies.getModelRegistry(input.edgeUnit);
   if (!registryConfig.enabled) throw new ModelDeploymentError(400, `EdgeUnit ${input.edgeUnit} model Registry is disabled`);
   const registry = edgeUnitRegistryConnection(registryConfig);
+  validateArtifactRegistry(input, registry);
   const image = parseConfiguredModelImage(input.image, registry);
   const resolution = await resolveModelDeploymentWithDependencies(input, dependencies);
+  if ((input.updatePolicy || "LEGACY_IMAGE") === "INCREMENTAL_RESTART") {
+    if (resolution.action !== "UPDATE") {
+      throw new ModelDeploymentError(400, "the first model publish must use LEGACY_IMAGE before incremental updates");
+    }
+    if (!config.modelSyncExecutorImage) {
+      throw new ModelDeploymentError(400, "MODEL_SYNC_EXECUTOR_IMAGE is not configured");
+    }
+    const targetNode = resolution.action === "UPDATE"
+      ? String(resolution.workload.targetNode || "")
+      : String(input.targetId || "");
+    if (!targetNode) throw new ModelDeploymentError(400, "target node is required for incremental model sync");
+    const namespace = config.modelDeploymentNamespace;
+    const pullSecret = registryConfig.pullSecretName;
+    if (!pullSecret || !await dependencies.secretExists(namespace, pullSecret)) {
+      throw new ModelDeploymentError(400, `imagePullSecret ${pullSecret || "<empty>"} is missing or invalid in namespace ${namespace}`);
+    }
+    const created = await dependencies.createModelSyncTask(
+      namespace,
+      buildModelSyncTask(input, resolution, image, targetNode),
+    );
+    return {
+      action: resolution.action,
+      mode: "INCREMENTAL_RESTART" as const,
+      taskId: String(metadataOf(created.item).name || ""),
+      state: String(created.item?.status?.phase || "PENDING"),
+      idempotent: created.idempotent,
+      item: created.item,
+    };
+  }
   if (resolution.action === "UPDATE") {
     const existing = (await dependencies.listManagedDeployments(modelDeploymentIdentity(input)))[0]
       || (await dependencies.listEdgeUnitDeployments(input.edgeUnit)).find((deployment) =>
         metadataOf(deployment).namespace === resolution.workload.namespace && metadataOf(deployment).name === resolution.workload.name);
     if (!existing) throw new ModelDeploymentError(409, "resolved model Deployment changed before update");
+    if ("persistentModel" in resolution.workload && resolution.workload.persistentModel) {
+      const restored = await dependencies.restoreLegacyImage(
+        resolution.workload.namespace,
+        resolution.workload.name,
+        image.reference,
+        modelAnnotations(input, "updating", resolution.workload.initContainerName),
+      );
+      return { action: "UPDATE" as const, item: restored, change: { image: image.reference }, status: modelDeploymentStatus(restored, []) };
+    }
     if (resolution.workload.currentImage === image.reference) {
       return { action: "UPDATE" as const, idempotent: true, item: existing, status: resolution.status };
     }
@@ -443,6 +647,15 @@ const productionDependencies: PublishDependencies = {
       registry: edgeUnitRegistryConnection(registryConfig, credential, ca?.pem),
     });
   },
+  createModelSyncTask,
+  async restoreLegacyImage(namespace, name, image, annotations) {
+    const path = `/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments/${encodeURIComponent(name)}`;
+    const deployment = await getK8sJson(path);
+    return requestK8sJson(path, {
+      method: "PUT",
+      body: restoreLegacyModelDeployment(deployment, image, annotations),
+    });
+  },
 };
 
 export function publishModelDeployment(input: ModelPublishRequest) {
@@ -451,6 +664,10 @@ export function publishModelDeployment(input: ModelPublishRequest) {
 
 export function resolveModelDeployment(input: ModelPublishRequest) {
   return resolveModelDeploymentWithDependencies(input, productionDependencies);
+}
+
+export function readModelSyncTask(namespace: string, name: string) {
+  return getModelSyncTask(namespace, name);
 }
 
 export async function getModelRegistryTarget(edgeUnit: string) {

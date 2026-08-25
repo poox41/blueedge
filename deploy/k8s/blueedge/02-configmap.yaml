@@ -32,6 +32,17 @@ data:
   MODEL_REGISTRY_URL: "https://183.95.195.121:31438"
   MODEL_REGISTRY_PREFIX: "app"
   MODEL_REGISTRY_SKIP_TLS_VERIFY: "true"
+  # Keep disabled until the model sync controller/executor and edge storage are installed.
+  MODEL_INCREMENTAL_SYNC_ENABLED: "false"
+  MODEL_SYNC_CONTROLLER_ENABLED: "false"
+  MODEL_SYNC_CONTROLLER_INTERVAL_MS: "5000"
+  MODEL_SYNC_ROLLOUT_TIMEOUT_MS: "600000"
+  MODEL_ARTIFACT_SCHEMA_VERSIONS: "1"
+  MODEL_SYNC_EXECUTOR_IMAGE: ""
+  MODEL_SYNC_EXECUTOR_PULL_SECRET: ""
+  MODEL_SYNC_STORE_HOST_PATH: "/var/lib/blueedge/model-store"
+  MODEL_SYNC_REGISTRY_CA_SECRET: ""
+  MODEL_SYNC_REGISTRY_SKIP_TLS_VERIFY: "false"
   # Production startup requires an immutable, explicitly versioned Triton runtime image.
   TRITON_AMD64_RUNTIME_IMAGE: "m.daocloud.io/nvcr.io/nvidia/tritonserver:26.03-pyt-python-py3"
   # ARM64/Jetson Triton runtime. Verified as linux/arm64; keep the tag pinned.

@@ -107,6 +107,18 @@ export const config = {
   modelRegistrySkipTlsVerify: process.env.MODEL_REGISTRY_SKIP_TLS_VERIFY === "true",
   modelDeploymentNamespace: process.env.MODEL_DEPLOYMENT_NAMESPACE || "default",
   modelDeploymentPullSecret: process.env.MODEL_DEPLOYMENT_PULL_SECRET || "my-registry-secret",
+  modelIncrementalSyncEnabled: process.env.MODEL_INCREMENTAL_SYNC_ENABLED === "true",
+  modelSyncControllerEnabled: process.env.MODEL_SYNC_CONTROLLER_ENABLED === "true",
+  modelSyncControllerIntervalMs: parsePositiveInteger(process.env.MODEL_SYNC_CONTROLLER_INTERVAL_MS, 5_000),
+  modelSyncRolloutTimeoutMs: parsePositiveInteger(process.env.MODEL_SYNC_ROLLOUT_TIMEOUT_MS, 10 * 60_000),
+  modelArtifactSchemaVersions: parseCsv(process.env.MODEL_ARTIFACT_SCHEMA_VERSIONS || "1")
+    .map((value) => Number(value))
+    .filter((value) => Number.isInteger(value) && value > 0),
+  modelSyncExecutorImage: (process.env.MODEL_SYNC_EXECUTOR_IMAGE || "").trim(),
+  modelSyncExecutorPullSecret: (process.env.MODEL_SYNC_EXECUTOR_PULL_SECRET || "").trim(),
+  modelSyncStoreHostPath: (process.env.MODEL_SYNC_STORE_HOST_PATH || "/var/lib/blueedge/model-store").trim(),
+  modelSyncRegistryCaSecret: (process.env.MODEL_SYNC_REGISTRY_CA_SECRET || "").trim(),
+  modelSyncRegistrySkipTlsVerify: process.env.MODEL_SYNC_REGISTRY_SKIP_TLS_VERIFY === "true",
   tritonAmd64RuntimeImage: (process.env.TRITON_AMD64_RUNTIME_IMAGE || "").trim(),
   tritonAmd64CpuRequest: process.env.TRITON_AMD64_CPU_REQUEST || "2",
   tritonAmd64CpuLimit: process.env.TRITON_AMD64_CPU_LIMIT || "6",
@@ -140,6 +152,9 @@ if (process.env.NODE_ENV === "production") {
   }
   if (config.tritonArm64RuntimeImage && !isPinnedContainerImage(config.tritonArm64RuntimeImage)) {
     throw new Error("TRITON_ARM64_RUNTIME_IMAGE must use an explicit non-latest tag or sha256 digest in production");
+  }
+  if (config.modelSyncControllerEnabled && !isPinnedContainerImage(config.modelSyncExecutorImage)) {
+    throw new Error("MODEL_SYNC_EXECUTOR_IMAGE must use an explicit non-latest tag or sha256 digest when the model sync controller is enabled");
   }
   if (config.bamsSsoEnabled) {
     if (!config.bamsSsoBaseUrl || !config.bamsSsoClientId || !config.bamsSsoClientSecret) {

@@ -1,6 +1,7 @@
 import { createApp } from "./app.js";
 import { config } from "./config.js";
 import { hasServerK8sAuthorization } from "./clients/k8s-client.js";
+import { startModelSyncController } from "./services/model-sync-controller.service.js";
 
 const app = createApp();
 
@@ -15,4 +16,5 @@ app.listen(config.port, () => {
   if (!process.env.ADMIN_USERNAME || !process.env.ADMIN_PASSWORD) {
     console.warn("WARNING: ADMIN_USERNAME/ADMIN_PASSWORD are using development defaults.");
   }
+  startModelSyncController();
 });
