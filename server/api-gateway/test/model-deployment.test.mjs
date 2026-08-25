@@ -236,6 +236,7 @@ test("model sync Job is edge-pinned and Deployment switches only the selected mo
     assert.equal(caJob.spec.template.spec.volumes.some((item) => item.secret?.secretName === "model-registry-ca-test"), true);
 
     const switched = applyModelArtifactMount(deployment, task);
+    assert.equal(switched.spec.template.spec.nodeName, "aibox-1");
     assert.deepEqual(switched.spec.template.spec.initContainers.map((item) => item.name), ["embedding-model-copy"]);
     assert.equal(switched.spec.template.spec.volumes[0].name, "model-repo");
     const artifactMount = switched.spec.template.spec.containers[0].volumeMounts.find((item) => item.mountPath === "/model-repo/face");
@@ -267,6 +268,7 @@ test("a persistent model remains resolvable for later incremental updates and ca
     deployment.spec.template.spec.volumes = [{ name: "model-repo", emptyDir: {} }];
     const task = {
       spec: {
+        targetNode: "aibox-1",
         artifact: {
           contentVersion: `sha256:${"a".repeat(64)}`,
           artifactRef: `registry.example.com/app/face-artifacts@sha256:${"b".repeat(64)}`,

@@ -132,6 +132,7 @@ export function applyModelArtifactMount(deployment: any, task: any) {
   const modelName = safeSegment(task?.spec?.deployment?.modelName, "model name");
   const runtime = (podSpec.containers || []).find((item: any) => item?.name === runtimeName);
   if (!runtime) throw new Error(`runtime container ${runtimeName} was not found`);
+  podSpec.nodeName = safeSegment(task?.spec?.targetNode, "target node");
   const existingInitContainers = Array.isArray(podSpec.initContainers) ? podSpec.initContainers : [];
   const initIndex = existingInitContainers.findIndex((item: any) => item?.name === initName);
   const annotations = copy?.metadata?.annotations || {};
