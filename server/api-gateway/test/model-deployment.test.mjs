@@ -419,6 +419,9 @@ test("first publish creates the verified /work Triton runtime contract with para
   assert.equal(deployment.spec.template.spec.initContainers[0].name, "face-model-copy");
   assert.equal(deployment.spec.template.spec.initContainers[0].args[0].includes("cp -a /work/. /model-repo/face/"), true);
   assert.equal(deployment.spec.template.spec.containers[0].name, "triton");
+  assert.equal(deployment.metadata.annotations["blueedge.io/runtime-template"], "triton-work-amd64");
+  assert.equal(deployment.spec.template.spec.containers[0].resources.requests["nvidia.com/gpu"], "1");
+  assert.equal(deployment.spec.template.spec.containers[0].resources.limits["nvidia.com/gpu"], "1");
   assert.deepEqual(deployment.spec.template.spec.volumes, [{ name: "model-repo", emptyDir: {} }]);
   assert.deepEqual(deployment.spec.template.spec.imagePullSecrets, [{ name: "my-registry-secret" }]);
   assert.deepEqual(deployment.spec.template.spec.tolerations, [{ key: "node-role.kubernetes.io/edge", operator: "Exists", effect: "NoSchedule" }]);
@@ -440,6 +443,20 @@ test("ARM64 BAMS framework selects the ARM64 runtime template and only exposes A
   assert.equal(result.action, "CREATE");
   assert.equal(h.calls.creates[0].spec.template.spec.containers[0].image, config.tritonArm64RuntimeImage);
   assert.equal(h.calls.creates[0].metadata.annotations["blueedge.io/runtime-template"], "triton-work-arm64");
+  assert.equal(h.calls.creates[0].spec.template.spec.containers[0].resources.requests["nvidia.com/gpu"], "1");
+  assert.equal(h.calls.creates[0].spec.template.spec.containers[0].resources.limits["nvidia.com/gpu"], "1");
+});
+
+test("plain Triton frameworks use the GPU-enabled runtime templates", async () => {
+  const amdHarness = harness();
+  await publishModelDeploymentWithDependencies(
+    { ...base, predictFramework: "triton-amd64" },
+    amdHarness.dependencies,
+  );
+  const resources = amdHarness.calls.creates[0].spec.template.spec.containers[0].resources;
+  assert.equal(resources.requests["nvidia.com/gpu"], "1");
+  assert.equal(resources.limits["nvidia.com/gpu"], "1");
+  assert.equal(amdHarness.calls.creates[0].metadata.annotations["blueedge.io/runtime-template"], "triton-work-amd64");
 });
 
 test("ARM64 CREATE fails closed when its real Triton runtime image is not configured", async () => {

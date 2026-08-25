@@ -130,8 +130,16 @@ export function buildTritonDeployment(input: {
               failureThreshold: 3,
             },
             resources: {
-              requests: { cpu: cpuRequest, memory: memoryRequest },
-              limits: { cpu: cpuLimit, memory: memoryLimit },
+              requests: {
+                cpu: cpuRequest,
+                memory: memoryRequest,
+                "nvidia.com/gpu": "1",
+              },
+              limits: {
+                cpu: cpuLimit,
+                memory: memoryLimit,
+                "nvidia.com/gpu": "1",
+              },
             },
             volumeMounts: [{ name: "model-repo", mountPath: "/model-repo" }],
           }],
